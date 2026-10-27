@@ -28,6 +28,10 @@ simplest possible starting point; the last slide is the complete system.
 
 Every deck shares the same look, feel, and features.
 
+### Template
+
+The cannonical example/template slide show is at `slides/example.html`. It is the template used when building new slide decks. It contains helpful comments.
+
 ### Layout (per slide)
 
 - **Top (large) section:** the system diagram — labeled boxes, lines, and arrows
