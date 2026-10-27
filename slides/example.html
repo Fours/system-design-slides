@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<!--
+  ============================================================================
+  SYSTEM DESIGN WALKTHROUGH — EXAMPLE / TEMPLATE DECK
+  ============================================================================
+
+  This file is the canonical starting point for a new deck. Copy it to
+  slides/<topic>.html (kebab-cased topic name) and replace:
+
+    1. <title> and the TOPIC constant below  -> the system being designed
+    2. The SLIDES array                      -> one entry per step of the design
+
+  Each slide has two parts:
+    - diagram: an inline <svg> string. Build the whiteboard sketch here using the
+               reusable .box / arrow helpers shown in the examples. Each slide
+               should show one MORE layer/entity than the previous slide.
+    - script:  { title, html } — what the engineer says out loud for this step.
+               The concatenation of every slide's script, slide 1..N, is the full
+               answer to "Design X." Keep it high-level, explain the WHY and the
+               trade-offs, and aim for ~30 min of reading total (up to 60 for
+               complex topics).
+
+  Slide 1 is always the simplest possible starting point (e.g. one user, one
+  client, one server). The last slide is the complete system.
+
+  Navigation (shared by every deck): on-screen back/forward arrows, plus the
+  Left/Right arrow keys.
+
+  The file is fully self-contained — no build step, no external dependencies.
+  ============================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Design Example — System Design Walkthrough</title>
+  <style>
+    :root {
+      /* ---- Theme tokens (edit here, not inline) ---- */
+      --bg: #0f172a;            /* page background */
+      --panel: #1e293b;         /* diagram panel */
+      --panel-2: #172033;       /* script panel */
+      --ink: #e2e8f0;           /* primary text */
+      --ink-dim: #94a3b8;       /* secondary text */
+      --accent: #38bdf8;        /* highlights, arrows, titles */
+      --border: #334155;        /* panel + box borders */
+
+      /* ---- Diagram element colors (used inside the SVGs) ---- */
+      --box-fill: #0b1222;
+      --box-stroke: #475569;
+      --box-ink: #e2e8f0;
+      --line: #64748b;
+      --client: #38bdf8;        /* clients / users  */
+      --service: #a78bfa;       /* app / services   */
+      --data: #34d399;          /* data stores      */
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    /* Deck fills the viewport; diagram on top (large), script on bottom (smaller). */
+    #deck {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      padding: 16px;
+      gap: 12px;
+    }
+
+    /* ---- Top: diagram ---- */
+    #diagram {
+      flex: 1 1 62%;
+      min-height: 0;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      position: relative;
+    }
+    #diagram svg { width: 100%; height: 100%; }
+
+    /* Topic badge, top-left of the diagram panel */
+    #topic {
+      position: absolute;
+      top: 12px;
+      left: 16px;
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ink-dim);
+    }
+
+    /* ---- Bottom: script ---- */
+    #script {
+      flex: 0 0 34%;
+      min-height: 0;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px 22px;
+      overflow-y: auto;
+    }
+    #script-header {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 10px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    #script-num {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--bg);
+      background: var(--accent);
+      border-radius: 999px;
+      padding: 3px 11px;
+      white-space: nowrap;
+    }
+    #script-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--accent);
+    }
+    #script-body {
+      font-size: 15px;
+      line-height: 1.6;
+      color: var(--ink);
+    }
+    #script-body p { margin: 0 0 10px; }
+    #script-body strong { color: var(--ink); }
+    #script-body em { color: var(--ink-dim); font-style: normal; }
+
+    /* ---- Controls ---- */
+    #controls {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      flex: 0 0 auto;
+    }
+    .nav {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--ink);
+      font-size: 20px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+    }
+    .nav:hover:not(:disabled) { background: var(--border); border-color: var(--accent); }
+    .nav:disabled { opacity: 0.35; cursor: default; }
+    #counter {
+      font-size: 14px;
+      color: var(--ink-dim);
+      min-width: 70px;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ---- Reusable SVG diagram helpers ---- */
+    .box rect {
+      fill: var(--box-fill);
+      stroke: var(--box-stroke);
+      stroke-width: 1.5;
+      rx: 10;
+    }
+    .box.client rect { stroke: var(--client); }
+    .box.service rect { stroke: var(--service); }
+    .box.data rect { stroke: var(--data); }
+    .box text {
+      fill: var(--box-ink);
+      font-size: 15px;
+      font-weight: 600;
+      text-anchor: middle;
+      dominant-baseline: middle;
+    }
+    .box .sub {
+      fill: var(--ink-dim);
+      font-size: 11px;
+      font-weight: 500;
+    }
+    .edge {
+      stroke: var(--line);
+      stroke-width: 1.8;
+      fill: none;
+      marker-end: url(#arrow);
+    }
+    .edge-label {
+      fill: var(--ink-dim);
+      font-size: 11px;
+      text-anchor: middle;
+    }
+  </style>
+</head>
+<body>
+  <div id="deck">
+    <section id="diagram" aria-label="System diagram">
+      <span id="topic"></span>
+      <!-- SVG for the active slide is injected here -->
+    </section>
+
+    <section id="script" aria-label="Script">
+      <div id="script-header">
+        <span id="script-num"></span>
+        <span id="script-title"></span>
+      </div>
+      <div id="script-body"></div>
+    </section>
+
+    <div id="controls">
+      <button class="nav" id="prev" aria-label="Previous slide">&#8592;</button>
+      <span id="counter"></span>
+      <button class="nav" id="next" aria-label="Next slide">&#8594;</button>
+    </div>
+  </div>
+
+  <script>
+    // ========================================================================
+    // EDIT THIS: the system being designed.
+    // ========================================================================
+    const TOPIC = "Design Example";
+
+    // A shared <defs> block with the arrowhead marker. Reused by every diagram.
+    const DEFS = `
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto-start-end">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--line)"></path>
+        </marker>
+      </defs>`;
+
+    // Small helper to draw a labeled box. `kind` is "client" | "service" | "data".
+    // `sub` is an optional second line (e.g. a technology or role note).
+    function box(x, y, w, h, label, kind = "", sub = "") {
+      const cx = x + w / 2;
+      const subText = sub
+        ? `<text class="sub" x="${cx}" y="${y + h / 2 + 16}">${sub}</text>`
+        : "";
+      const labelY = sub ? y + h / 2 - 6 : y + h / 2;
+      return `
+        <g class="box ${kind}">
+          <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <text x="${cx}" y="${labelY}">${label}</text>
+          ${subText}
+        </g>`;
+    }
+
+    // Straight edge with an arrowhead and an optional mid-point label.
+    function edge(x1, y1, x2, y2, label = "") {
+      const mx = (x1 + x2) / 2;
+      const my = (y1 + y2) / 2;
+      const lbl = label
+        ? `<text class="edge-label" x="${mx}" y="${my - 6}">${label}</text>`
+        : "";
+      return `<path class="edge" d="M${x1},${y1} L${x2},${y2}"></path>${lbl}`;
+    }
+
+    // ========================================================================
+    // EDIT THIS: one entry per step of the design. Keep the same viewBox so the
+    // diagram scales consistently. Add a new slide for each layer you introduce.
+    // ========================================================================
+    const SLIDES = [
+      {
+        // --- Slide 1: the simplest possible starting point ---
+        diagram: `
+          <svg viewBox="0 0 900 460" xmlns="http://www.w3.org/2000/svg">
+            ${DEFS}
+            ${box(120, 190, 160, 80, "User", "client", "1 client")}
+            ${box(580, 190, 180, 80, "Server", "service", "App process")}
+            ${edge(280, 230, 580, 230, "HTTP request")}
+            ${edge(580, 250, 280, 250, "response")}
+          </svg>`,
+        script: {
+          title: "Start with the simplest thing that works",
+          html: `
+            <p>Before we add anything, let's establish the <strong>simplest version
+            of the system</strong>: a single user talking to a single server over
+            HTTP. One client, one process, no scale, no redundancy.</p>
+            <p>I always start here because it forces us to agree on the
+            <strong>core request/response path</strong> before we complicate it.
+            Everything we add later — databases, caches, replicas, queues — exists
+            to fix a specific problem this naive version has.</p>
+            <p><em>(This is filler text for the example template. Replace it with the
+            real opening of the walkthrough for your topic.)</em></p>`
+        }
+      },
+      {
+        // --- Slide 2: add ONE new thing (persistence) ---
+        diagram: `
+          <svg viewBox="0 0 900 460" xmlns="http://www.w3.org/2000/svg">
+            ${DEFS}
+            ${box(80, 190, 150, 80, "User", "client", "1 client")}
+            ${box(380, 190, 170, 80, "Server", "service", "App process")}
+            ${box(690, 190, 150, 80, "Database", "data", "Persistent store")}
+            ${edge(230, 230, 380, 230, "HTTP")}
+            ${edge(550, 230, 690, 230, "read / write")}
+          </svg>`,
+        script: {
+          title: "Add durable storage",
+          html: `
+            <p>The server alone keeps everything in memory, so a restart loses all
+            state. The first real problem to solve is <strong>durability</strong>, so
+            we introduce a <strong>database</strong> behind the server.</p>
+            <p>The server now owns business logic and talks to the database for
+            reads and writes. We'd choose the store based on the access pattern —
+            a relational database for strong consistency and ad-hoc queries, or a
+            key-value / document store if we mainly need fast lookups by id.</p>
+            <p><em>(Filler text. Each subsequent slide should add exactly one more
+            layer — a cache, a load balancer, replicas, a queue — and explain why.)</em></p>`
+        }
+      }
+    ];
+
+    // ========================================================================
+    // Engine — shared by every deck. You should not need to edit below here.
+    // ========================================================================
+    let index = 0;
+
+    const el = {
+      topic: document.getElementById("topic"),
+      diagram: document.getElementById("diagram"),
+      num: document.getElementById("script-num"),
+      title: document.getElementById("script-title"),
+      body: document.getElementById("script-body"),
+      prev: document.getElementById("prev"),
+      next: document.getElementById("next"),
+      counter: document.getElementById("counter"),
+    };
+
+    function render() {
+      const slide = SLIDES[index];
+      el.topic.textContent = TOPIC;
+
+      // Replace the SVG (keep the #topic badge, which lives before it).
+      const existing = el.diagram.querySelector("svg");
+      if (existing) existing.remove();
+      el.diagram.insertAdjacentHTML("beforeend", slide.diagram);
+
+      el.num.textContent = `Slide ${index + 1} of ${SLIDES.length}`;
+      el.title.textContent = slide.script.title;
+      el.body.innerHTML = slide.script.html;
+
+      el.counter.textContent = `${index + 1} / ${SLIDES.length}`;
+      el.prev.disabled = index === 0;
+      el.next.disabled = index === SLIDES.length - 1;
+
+      el.script.scrollTop = 0;
+    }
+
+    function go(delta) {
+      const next = index + delta;
+      if (next < 0 || next >= SLIDES.length) return;
+      index = next;
+      render();
+    }
+
+    el.prev.addEventListener("click", () => go(-1));
+    el.next.addEventListener("click", () => go(1));
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowLeft") go(-1);
+      if (e.key === "ArrowRight") go(1);
+    });
+
+    // #script is referenced in render() for scroll reset.
+    el.script = document.getElementById("script");
+
+    render();
+  </script>
+</body>
+</html>
