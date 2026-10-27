@@ -1,0 +1,1198 @@
+<!DOCTYPE html>
+<!--
+  ============================================================================
+  SYSTEM DESIGN WALKTHROUGH — DESIGN TWITTER / X
+  ============================================================================
+
+  Built from slides/example.html. Same layout, theme, navigation and engine.
+
+    - Slides 1–2: functional / non-functional requirements (card grids).
+    - Slides 3–18: one scene (SCENE) that grows from a single server to the
+      full system. The central arc is the home timeline: fan-out on read
+      (slide 7) → event bus (8) → fan-out on write (9) → hybrid with a
+      celebrity pull path (10).
+
+  Navigation (shared by every deck): on-screen back/forward arrows, plus the
+  Left/Right arrow keys.
+
+  The file is fully self-contained — no build step, no external dependencies.
+  ============================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Design Twitter / X — System Design Walkthrough</title>
+  <style>
+    :root {
+      /* ---- Theme tokens (edit here, not inline) ---- */
+      --bg: #0f172a;            /* page background */
+      --panel: #1e293b;         /* diagram panel */
+      --panel-2: #172033;       /* script panel */
+      --ink: #e2e8f0;           /* primary text */
+      --ink-dim: #94a3b8;       /* secondary text */
+      --accent: #38bdf8;        /* highlights, arrows, titles, "new" glow */
+      --border: #334155;        /* panel + box borders */
+
+      /* ---- Diagram element colors (used inside the SVGs) ---- */
+      --box-fill: #0b1222;
+      --box-stroke: #475569;
+      --box-ink: #e2e8f0;
+      --line: #64748b;
+      --client: #38bdf8;        /* clients / users / external actors */
+      --service: #a78bfa;       /* app / services   */
+      --data: #34d399;          /* data stores      */
+      --infra: #facc15;         /* gateways, load balancers, CDN, DNS */
+      --stream: #f472b6;        /* queues, event streaming */
+      --ml: #fb923c;            /* ML / batch compute */
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    /* Deck fills the viewport; diagram on top (large), script on bottom (smaller). */
+    #deck {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      padding: 16px;
+      gap: 12px;
+    }
+
+    /* ---- Top: diagram ---- */
+    #diagram {
+      flex: 1 1 62%;
+      min-height: 0;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      position: relative;
+    }
+    #diagram svg { width: 100%; height: 100%; }
+
+    /* Topic badge, top-left of the diagram panel */
+    #topic {
+      position: absolute;
+      top: 12px;
+      left: 16px;
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ink-dim);
+    }
+
+    /* ---- Bottom: script ---- */
+    #script {
+      flex: 0 0 34%;
+      min-height: 0;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px 22px;
+      overflow-y: auto;
+    }
+    #script-header {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 10px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    #script-num {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--bg);
+      background: var(--accent);
+      border-radius: 999px;
+      padding: 3px 11px;
+      white-space: nowrap;
+    }
+    #script-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--accent);
+    }
+    #script-body {
+      font-size: 15px;
+      line-height: 1.6;
+      color: var(--ink);
+    }
+    #script-body p { margin: 0 0 10px; }
+    #script-body strong { color: var(--ink); }
+    #script-body em { color: var(--ink-dim); font-style: normal; }
+
+    /* ---- Controls ---- */
+    #controls {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      flex: 0 0 auto;
+    }
+    .nav {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--ink);
+      font-size: 20px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+    }
+    .nav:hover:not(:disabled) { background: var(--border); border-color: var(--accent); }
+    .nav:disabled { opacity: 0.35; cursor: default; }
+    #counter {
+      font-size: 14px;
+      color: var(--ink-dim);
+      min-width: 70px;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ---- Reusable SVG diagram helpers ---- */
+    .box rect {
+      fill: var(--box-fill);
+      stroke: var(--box-stroke);
+      stroke-width: 1.5;
+      rx: 10;
+    }
+    .box.client rect { stroke: var(--client); }
+    .box.service rect { stroke: var(--service); }
+    .box.data rect { stroke: var(--data); }
+    .box.infra rect { stroke: var(--infra); }
+    .box.stream rect { stroke: var(--stream); }
+    .box.ml rect { stroke: var(--ml); }
+    /* A layer that other edges pass through (e.g. a cache tier). Drawn behind edges. */
+    .box.tier rect { fill: rgba(52, 211, 153, 0.06); stroke-dasharray: 5 5; }
+    /* Something that exists but we are not drawing in detail (other regions, 3rd parties). */
+    .box.ghost rect { fill: transparent; stroke-dasharray: 7 6; }
+    /* Added on the current slide (set automatically by the scene builder). */
+    .box.new rect { stroke-width: 3; filter: drop-shadow(0 0 7px var(--accent)); }
+    .box text {
+      fill: var(--box-ink);
+      font-size: 15px;
+      font-weight: 600;
+      text-anchor: middle;
+      dominant-baseline: middle;
+    }
+    .box .sub {
+      fill: var(--ink-dim);
+      font-size: 11px;
+      font-weight: 500;
+    }
+    .edge {
+      stroke: var(--line);
+      stroke-width: 1.8;
+      fill: none;
+      marker-end: url(#arrow);
+    }
+    .edge.both { marker-start: url(#arrow-start); }      /* two-way */
+    .edge.plain { marker-end: none; }                    /* no arrowhead */
+    .edge.async { stroke-dasharray: 6 5; }               /* async / background flow */
+    .edge.new { stroke: var(--accent); marker-end: url(#arrow-new); }
+    .edge.new.both { marker-start: url(#arrow-start-new); }
+    .edge.new.plain { marker-end: none; }
+    .edge-label {
+      fill: var(--ink-dim);
+      font-size: 11px;
+      text-anchor: middle;
+      /* Halo in the panel color keeps labels readable where they cross lines. */
+      paint-order: stroke;
+      stroke: var(--panel);
+      stroke-width: 4px;
+      stroke-linejoin: round;
+    }
+    .edge-label.new { fill: var(--accent); }
+
+    /* ---- Requirement slides (slides 1–2) ---- */
+    .heading { fill: var(--accent); font-size: 24px; font-weight: 700; }
+    .subheading { fill: var(--ink-dim); font-size: 14px; }
+    .card rect { fill: var(--box-fill); stroke: var(--box-stroke); stroke-width: 1.5; }
+    .card .badge { fill: var(--accent); }
+    .card .badge-num { fill: var(--bg); font-size: 13px; font-weight: 700; text-anchor: middle; dominant-baseline: central; }
+    .card .title { fill: var(--box-ink); font-size: 17px; font-weight: 700; }
+    .card .line { fill: var(--ink-dim); font-size: 13.5px; }
+    .panel-box { fill: var(--box-fill); stroke: var(--accent); stroke-width: 1.5; }
+    .panel-title { fill: var(--accent); font-size: 17px; font-weight: 700; }
+    .strip { fill: transparent; stroke: var(--box-stroke); stroke-width: 1.5; stroke-dasharray: 7 6; }
+    .strip-title { fill: var(--ink); font-size: 15px; font-weight: 700; }
+    .strip-text { fill: var(--ink-dim); font-size: 13.5px; }
+    .est-k { fill: var(--accent); font-size: 13.5px; font-weight: 700; }
+    .est-v { fill: var(--ink); font-size: 13.5px; }
+  </style>
+</head>
+<body>
+  <div id="deck">
+    <section id="diagram" aria-label="System diagram">
+      <span id="topic"></span>
+      <!-- SVG for the active slide is injected here -->
+    </section>
+
+    <section id="script" aria-label="Script">
+      <div id="script-header">
+        <span id="script-num"></span>
+        <span id="script-title"></span>
+      </div>
+      <div id="script-body"></div>
+    </section>
+
+    <div id="controls">
+      <button class="nav" id="prev" aria-label="Previous slide">&#8592;</button>
+      <span id="counter"></span>
+      <button class="nav" id="next" aria-label="Next slide">&#8594;</button>
+    </div>
+  </div>
+
+  <script>
+    // ========================================================================
+    // The system being designed.
+    // ========================================================================
+    const TOPIC = "Design Twitter / X";
+
+    // Shared <defs>: default arrowhead, a start-reversed variant for two-way
+    // edges, and accent-colored variants for edges added on the current slide.
+    const DEFS = `
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--line)"></path>
+        </marker>
+        <marker id="arrow-start" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--line)"></path>
+        </marker>
+        <marker id="arrow-new" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"></path>
+        </marker>
+        <marker id="arrow-start-new" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"></path>
+        </marker>
+      </defs>`;
+
+    // Labeled box. `kind` is a space-separated class list:
+    //   color: "client" | "service" | "data" | "infra" | "stream" | "ml"
+    //   style: optionally plus "tier" (pass-through layer) or "ghost" (dashed)
+    //   "new" is added automatically by the scene builder.
+    // `sub` is an optional second line (e.g. a technology or role note).
+    function box(x, y, w, h, label, kind = "", sub = "") {
+      const cx = x + w / 2;
+      const subText = sub
+        ? `<text class="sub" x="${cx}" y="${y + h / 2 + 12}">${sub}</text>`
+        : "";
+      const labelY = sub ? y + h / 2 - 7 : y + h / 2;
+      return `
+        <g class="box ${kind}">
+          <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <text x="${cx}" y="${labelY}">${label}</text>
+          ${subText}
+        </g>`;
+    }
+
+    // ========================================================================
+    // Requirement-slide helpers (slides 1–2). Use viewBox 0 0 1200 640.
+    // ========================================================================
+
+    // One numbered requirement card: a title plus 1–3 short lines.
+    function card(x, y, w, h, num, title, lines) {
+      const body = lines
+        .map((l, i) => `<text class="line" x="${x + 18}" y="${y + 66 + i * 21}">${l}</text>`)
+        .join("");
+      return `
+        <g class="card">
+          <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <circle class="badge" cx="${x + 30}" cy="${y + 30}" r="13"></circle>
+          <text class="badge-num" x="${x + 30}" y="${y + 30}">${num}</text>
+          <text class="title" x="${x + 52}" y="${y + 36}">${title}</text>
+          ${body}
+        </g>`;
+    }
+
+    // A grid of cards, numbered 1..N. items = [[title, [line, line]], ...]
+    function cardGrid(x0, y0, w, h, gap, cols, items) {
+      return items
+        .map((it, i) => {
+          const c = i % cols, r = Math.floor(i / cols);
+          return card(x0 + c * (w + gap), y0 + r * (h + gap), w, h, i + 1, it[0], it[1]);
+        })
+        .join("");
+    }
+
+    // Dashed strip with a title and lines (out-of-scope list, key takeaway).
+    function strip(x, y, w, h, title, lines) {
+      const body = lines
+        .map((l, i) => `<text class="strip-text" x="${x + 24}" y="${y + 64 + i * 22}">${l}</text>`)
+        .join("");
+      return `
+        <rect class="strip" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+        <text class="strip-title" x="${x + 24}" y="${y + 34}">${title}</text>
+        ${body}`;
+    }
+
+    // Accent-bordered panel of back-of-the-envelope estimates.
+    // rows = [[heading, [value, value]], ...]
+    function estimatesPanel(x, y, w, h, title, rows) {
+      let cy = y + 66;
+      const body = rows
+        .map(([k, vs]) => {
+          let s = `<text class="est-k" x="${x + 20}" y="${cy}">${k}</text>`;
+          vs.forEach((v) => { cy += 21; s += `<text class="est-v" x="${x + 20}" y="${cy}">${v}</text>`; });
+          cy += 36;
+          return s;
+        })
+        .join("");
+      return `
+        <rect class="panel-box" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+        <text class="panel-title" x="${x + 20}" y="${y + 32}">${title}</text>
+        ${body}`;
+    }
+
+    // ========================================================================
+    // Scene builder — shared by every deck. You should not need to edit this.
+    //
+    //   const scene = sceneBuilder(SCENE);
+    //   scene({ add: ["client", "server", "e_client_server"] })  // -> <svg>
+    //   scene({ add: ["db", "e_server_db"] })                    // cumulative
+    //   scene({ add: [...], remove: ["server"] })                // replace a box
+    //   scene()                                                  // no change
+    // ========================================================================
+
+    // Edge label position: midpoint of the longest segment. Above horizontal /
+    // diagonal segments, to the right of vertical ones. Override with `lp`.
+    function labelPos(e) {
+      if (e.lp) return e.lp;
+      let best = null, len = -1;
+      for (let i = 0; i < e.pts.length - 1; i++) {
+        const [x1, y1] = e.pts[i], [x2, y2] = e.pts[i + 1];
+        const l = Math.hypot(x2 - x1, y2 - y1);
+        if (l > len) { len = l; best = [x1, y1, x2, y2]; }
+      }
+      const [x1, y1, x2, y2] = best;
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+      return x1 === x2 ? [mx + 7, my + 4, "start"] : [mx, my - 7, "middle"];
+    }
+
+    function sceneBuilder(def) {
+      const boxes = Object.fromEntries(def.boxes.map((b) => [b.id, b]));
+      const visible = new Set();
+
+      return function step({ add = [], remove = [] } = {}) {
+        remove.forEach((id) => visible.delete(id));
+        add.forEach((id) => visible.add(id));
+        const fresh = new Set(add);
+        const isOn = (id) => visible.has(id);
+
+        const lines = [], labels = [], back = [], front = [], pts = [];
+
+        const drawEdge = (pathPts, cls, label, lp) => {
+          const d = pathPts.map((p, i) => `${i ? "L" : "M"}${p[0]},${p[1]}`).join(" ");
+          lines.push(`<path class="edge ${cls}" d="${d}"></path>`);
+          pathPts.forEach((p) => pts.push(p));
+          if (label) {
+            const [lx, ly, anchor] = lp;
+            const nw = cls.includes("new") ? "new" : "";
+            labels.push(`<text class="edge-label ${nw}" x="${lx}" y="${ly}" style="text-anchor:${anchor}">${label}</text>`);
+          }
+        };
+
+        // Boxes ("tier" boxes go behind the edges, everything else in front).
+        def.boxes.forEach((b) => {
+          if (!isOn(b.id)) return;
+          const kind = `${b.kind}${fresh.has(b.id) ? " new" : ""}`;
+          const svg = box(b.x, b.y, b.w, b.h, b.label, kind, b.sub || "");
+          (b.kind.includes("tier") ? back : front).push(svg);
+          pts.push([b.x, b.y], [b.x + b.w, b.y + b.h]);
+        });
+
+        // Explicit edges: shown when added AND both endpoints are visible.
+        def.edges.forEach((e) => {
+          if (!isOn(e.id) || !isOn(e.from) || !isOn(e.to)) return;
+          const cls = [
+            fresh.has(e.id) ? "new" : "",
+            e.both ? "both" : "",
+            e.async ? "async" : "",
+          ].join(" ");
+          drawEdge(e.pts, cls, e.label, e.label ? labelPos(e) : null);
+        });
+
+        // Optional "bus": a hub (gateway / load balancer) fans out to member
+        // boxes via a vertical line. Members join the bus as they are added.
+        const bus = def.bus;
+        if (bus && isOn(bus.hub)) {
+          const members = bus.members.filter(isOn).map((id) => boxes[id]);
+          if (members.length) {
+            const hubNew = fresh.has(bus.hub);
+            const ys = members.map((b) => b.y + b.h / 2).concat([bus.hubY]);
+            const top = Math.min(...ys), bottom = Math.max(...ys);
+            const pn = hubNew ? "new plain" : "plain";
+            drawEdge([[bus.hubX, bus.hubY], [bus.x, bus.hubY]], pn, bus.label, bus.lp);
+            drawEdge([[bus.x, top], [bus.x, bottom]], pn);
+            members.forEach((b) => {
+              const y = b.y + b.h / 2;
+              drawEdge([[bus.x, y], [b.x, y]], hubNew || fresh.has(b.id) ? "new" : "");
+            });
+          }
+        }
+
+        // Auto-fit the viewBox to what is visible (with a minimum size).
+        const pad = 40;
+        let x0 = Math.min(...pts.map((p) => p[0])) - pad;
+        let y0 = Math.min(...pts.map((p) => p[1])) - pad;
+        let x1 = Math.max(...pts.map((p) => p[0])) + pad;
+        let y1 = Math.max(...pts.map((p) => p[1])) + pad;
+        const minW = 900, minH = 460;
+        if (x1 - x0 < minW) { const g = (minW - (x1 - x0)) / 2; x0 -= g; x1 += g; }
+        if (y1 - y0 < minH) { const g = (minH - (y1 - y0)) / 2; y0 -= g; y1 += g; }
+
+        return `
+          <svg viewBox="${x0} ${y0} ${x1 - x0} ${y1 - y0}" xmlns="http://www.w3.org/2000/svg">
+            ${DEFS}
+            ${back.join("")}
+            ${lines.join("")}
+            ${front.join("")}
+            ${labels.join("")}
+          </svg>`;
+      };
+    }
+
+    // ========================================================================
+    // SCENE — every component of the FINAL Twitter/X system.
+    //
+    // Columns: clients | edge (CDN, gateway) | services | cache tier | data |
+    //          async workers | event bus. Row pitch 70px (rows at y = 20, 90,
+    //          160, ... 580); each service sits on the same row as the store it
+    //          owns, and each async worker on the row of the store it writes.
+    // Writes into Kafka route over the top (Tweet Service) and under the
+    // bottom (Engagement Service) so they never cross a box.
+    // ========================================================================
+    const SCENE = {
+      boxes: [
+        // Clients
+        { id: "client",     x: 40,   y: 290, w: 180, h: 90,  label: "Client Apps", kind: "client", sub: "web · iOS · Android" },
+        // Edge / infra
+        { id: "cdn",        x: 290,  y: 20,  w: 160, h: 54,  label: "CDN", kind: "infra", sub: "edge-cached media" },
+        { id: "gateway",    x: 290,  y: 300, w: 160, h: 70,  label: "API Gateway", kind: "infra", sub: "auth · rate limits · routing" },
+        // Slide 3–4 only: the naive monolith and its single database
+        { id: "server",     x: 530,  y: 300, w: 190, h: 70,  label: "App Server", kind: "service", sub: "one process does it all" },
+        { id: "db",         x: 940,  y: 300, w: 180, h: 70,  label: "Database", kind: "data", sub: "users · tweets · follows" },
+        // Services
+        { id: "tweet",      x: 530,  y: 20,  w: 190, h: 54,  label: "Tweet Service", kind: "service", sub: "post · read · Snowflake IDs" },
+        { id: "media",      x: 530,  y: 90,  w: 190, h: 54,  label: "Media Service", kind: "service", sub: "upload · transcode" },
+        { id: "graph",      x: 530,  y: 160, w: 190, h: 54,  label: "Graph Service", kind: "service", sub: "follow · unfollow" },
+        { id: "notif",      x: 530,  y: 230, w: 190, h: 54,  label: "Notification Svc", kind: "service", sub: "notification inbox" },
+        { id: "search",     x: 530,  y: 300, w: 190, h: 54,  label: "Search Service", kind: "service", sub: "query → ranked tweets" },
+        { id: "trends",     x: 530,  y: 370, w: 190, h: 54,  label: "Trends Service", kind: "service", sub: "top topics per region" },
+        { id: "timeline",   x: 530,  y: 440, w: 190, h: 124, label: "Timeline Service", kind: "service", sub: "home · user timelines" },
+        { id: "engage",     x: 530,  y: 580, w: 190, h: 54,  label: "Engagement Svc", kind: "service", sub: "like · retweet · reply" },
+        // Cache tier (edges pass through it)
+        { id: "cache",      x: 770,  y: 10,  w: 120, h: 272, label: "Cache Tier", kind: "data tier", sub: "hot tweets · users" },
+        // Data stores
+        { id: "tweetdb",    x: 940,  y: 20,  w: 180, h: 54,  label: "Tweet Store", kind: "data", sub: "sharded by tweet ID" },
+        { id: "blob",       x: 940,  y: 90,  w: 180, h: 54,  label: "Media Blob Store", kind: "data", sub: "images · video variants" },
+        { id: "graphdb",    x: 940,  y: 160, w: 180, h: 54,  label: "Social Graph", kind: "data", sub: "followers · following" },
+        { id: "notifdb",    x: 940,  y: 230, w: 180, h: 54,  label: "Notification Store", kind: "data", sub: "per-user inbox" },
+        { id: "searchidx",  x: 940,  y: 300, w: 180, h: 54,  label: "Search Index", kind: "data", sub: "inverted · time-sliced" },
+        { id: "trendstore", x: 940,  y: 370, w: 180, h: 54,  label: "Trends Store", kind: "data", sub: "top-K per region" },
+        { id: "tlcache",    x: 940,  y: 440, w: 180, h: 54,  label: "Timeline Cache", kind: "data", sub: "Redis · ~800 IDs / user" },
+        { id: "ranker",     x: 940,  y: 510, w: 180, h: 54,  label: "Ranking Service", kind: "ml", sub: "For You · ML scoring" },
+        { id: "counters",   x: 940,  y: 580, w: 180, h: 54,  label: "Counter Store", kind: "data", sub: "likes · RTs · replies" },
+        // Async workers
+        { id: "regions",    x: 1200, y: 20,  w: 190, h: 54,  label: "Other Regions ×N", kind: "ghost", sub: "same stack · replicated" },
+        { id: "push",       x: 1200, y: 150, w: 190, h: 54,  label: "APNs / FCM", kind: "ghost", sub: "push to devices" },
+        { id: "notifw",     x: 1200, y: 230, w: 190, h: 54,  label: "Notification Workers", kind: "service", sub: "who to notify, dedupe" },
+        { id: "indexer",    x: 1200, y: 300, w: 190, h: 54,  label: "Search Indexer", kind: "service", sub: "tokenize · index in secs" },
+        { id: "trendproc",  x: 1200, y: 370, w: 190, h: 54,  label: "Trend Detection", kind: "stream", sub: "windowed counts · spikes" },
+        { id: "fanout",     x: 1200, y: 440, w: 190, h: 54,  label: "Fan-out Workers", kind: "service", sub: "push IDs to followers" },
+        { id: "mlpipe",     x: 1200, y: 510, w: 190, h: 54,  label: "ML Pipeline", kind: "ml", sub: "features · training" },
+        // Event bus
+        { id: "kafka",      x: 1460, y: 230, w: 150, h: 334, label: "Event Bus", kind: "stream", sub: "Kafka" },
+      ],
+      edges: [
+        // Naive starting point
+        { id: "e_client_server", from: "client", to: "server", pts: [[220, 335], [530, 335]], label: "HTTPS", both: true },
+        { id: "e_server_db", from: "server", to: "db", pts: [[720, 335], [940, 335]], label: "SQL", both: true },
+        // Edge
+        { id: "e_client_gateway", from: "client", to: "gateway", pts: [[220, 335], [290, 335]], both: true },
+        { id: "e_cdn_client", from: "cdn", to: "client", pts: [[290, 47], [130, 47], [130, 290]], label: "images · video", lp: [210, 40, "middle"] },
+        { id: "e_cdn_blob", from: "cdn", to: "blob", pts: [[370, 20], [370, -40], [1160, -40], [1160, 117], [1120, 117]], label: "origin pull on cache miss", lp: [560, -47, "middle"] },
+        // Services → their stores
+        { id: "e_tweet_tweetdb", from: "tweet", to: "tweetdb", pts: [[720, 47], [940, 47]] },
+        { id: "e_media_blob", from: "media", to: "blob", pts: [[720, 117], [940, 117]] },
+        { id: "e_graph_graphdb", from: "graph", to: "graphdb", pts: [[720, 187], [940, 187]] },
+        { id: "e_notif_notifdb", from: "notif", to: "notifdb", pts: [[720, 257], [940, 257]] },
+        { id: "e_search_idx", from: "search", to: "searchidx", pts: [[720, 327], [940, 327]] },
+        { id: "e_trends_store", from: "trends", to: "trendstore", pts: [[720, 397], [940, 397]] },
+        { id: "e_tl_tlcache", from: "timeline", to: "tlcache", pts: [[720, 480], [940, 480]], label: "timeline IDs", lp: [830, 473, "middle"] },
+        { id: "e_tl_ranker", from: "timeline", to: "ranker", pts: [[720, 537], [940, 537]], label: "candidates → ranked" },
+        { id: "e_engage_counters", from: "engage", to: "counters", pts: [[720, 607], [940, 607]] },
+        // Timeline reads: naive pull, later hydration + celebrity pull
+        { id: "e_tl_pull", from: "timeline", to: "tweetdb", pts: [[720, 458], [915, 458], [915, 62], [940, 62]], label: "query followees' tweets", lp: [908, 430, "end"] },
+        { id: "e_tl_hydrate", from: "timeline", to: "tweetdb", pts: [[720, 458], [915, 458], [915, 62], [940, 62]], label: "hydrate", lp: [908, 430, "end"] },
+        { id: "e_tl_celeb", from: "timeline", to: "cache", pts: [[720, 446], [800, 446], [800, 282]], label: "pull celeb tweets", lp: [807, 360, "start"] },
+        // Into the event bus
+        { id: "e_tweet_kafka", from: "tweet", to: "kafka", pts: [[625, 20], [625, -15], [1535, -15], [1535, 230]], label: "TweetCreated", lp: [1080, -22, "middle"], async: true },
+        { id: "e_engage_kafka", from: "engage", to: "kafka", pts: [[625, 634], [625, 665], [1535, 665], [1535, 564]], label: "Liked · Retweeted · Replied · Followed", lp: [1080, 658, "middle"], async: true },
+        // Event bus → workers
+        { id: "e_kafka_notifw", from: "kafka", to: "notifw", pts: [[1460, 257], [1390, 257]] },
+        { id: "e_kafka_indexer", from: "kafka", to: "indexer", pts: [[1460, 327], [1390, 327]] },
+        { id: "e_kafka_trend", from: "kafka", to: "trendproc", pts: [[1460, 397], [1390, 397]] },
+        { id: "e_kafka_fanout", from: "kafka", to: "fanout", pts: [[1460, 467], [1390, 467]] },
+        { id: "e_kafka_ml", from: "kafka", to: "mlpipe", pts: [[1460, 537], [1390, 537]] },
+        // Workers → stores
+        { id: "e_graphdb_fanout", from: "graphdb", to: "fanout", pts: [[1120, 187], [1160, 187], [1160, 457], [1200, 457]], label: "followers", lp: [1160, 180, "middle"] },
+        { id: "e_fanout_tlcache", from: "fanout", to: "tlcache", pts: [[1200, 480], [1120, 480]] },
+        { id: "e_notifw_notifdb", from: "notifw", to: "notifdb", pts: [[1200, 257], [1120, 257]] },
+        { id: "e_notifw_push", from: "notifw", to: "push", pts: [[1295, 230], [1295, 204]] },
+        { id: "e_indexer_idx", from: "indexer", to: "searchidx", pts: [[1200, 327], [1120, 327]] },
+        { id: "e_trend_store", from: "trendproc", to: "trendstore", pts: [[1200, 397], [1120, 397]] },
+        { id: "e_ml_ranker", from: "mlpipe", to: "ranker", pts: [[1200, 537], [1120, 537]] },
+        // Multi-region
+        { id: "e_regions", from: "tweetdb", to: "regions", pts: [[1120, 47], [1200, 47]], both: true, async: true },
+      ],
+      // The API gateway fans out to every service along a vertical bus.
+      bus: {
+        hub: "gateway", hubX: 450, hubY: 335, x: 490,
+        members: ["tweet", "media", "graph", "notif", "search", "trends", "timeline", "engage"],
+      },
+    };
+
+    const scene = sceneBuilder(SCENE);
+
+    // ========================================================================
+    // SLIDES
+    // ========================================================================
+    const SLIDES = [
+      {
+        // --- Slide 1: functional requirements ---
+        diagram: `
+          <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
+            <text class="heading" x="30" y="42">Functional requirements</text>
+            <text class="subheading" x="330" y="42">what a user can do</text>
+            ${cardGrid(30, 66, 370, 128, 15, 3, [
+              ["Post a tweet", ["Up to 280 chars, optional images / video", "Replies, retweets and quote tweets"]],
+              ["Home timeline", ["Following: accounts you follow, newest first", "For You: an algorithmically ranked feed"]],
+              ["User timeline", ["A profile page of one user's tweets", "Including their replies and retweets"]],
+              ["Follow / unfollow", ["Asymmetric: no approval needed", "A few followers … 100M+ followers"]],
+              ["Engagement", ["Like, retweet, reply", "Counts shown on every tweet"]],
+              ["Search", ["Full-text over tweets and hashtags", "New tweets searchable in seconds"]],
+              ["Trending topics", ["What's spiking right now", "Computed per region"]],
+              ["Notifications", ["Mentions, likes, follows, replies", "In-app inbox + mobile push"]],
+              ["Media", ["Upload images and video", "Served fast, worldwide"]],
+            ])}
+            ${strip(30, 512, 1140, 100, "Out of scope (mentioned, not designed)", [
+              "Direct messages  ·  Spaces  ·  Ads  ·  Trust &amp; safety / moderation  ·  Signup &amp; auth  ·  Payments / Premium",
+              "The internals of the ranking model — we design the data flowing in and out of it, not the model itself",
+            ])}
+          </svg>`,
+        script: {
+          title: "Functional requirements: what we're building",
+          html: `
+            <p>Before drawing anything I want to pin down <strong>what we're building</strong>,
+            because Twitter, now X, has grown into a lot of products. I'll scope this to the
+            core microblogging experience.</p>
+            <p>The write side is <strong>posting a tweet</strong>: up to 280 characters, with
+            optional images or video, plus the variations on that (replies, retweets and
+            quote tweets). The read side is where the interesting problems are. The
+            <strong>home timeline</strong> comes in two flavors. "Following" is the tweets of
+            everyone you follow, newest first. "For You" is a ranked feed that can also
+            include accounts you don't follow. There's also the <strong>user timeline</strong>,
+            which is just one person's profile page.</p>
+            <p>Then the <strong>social graph</strong>: following and unfollowing. Unlike
+            Facebook friendship, it's <em>asymmetric</em>: I can follow you without your
+            approval. That's why follower counts range from a handful to over a hundred million,
+            and that skew is going to drive the hardest part of the design.</p>
+            <p>Around that are <strong>engagement</strong> (likes, retweets and replies, with
+            visible counts), <strong>search</strong> over tweets and hashtags that's close to
+            real time, <strong>trending topics</strong> per region,
+            <strong>notifications</strong> both in-app and as mobile push, and
+            <strong>media</strong> upload and delivery.</p>
+            <p>I'm leaving out DMs, Spaces, ads, moderation, signup and auth, and
+            payments. They're real systems, but each is its own interview. I'll treat the
+            <strong>ranking model</strong> as a box: I'll design how data flows into it and how
+            the timeline uses its output, but not the model architecture.</p>`
+        }
+      },
+      {
+        // --- Slide 2: non-functional requirements + estimates ---
+        diagram: `
+          <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
+            <text class="heading" x="30" y="42">Non-functional requirements</text>
+            <text class="subheading" x="372" y="42">how well it has to do it</text>
+            ${cardGrid(30, 66, 255, 128, 13, 3, [
+              ["Scale", ["500M MAU · 250M DAU", "500M new tweets / day"]],
+              ["Skewed graph", ["Median: ~100s of followers", "Top accounts: 100M+"]],
+              ["Read-heavy", ["~100 reads per write", "Optimize the read path"]],
+              ["Low latency", ["Timeline load < 200 ms p99", "Tweet visible to followers < 5 s"]],
+              ["99.99% reads", ["Timeline must always load", "Ranking, search degrade"]],
+              ["Durability", ["Never lose a tweet", "or a follow edge"]],
+              ["Consistency", ["Read-your-own-tweets", "Eventual for everything else"]],
+              ["Global", ["Users on every continent", "Serve from nearby regions"]],
+              ["Bursty", ["Breaking news, sports finals", "10× spikes in minutes"]],
+            ])}
+            ${estimatesPanel(832, 66, 338, 330, "Back of the envelope", [
+              ["Tweet writes", ["500M / day ≈ 6K/s avg · ~20K/s peak"]],
+              ["Timeline reads", ["250M × 20 loads ≈ 60K QPS · 200K peak"]],
+              ["Fan-out", ["500M tweets × ~200 followers", "≈ 100B timeline inserts/day ≈ 1M/s"]],
+              ["Tweet storage", ["~300 B × 500M ≈ 150 GB/day ≈ 55 TB/yr"]],
+              ["Media", ["10% with media × ~1 MB ≈ 50 TB/day"]],
+            ])}
+            ${strip(30, 496, 1140, 100, "Takeaway: the problem is fan-out, not storage", [
+              "Pull at read time → cheap writes, slow scatter-gather reads   ·   Push at write time → instant reads, celebrities explode",
+              "So: a hybrid — push for most accounts, pull for the few with huge follower counts. Media → blob store + CDN.",
+            ])}
+          </svg>`,
+        script: {
+          title: "Non-functional requirements and back-of-the-envelope math",
+          html: `
+            <p>Now the qualities the system needs. On <strong>scale</strong>, I'll assume about
+            500 million monthly users and 250 million daily, posting around 500 million tweets a
+            day. The graph is <strong>heavily skewed</strong>: most accounts have a few hundred
+            followers, but the biggest have over a hundred million.</p>
+            <p>The workload is very <strong>read-heavy</strong>, roughly a hundred timeline
+            reads per tweet written, so I'll optimize the read path even at the cost of extra
+            work on writes. On <strong>latency</strong>, the timeline should load in under 200
+            milliseconds at p99, and a new tweet should show up in followers' timelines within a
+            few seconds. Reads need <strong>four nines</strong>: the timeline must always load,
+            even if ranking, search or trends are having a bad day.</p>
+            <p><strong>Durability</strong> matters for tweets and follow edges. On
+            <strong>consistency</strong>, the only hard rule is that you see your own tweet right
+            away. Like counts, follower counts, and when exactly your tweet reaches a follower
+            can all be eventually consistent. Traffic is global and <strong>bursty</strong>: a
+            World Cup goal or breaking news can spike write volume tenfold in minutes.</p>
+            <p>Some quick numbers. 500 million tweets a day is about <strong>6K writes per
+            second</strong>, maybe 20K at peak. That's small. Timeline reads are about
+            <strong>60K QPS</strong> on average and a couple hundred thousand at peak. The scary
+            number is <strong>fan-out</strong>: if every tweet is copied into each follower's
+            timeline, 500 million tweets times an average of ~200 followers is a hundred billion
+            inserts a day, or about <strong>a million per second</strong>. Tweet text is only
+            about 150 GB a day, while media is closer to 50 TB a day, which means a blob store
+            and a CDN.</p>
+            <p>The takeaway: <strong>storage isn't the problem; fan-out is</strong>. Pulling at
+            read time keeps writes cheap but makes reads slow. Pushing at write time makes reads
+            instant, but a single celebrity tweet turns into a hundred million writes. We'll end
+            up with a <strong>hybrid</strong>, and the next several slides build up to it.</p>`
+        }
+      },
+      {
+        // --- Slide 3: simplest possible starting point ---
+        diagram: scene({ add: ["client", "server", "e_client_server"] }),
+        script: {
+          title: "Start simple: one client, one server",
+          html: `
+            <p>Let's start with the most naive thing that could work: <strong>client apps
+            talking to one application server</strong> over HTTPS. The API surface is small.
+            <em>POST /tweets</em> creates a tweet. <em>GET /timeline/home</em> and
+            <em>GET /users/:id/tweets</em> read the two kinds of timeline.
+            <em>POST /follow</em>, <em>POST /like</em> and <em>GET /search</em> cover most of
+            the rest.</p>
+            <p>The clients are the web app and the iOS and Android apps. One detail worth
+            noting now: timelines are <strong>paginated with a cursor</strong>, not page
+            numbers. The client says "give me 20 tweets older than tweet ID X". New tweets
+            arrive at the top all the time, so offset pagination would show duplicates and skip
+            items. Cursors stay stable, and they'll map nicely onto the data structures we
+            build later.</p>
+            <p>Obviously one server won't handle 200K QPS, but I like to agree on the
+            request/response shape first. Everything we add from here exists to fix a specific
+            problem with this version.</p>`
+        }
+      },
+      {
+        // --- Slide 4: a single database ---
+        diagram: scene({ add: ["db", "e_server_db"] }),
+        script: {
+          title: "Add a database, and see why the naive timeline breaks",
+          html: `
+            <p>The server needs somewhere durable to keep things, so let's add a
+            <strong>database</strong> with three core tables. <em>Users</em> holds the profile.
+            <em>Tweets</em> holds the tweet ID, author ID, text, media references, a
+            reply-to or retweet-of pointer, and a creation time. <em>Follows</em> is just a
+            (follower, followee) edge list.</p>
+            <p>With that schema the home timeline is one query: find everyone I follow, fetch
+            their tweets, sort by time, and take the top 20. That's a join of
+            <em>follows</em> with <em>tweets</em>, ordered by <em>created_at</em>. For a
+            prototype with a thousand users it's fine.</p>
+            <p>At our scale it falls apart for two reasons. First, the <strong>data doesn't fit
+            on one machine</strong>: tens of terabytes of tweets a year, plus indexes. Once we
+            shard it, "tweets by everyone I follow" becomes a <strong>scatter-gather</strong>
+            across many shards for every timeline load. Second, it's the <strong>hot
+            path</strong>. 200K timeline loads per second, each touching hundreds of followees,
+            each needing a sort, means tens of millions of row reads per second, all on the
+            latency-critical path.</p>
+            <p>So I'll keep the logical data model but split the system up. Each piece of
+            data gets its own service and store, sized for its own access pattern. Then I'll
+            come back and fix the timeline properly.</p>`
+        }
+      },
+      {
+        // --- Slide 5: gateway + tweet service ---
+        diagram: scene({
+          add: ["gateway", "tweet", "tweetdb", "e_client_gateway", "e_tweet_tweetdb"],
+          remove: ["server", "db"],
+        }),
+        script: {
+          title: "An API gateway and the Tweet Service",
+          html: `
+            <p>First the monolith gets replaced by an <strong>API gateway</strong> in front of
+            separate services. The gateway terminates TLS, authenticates the request,
+            enforces <strong>rate limits</strong> (important for a public API that bots love
+            to hammer), and routes each call to the right service. The services behind it are
+            stateless and scale horizontally.</p>
+            <p>The first service is the <strong>Tweet Service</strong>, which owns creating
+            and reading tweets. Its store is a <strong>Tweet Store</strong> sharded by
+            <strong>tweet ID</strong>. Looking up a tweet by ID is the dominant access pattern,
+            and it spreads the load evenly. Sharding by author would put a celebrity's whole
+            history on one hot shard.</p>
+            <p>The IDs themselves matter. I'd use <strong>Snowflake-style IDs</strong>:
+            64-bit integers made of a millisecond timestamp, a machine ID, and a sequence
+            number. Any server can generate them without coordination, and they're
+            <strong>roughly time-ordered</strong>. That means sorting by ID is sorting by time,
+            which gives us the timeline cursor from earlier for free.</p>
+            <p>For the store itself, a wide-column store like Cassandra or a sharded MySQL
+            (which is what Twitter actually ran for years) both work. Tweets are immutable
+            apart from deletes, so this data is easy to replicate and cache. Writes go to a
+            quorum of replicas, so an acknowledged tweet is durable.</p>`
+        }
+      },
+      {
+        // --- Slide 6: social graph ---
+        diagram: scene({ add: ["graph", "graphdb", "e_graph_graphdb"] }),
+        script: {
+          title: "The social graph",
+          html: `
+            <p>Next is the <strong>Graph Service</strong>, which owns follow relationships.
+            The data is simple: an edge from follower to followee. It has to answer two
+            questions quickly, in opposite directions. <strong>Who do I follow?</strong> is
+            needed to build my timeline. <strong>Who follows X?</strong> is needed to deliver
+            X's tweets. So I'd store every edge <strong>twice</strong>, once keyed by follower
+            and once keyed by followee, and shard each copy by its key. The write costs double,
+            but both lookups become a single-partition range scan.</p>
+            <p>The follower list for a big account can have a hundred million entries, so it's
+            stored as a paginated list that consumers stream through in chunks, never loaded in
+            one call. Follower and following <strong>counts</strong> are kept as separate
+            counters; counting a hundred million rows on every profile view would be absurd.</p>
+            <p>Twitter built a dedicated store for this called FlockDB. A wide-column
+            store, or sharded MySQL with good indexes, works too, since we never need multi-hop
+            graph traversals on the hot path. "Who to follow" suggestions would need those, but
+            they run offline.</p>`
+        }
+      },
+      {
+        // --- Slide 7: naive pull timeline ---
+        diagram: scene({ add: ["timeline", "e_tl_pull"] }),
+        script: {
+          title: "Timeline Service, version 1: fan-out on read",
+          html: `
+            <p>Now the <strong>Timeline Service</strong>, which serves the home and user
+            timelines. The <strong>user timeline</strong> is easy: one author's tweets in ID
+            order. A secondary index on (author, tweet ID) handles it.</p>
+            <p>For the <strong>home timeline</strong>, version one is the
+            <strong>pull model</strong>, also called fan-out on read. When you open the app,
+            the service gets the list of accounts you follow from the graph, queries each of
+            their recent tweets, merges the lists, and returns the newest 20.</p>
+            <p>Its advantages are real. Writes are trivial: a tweet is stored once. Nothing is
+            wasted on inactive users. A new follow or an unfollow takes effect
+            immediately.</p>
+            <p>But look at the read cost. If you follow 300 accounts, that's 300 lookups
+            spread across shards, then a merge, on <strong>every</strong> timeline load, at
+            200K loads per second. Tail latency also compounds: when you fan out to 300 shards,
+            the request is as slow as the slowest of them. A p99 of 200 milliseconds isn't
+            realistic this way. We're doing the expensive work at the worst moment, while a
+            user is waiting, and repeating it for every refresh even when nothing has
+            changed.</p>
+            <p>Reads outnumber writes about a hundred to one, so I'd rather move that work to
+            write time. To do that safely we need a way to react to new tweets
+            asynchronously.</p>`
+        }
+      },
+      {
+        // --- Slide 8: event bus ---
+        diagram: scene({ add: ["kafka", "e_tweet_kafka"] }),
+        script: {
+          title: "An event bus for everything that happens after a write",
+          html: `
+            <p>Here's an <strong>event bus</strong>, Kafka. When the Tweet Service has durably
+            stored a tweet, it publishes a <strong>TweetCreated</strong> event and returns
+            success to the client. Everything else that has to happen because of that tweet
+            happens <strong>asynchronously</strong>, off the request path.</p>
+            <p>There turns out to be a lot of that work. The tweet has to reach followers'
+            timelines, get indexed for search, count toward trends, trigger mention
+            notifications, and become a training signal for ranking. If the Tweet Service did
+            all of that inline, posting would be slow and fragile: one slow search cluster
+            would make tweeting fail. With a log in the middle, each consumer reads at its own
+            pace, retries on its own, and can be <strong>replayed</strong> after a bug fix.
+            Adding a new consumer later doesn't touch the write path.</p>
+            <p>Kafka also absorbs <strong>bursts</strong>. When a goal is scored and tweet
+            volume jumps tenfold, the log buffers it and consumers catch up a few seconds
+            later instead of falling over. I'd partition the topic by <strong>author
+            ID</strong> so each author's events stay in order.</p>
+            <p>One subtlety: the database write and the event publish must not diverge. If we
+            store the tweet and then crash before publishing, followers never see it. The
+            standard fix is a <strong>transactional outbox</strong>, or change data capture
+            from the tweet store's log, so that an event is published exactly when the write
+            commits.</p>`
+        }
+      },
+      {
+        // --- Slide 9: fan-out on write ---
+        diagram: scene({
+          add: ["fanout", "tlcache", "e_kafka_fanout", "e_graphdb_fanout", "e_fanout_tlcache", "e_tl_tlcache", "e_tl_hydrate"],
+          remove: ["e_tl_pull"],
+        }),
+        script: {
+          title: "Timeline Service, version 2: fan-out on write",
+          html: `
+            <p>This is the heart of the design: <strong>fan-out on write</strong>, the push
+            model. <strong>Fan-out workers</strong> consume TweetCreated, stream the author's
+            follower list from the social graph, and <strong>insert the tweet ID into each
+            follower's home timeline</strong>.</p>
+            <p>Those timelines live in a <strong>Timeline Cache</strong>: a Redis cluster where
+            each user has a list of the most recent ~800 tweet IDs, sharded by user ID. Each
+            entry is just the 8-byte ID plus a little metadata, not the tweet, so it's cheap.
+            When a list grows past 800 entries the oldest fall off. Few people scroll back
+            further than that, and if they do we fall back to the slow pull path.</p>
+            <p>Reading a home timeline is now <strong>one lookup</strong>: fetch a page of IDs
+            from my list, then <strong>hydrate</strong> them, a batch multi-get of the tweet
+            bodies from the tweet store, plus author names and avatars. Hydration is a
+            fixed-size batch of key lookups, which is easy to cache and fast. We're within
+            budget.</p>
+            <p>The cost moved to writes: about a million list inserts per second on average,
+            but they're asynchronous, simple, and spread across thousands of Redis shards. Two
+            optimizations help a lot. First, <strong>only fan out to active users</strong>.
+            Someone who hasn't logged in for a month has no cached timeline; we rebuild it with
+            the pull path when they return. Second, the cache isn't the source of truth: if we
+            lose a Redis node, those timelines get rebuilt from the tweet store and graph.</p>
+            <p>The latency target from slide 2, a tweet reaching followers within about five
+            seconds, is now a <strong>fan-out lag</strong> we can monitor. And for your own
+            tweets, the client inserts them locally, which gives read-your-own-writes
+            immediately.</p>`
+        }
+      },
+      {
+        // --- Slide 10: celebrities + hybrid ---
+        diagram: scene({ add: ["cache", "e_tl_celeb"] }),
+        script: {
+          title: "The celebrity problem and the hybrid timeline",
+          html: `
+            <p>Fan-out on write breaks on exactly the accounts people care about most. When an
+            account with <strong>100 million followers</strong> tweets, the push model means 100
+            million Redis inserts. Even at a million a second, that's minutes of work for one
+            tweet, it delays everyone else's tweets in the queue, and it happens again on the
+            next tweet. Those accounts also tend to tweet in bursts.</p>
+            <p>So we use a <strong>hybrid</strong>. Accounts above a follower threshold, say a
+            few hundred thousand, are flagged as <strong>celebrities</strong>, and their tweets
+            are <strong>not fanned out</strong>. When you load your timeline, the service reads
+            your pushed list from the timeline cache, then <strong>pulls</strong> the recent
+            tweets of the few celebrities you follow and merges the two by ID. Since Snowflake
+            IDs are time-ordered, that's a cheap merge of sorted lists.</p>
+            <p>Why is this pull cheap when version one wasn't? Because you follow at most a
+            handful of celebrities, not hundreds of accounts, and their recent tweets are the
+            <strong>hottest objects in the whole system</strong>, read by millions of timelines.
+            That's what this <strong>cache tier</strong> is for. It sits in front of the tweet,
+            user and graph stores and keeps hot tweets, each celebrity's recent tweet IDs, and
+            profile data in memory. The tier also protects the stores from the thundering
+            herd when a famous tweet goes viral. Hot keys get replicated across several cache
+            nodes, so no single node takes all the traffic.</p>
+            <p>The threshold is a tunable trade-off: lower means less fan-out work but more
+            merging at read time. The trick is the same as before: <strong>do expensive work
+            where it's cheapest</strong>. For normal users that's at write time; for celebrities
+            it's at read time.</p>`
+        }
+      },
+      {
+        // --- Slide 11: media ---
+        diagram: scene({ add: ["media", "blob", "cdn", "e_media_blob", "e_cdn_client", "e_cdn_blob"] }),
+        script: {
+          title: "Media: blob storage and a CDN",
+          html: `
+            <p>Tweets are small, but media isn't: roughly <strong>50 TB a day</strong>. Those
+            bytes should never flow through the tweet path. The <strong>Media Service</strong>
+            handles uploads separately. The client asks it for an upload slot, uploads the file
+            directly to the <strong>blob store</strong> (S3 or similar) with a signed URL, in
+            resumable chunks for video, and gets back a <strong>media ID</strong>. The tweet
+            itself only carries that ID.</p>
+            <p>After upload the Media Service kicks off processing. Images get resized into a
+            few variants and stripped of metadata such as GPS. Video gets transcoded into an
+            adaptive-bitrate ladder so phones on bad connections still play smoothly. A tweet
+            whose media is still processing can show a placeholder.</p>
+            <p>Delivery goes through a <strong>CDN</strong>. Media is immutable once processed,
+            so it caches forever under a content-addressed URL. A viral image gets served from
+            edge nodes near users, and the CDN pulls from the blob store only on a cache miss.
+            At this volume, the CDN hit ratio is basically the media bill.</p>
+            <p>Blob storage is cheap and durable, eleven nines with cross-region replication.
+            Older, rarely viewed media can move to colder storage tiers automatically.</p>`
+        }
+      },
+      {
+        // --- Slide 12: engagement + counters ---
+        diagram: scene({ add: ["engage", "counters", "e_engage_counters", "e_engage_kafka"] }),
+        script: {
+          title: "Engagement: likes, retweets, replies and counters",
+          html: `
+            <p>The <strong>Engagement Service</strong> handles likes, retweets and replies. Each
+            one is two things: a <strong>relationship</strong> (user U liked tweet T, needed
+            for "you liked this" and for preventing double-likes) and a
+            <strong>counter</strong> shown on the tweet.</p>
+            <p>Counters are where naive designs fall over. A viral tweet can take tens of
+            thousands of likes a second, and a single row being incremented is a lock-contention
+            hotspot. So the <strong>Counter Store</strong> uses <strong>sharded
+            counters</strong>: each tweet's count is split across N sub-counters, increments go
+            to a random one, and reads sum them, usually from cache. We can also batch
+            increments in memory for a second before flushing. Being off by a few likes for a
+            moment is fine; we said counts are eventually consistent.</p>
+            <p>A <strong>retweet</strong> is stored as a tiny tweet that points at the original,
+            so it flows through the same TweetCreated and fan-out machinery. A
+            <strong>reply</strong> is a tweet with a reply-to pointer, which also gives us
+            conversation threads. Follows from the Graph Service publish events onto the same
+            bus.</p>
+            <p>Every engagement is also published to the bus as an event. Those events turn out
+            to be some of the most valuable data in the system: they drive notifications, and
+            they're the main training signal for ranking.</p>`
+        }
+      },
+      {
+        // --- Slide 13: search ---
+        diagram: scene({ add: ["search", "searchidx", "indexer", "e_search_idx", "e_kafka_indexer", "e_indexer_idx"] }),
+        script: {
+          title: "Real-time search",
+          html: `
+            <p>Search on Twitter is unusual because <strong>recency dominates</strong>. People
+            search for what's happening right now, and a tweet from ten seconds ago is often
+            the best result. So the index has to be updated in near real time, not rebuilt
+            nightly.</p>
+            <p>A <strong>Search Indexer</strong> consumes TweetCreated from the bus, tokenizes
+            the text, extracts hashtags, mentions and language, and appends to an
+            <strong>inverted index</strong>: for each term, the list of tweet IDs containing it.
+            Since tweet IDs are time-ordered, posting lists are naturally sorted
+            newest-first.</p>
+            <p>The index is <strong>partitioned by time</strong>. The newest slice, the last few
+            hours, is small, held fully in memory, and takes all the writes. Older slices are
+            immutable and optimized for reads. Twitter's Earlybird worked like this; with
+            Elasticsearch you'd use time-based indices. Each time slice is also sharded by
+            tweet ID so a query can run across shards in parallel.</p>
+            <p>The <strong>Search Service</strong> runs the query against the recent slices
+            first and goes further back only if it needs more results. It then ranks by a mix
+            of recency, engagement and the searcher's social graph, and hydrates the winners
+            just like the timeline does. A new tweet is typically searchable within a few
+            seconds of posting.</p>`
+        }
+      },
+      {
+        // --- Slide 14: trends ---
+        diagram: scene({ add: ["trends", "trendstore", "trendproc", "e_trends_store", "e_kafka_trend", "e_trend_store"] }),
+        script: {
+          title: "Trending topics",
+          html: `
+            <p>Trends are a <strong>stream-processing</strong> problem. <strong>Trend
+            Detection</strong> consumes the tweet stream, extracts hashtags and key phrases, and
+            keeps <strong>sliding-window counts</strong> per term per region, for example over the
+            last 5 minutes, the last hour, and a longer baseline.</p>
+            <p>The key insight is that a trend isn't the <em>most frequent</em> term; that
+            would just be "good morning" forever. A trend is a term whose current rate is
+            <strong>far above its baseline</strong>. So the score compares the short window to
+            the long window, a measure of velocity or acceleration. We can't keep exact counts
+            for every possible phrase in every region, so we use approximate structures:
+            count-min sketches for frequencies and a heap for the top candidates.</p>
+            <p>The output is small: a <strong>top-K list per region</strong>, refreshed every
+            minute or so and written to the <strong>Trends Store</strong>. The <strong>Trends
+            Service</strong> just reads that list, so serving it is a trivially cacheable key
+            lookup, even though computing it is the heavy part.</p>
+            <p>In a real deployment there's also a filtering layer for spam and coordinated
+            manipulation before anything is shown. That belongs to trust and safety, which we
+            scoped out, but I'd call it out as a hook.</p>`
+        }
+      },
+      {
+        // --- Slide 15: notifications ---
+        diagram: scene({ add: ["notif", "notifdb", "notifw", "push", "e_notif_notifdb", "e_kafka_notifw", "e_notifw_notifdb", "e_notifw_push"] }),
+        script: {
+          title: "Notifications",
+          html: `
+            <p><strong>Notification Workers</strong> consume from the same bus: likes,
+            retweets, replies, follows, and mentions parsed out of new tweets. For each event
+            they work out <strong>who should be told</strong> and whether they want to be, based
+            on their settings, muted words, blocks, and whether the actor is someone they
+            follow.</p>
+            <p>The big problem here is <strong>noise</strong>. A celebrity's tweet can get
+            50,000 likes in a minute, and nobody wants 50,000 notifications. So the workers
+            <strong>aggregate</strong>: "A, B and 4,998 others liked your tweet" is one
+            notification, updated in place, and pushes are rate-limited per user. Events can be
+            redelivered, so writes are keyed by event ID to make them
+            <strong>idempotent</strong>.</p>
+            <p>There are two outputs. The <strong>Notification Store</strong> is a per-user
+            inbox, newest first, read by the <strong>Notification Service</strong> when you
+            open the tab. Mobile push goes through Apple's and Google's push services, APNs
+            and FCM, drawn dashed because they're third parties we don't design.</p>
+            <p>Because this all runs off the bus, a slow push provider or a burst of activity
+            delays notifications by a few seconds but never affects posting or timeline
+            reads.</p>`
+        }
+      },
+      {
+        // --- Slide 16: For You ranking ---
+        diagram: scene({ add: ["ranker", "mlpipe", "e_tl_ranker", "e_kafka_ml", "e_ml_ranker"] }),
+        script: {
+          title: "The For You timeline: candidates and ranking",
+          html: `
+            <p>Everything so far serves the chronological "Following" timeline. <strong>For
+            You</strong> is a ranking problem, and it's built as a classic two-stage
+            pipeline.</p>
+            <p><strong>Candidate generation</strong> gathers maybe a thousand or so tweets that
+            might interest you. Roughly half come from <em>in-network</em> sources: the timeline
+            cache and celebrity pull we already built. The rest are <em>out-of-network</em>:
+            tweets popular among people similar to you, or liked by accounts you engage with,
+            found through embeddings and graph walks computed offline.</p>
+            <p>The Timeline Service sends those candidates to the <strong>Ranking
+            Service</strong>, which scores each one with a model that predicts the probability
+            of engagement: like, reply, retweet, dwell, or "not interested". It then applies
+            rules on top for author diversity, freshness, and filtering out blocked or muted
+            content. The model needs features at scoring time, such as your recent engagement
+            and the tweet's early engagement velocity, read from a low-latency feature
+            store.</p>
+            <p>The <strong>ML Pipeline</strong> closes the loop. It consumes engagement events
+            from the bus to update features in near real time, and periodically retrains the
+            model on what people actually engaged with. That's why those events were worth
+            publishing.</p>
+            <p>The important design property is <strong>graceful degradation</strong>. Ranking
+            is the most complex, most failure-prone part of the read path, so it runs with a
+            tight timeout. If it's slow or down, the Timeline Service falls back to the
+            chronological in-network timeline, and the user still gets a feed.</p>`
+        }
+      },
+      {
+        // --- Slide 17: multi-region ---
+        diagram: scene({ add: ["regions", "e_regions"] }),
+        script: {
+          title: "Going global: regions, replication and failure",
+          html: `
+            <p>Users are everywhere, so the whole stack is deployed in <strong>several
+            regions</strong>, and users are routed to a nearby one. Within a region everything
+            we've drawn is replicated across availability zones.</p>
+            <p>Between regions, the <strong>source-of-truth stores</strong> (tweets, the
+            graph, engagement) replicate <strong>asynchronously</strong>. That fits our
+            consistency model: it's fine if a tweet posted in Europe takes a second longer to
+            appear in Asia. Writes for a given user are homed in one region at a time to avoid
+            conflicts. Since tweets are immutable and IDs come from Snowflake with a region
+            bit, there's almost nothing to conflict on anyway.</p>
+            <p>The <strong>derived data</strong> (timeline caches, search indexes, trends,
+            counters) doesn't need cross-region replication. Each region rebuilds its own copy
+            from the replicated event stream. That's one more payoff of putting the event log
+            at the center: derived state is <strong>rebuildable</strong>.</p>
+            <p>Failure handling follows the priorities from slide 2. If a region goes down,
+            users are rerouted and their timelines rebuild on demand from the pull path. If
+            ranking fails, we show chronological. If search, trends or notifications lag, they
+            catch up from Kafka. Posting and reading the Following timeline are protected
+            above everything else.</p>`
+        }
+      },
+      {
+        // --- Slide 18: the complete system ---
+        diagram: scene(),
+        script: {
+          title: "The complete system: one tweet, end to end",
+          html: `
+            <p>To wrap up, let's follow <strong>one tweet</strong> through the whole picture.</p>
+            <p>A user attaches a photo. The client uploads it directly to the
+            <strong>blob store</strong> through the Media Service and gets a media ID. It then
+            posts the tweet through the <strong>API gateway</strong> to the <strong>Tweet
+            Service</strong>, which assigns a Snowflake ID, writes it durably to the
+            <strong>tweet store</strong>, and publishes <strong>TweetCreated</strong>. The user
+            gets a success response in tens of milliseconds and sees their tweet
+            immediately.</p>
+            <p>Everything else happens asynchronously off the event bus. <strong>Fan-out
+            workers</strong> push the ID into the timeline caches of the author's active
+            followers, unless the author is a celebrity. The <strong>indexer</strong> makes it
+            searchable within seconds. <strong>Trend detection</strong> counts its hashtags.
+            <strong>Notification workers</strong> alert anyone it mentions.</p>
+            <p>A follower opens the app. The <strong>Timeline Service</strong> reads their ID
+            list from the timeline cache, pulls recent tweets from any celebrities they follow
+            out of the <strong>cache tier</strong>, has the <strong>ranker</strong> order the
+            candidates for For You, hydrates the winners, and returns them in well under 200
+            milliseconds. The photo loads from a <strong>CDN</strong> edge nearby. When they
+            like it, the <strong>Engagement Service</strong> bumps a sharded counter and
+            publishes an event, which turns into a notification for the author and a training
+            signal for tomorrow's ranking model.</p>
+            <p>The big ideas: <strong>separate the write path from the read path</strong> and
+            connect them with an event log. <strong>Precompute timelines</strong> because reads
+            dominate, but <strong>switch to pull for celebrities</strong>, where push breaks
+            down. Keep the bytes in blob storage and on the CDN. Make all derived data
+            rebuildable, and degrade gracefully so the timeline always loads. Next, I'd go
+            deeper on whatever the interviewer cares about most: the fan-out pipeline, ranking,
+            or search.</p>`
+        }
+      }
+    ];
+
+    // ========================================================================
+    // Engine — shared by every deck. You should not need to edit below here.
+    // ========================================================================
+    let index = 0;
+
+    const el = {
+      topic: document.getElementById("topic"),
+      diagram: document.getElementById("diagram"),
+      num: document.getElementById("script-num"),
+      title: document.getElementById("script-title"),
+      body: document.getElementById("script-body"),
+      prev: document.getElementById("prev"),
+      next: document.getElementById("next"),
+      counter: document.getElementById("counter"),
+    };
+
+    function render() {
+      const slide = SLIDES[index];
+      el.topic.textContent = TOPIC;
+
+      // Replace the SVG (keep the #topic badge, which lives before it).
+      const existing = el.diagram.querySelector("svg");
+      if (existing) existing.remove();
+      el.diagram.insertAdjacentHTML("beforeend", slide.diagram);
+
+      el.num.textContent = `Slide ${index + 1} of ${SLIDES.length}`;
+      el.title.textContent = slide.script.title;
+      el.body.innerHTML = slide.script.html;
+
+      el.counter.textContent = `${index + 1} / ${SLIDES.length}`;
+      el.prev.disabled = index === 0;
+      el.next.disabled = index === SLIDES.length - 1;
+
+      el.script.scrollTop = 0;
+    }
+
+    function go(delta) {
+      const next = index + delta;
+      if (next < 0 || next >= SLIDES.length) return;
+      index = next;
+      render();
+    }
+
+    el.prev.addEventListener("click", () => go(-1));
+    el.next.addEventListener("click", () => go(1));
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowLeft") go(-1);
+      if (e.key === "ArrowRight") go(1);
+    });
+
+    // #script is referenced in render() for scroll reset.
+    el.script = document.getElementById("script");
+
+    render();
+  </script>
+</body>
+</html>
