@@ -1,0 +1,1404 @@
+<!DOCTYPE html>
+<!--
+  ============================================================================
+  SYSTEM DESIGN WALKTHROUGH — DESIGN UBER
+  ============================================================================
+
+  Built from slides/example.html. Same layout, theme, navigation and engine.
+
+    - Slides 1–2: functional / non-functional requirements (card grids).
+    - Slides 3–8: the main scene (SCENE_MAIN) grows from one server to split
+      trip / location services, an in-memory H3 geo index, dispatch and ETAs.
+    - Slides 9–13: a deep dive into matching (SCENE_MATCH): candidate search →
+      filter → ETA ranking → batch optimizer → offers with a driver lock.
+    - Slides 14–23: back to the main scene: realtime gateways, the trip state
+      machine, Kafka, pricing and surge, payments, the data lake, regions.
+
+  Navigation (shared by every deck): on-screen back/forward arrows, plus the
+  Left/Right arrow keys.
+
+  The file is fully self-contained — no build step, no external dependencies.
+  ============================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Design Uber — System Design Walkthrough</title>
+  <style>
+    :root {
+      /* ---- Theme tokens (edit here, not inline) ---- */
+      --bg: #0f172a;            /* page background */
+      --panel: #1e293b;         /* diagram panel */
+      --panel-2: #172033;       /* script panel */
+      --ink: #e2e8f0;           /* primary text */
+      --ink-dim: #94a3b8;       /* secondary text */
+      --accent: #38bdf8;        /* highlights, arrows, titles, "new" glow */
+      --border: #334155;        /* panel + box borders */
+
+      /* ---- Diagram element colors (used inside the SVGs) ---- */
+      --box-fill: #0b1222;
+      --box-stroke: #475569;
+      --box-ink: #e2e8f0;
+      --line: #64748b;
+      --client: #38bdf8;        /* clients / users / external actors */
+      --service: #a78bfa;       /* app / services   */
+      --data: #34d399;          /* data stores      */
+      --infra: #facc15;         /* gateways, load balancers, CDN, DNS */
+      --stream: #f472b6;        /* queues, event streaming */
+      --ml: #fb923c;            /* ML / batch compute */
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    /* Deck fills the viewport; diagram on top (large), script on bottom (smaller). */
+    #deck {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      padding: 16px;
+      gap: 12px;
+    }
+
+    /* ---- Top: diagram ---- */
+    #diagram {
+      flex: 1 1 62%;
+      min-height: 0;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      position: relative;
+    }
+    #diagram svg { width: 100%; height: 100%; }
+
+    /* Topic badge, top-left of the diagram panel */
+    #topic {
+      position: absolute;
+      top: 12px;
+      left: 16px;
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ink-dim);
+    }
+
+    /* ---- Bottom: script ---- */
+    #script {
+      flex: 0 0 34%;
+      min-height: 0;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px 22px;
+      overflow-y: auto;
+    }
+    #script-header {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 10px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    #script-num {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--bg);
+      background: var(--accent);
+      border-radius: 999px;
+      padding: 3px 11px;
+      white-space: nowrap;
+    }
+    #script-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--accent);
+    }
+    #script-body {
+      font-size: 15px;
+      line-height: 1.6;
+      color: var(--ink);
+    }
+    #script-body p { margin: 0 0 10px; }
+    #script-body strong { color: var(--ink); }
+    #script-body em { color: var(--ink-dim); font-style: normal; }
+
+    /* ---- Controls ---- */
+    #controls {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      flex: 0 0 auto;
+    }
+    .nav {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--ink);
+      font-size: 20px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+    }
+    .nav:hover:not(:disabled) { background: var(--border); border-color: var(--accent); }
+    .nav:disabled { opacity: 0.35; cursor: default; }
+    #counter {
+      font-size: 14px;
+      color: var(--ink-dim);
+      min-width: 70px;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ---- Reusable SVG diagram helpers ---- */
+    .box rect {
+      fill: var(--box-fill);
+      stroke: var(--box-stroke);
+      stroke-width: 1.5;
+      rx: 10;
+    }
+    .box.client rect { stroke: var(--client); }
+    .box.service rect { stroke: var(--service); }
+    .box.data rect { stroke: var(--data); }
+    .box.infra rect { stroke: var(--infra); }
+    .box.stream rect { stroke: var(--stream); }
+    .box.ml rect { stroke: var(--ml); }
+    /* A layer that other edges pass through (e.g. a cache tier). Drawn behind edges. */
+    .box.tier rect { fill: rgba(52, 211, 153, 0.06); stroke-dasharray: 5 5; }
+    /* Something that exists but we are not drawing in detail (other regions, 3rd parties). */
+    .box.ghost rect { fill: transparent; stroke-dasharray: 7 6; }
+    /* Added on the current slide (set automatically by the scene builder). */
+    .box.new rect { stroke-width: 3; filter: drop-shadow(0 0 7px var(--accent)); }
+    .box text {
+      fill: var(--box-ink);
+      font-size: 15px;
+      font-weight: 600;
+      text-anchor: middle;
+      dominant-baseline: middle;
+    }
+    .box .sub {
+      fill: var(--ink-dim);
+      font-size: 11px;
+      font-weight: 500;
+    }
+    .edge {
+      stroke: var(--line);
+      stroke-width: 1.8;
+      fill: none;
+      marker-end: url(#arrow);
+    }
+    .edge.both { marker-start: url(#arrow-start); }      /* two-way */
+    .edge.plain { marker-end: none; }                    /* no arrowhead */
+    .edge.async { stroke-dasharray: 6 5; }               /* async / background flow */
+    .edge.new { stroke: var(--accent); marker-end: url(#arrow-new); }
+    .edge.new.both { marker-start: url(#arrow-start-new); }
+    .edge.new.plain { marker-end: none; }
+    .edge-label {
+      fill: var(--ink-dim);
+      font-size: 11px;
+      text-anchor: middle;
+      /* Halo in the panel color keeps labels readable where they cross lines. */
+      paint-order: stroke;
+      stroke: var(--panel);
+      stroke-width: 4px;
+      stroke-linejoin: round;
+    }
+    .edge-label.new { fill: var(--accent); }
+
+    /* ---- Requirement slides (slides 1–2) ---- */
+    .heading { fill: var(--accent); font-size: 24px; font-weight: 700; }
+    .subheading { fill: var(--ink-dim); font-size: 14px; }
+    .card rect { fill: var(--box-fill); stroke: var(--box-stroke); stroke-width: 1.5; }
+    .card .badge { fill: var(--accent); }
+    .card .badge-num { fill: var(--bg); font-size: 13px; font-weight: 700; text-anchor: middle; dominant-baseline: central; }
+    .card .title { fill: var(--box-ink); font-size: 17px; font-weight: 700; }
+    .card .line { fill: var(--ink-dim); font-size: 13.5px; }
+    .panel-box { fill: var(--box-fill); stroke: var(--accent); stroke-width: 1.5; }
+    .panel-title { fill: var(--accent); font-size: 17px; font-weight: 700; }
+    .strip { fill: transparent; stroke: var(--box-stroke); stroke-width: 1.5; stroke-dasharray: 7 6; }
+    .strip-title { fill: var(--ink); font-size: 15px; font-weight: 700; }
+    .strip-text { fill: var(--ink-dim); font-size: 13.5px; }
+    .est-k { fill: var(--accent); font-size: 13.5px; font-weight: 700; }
+    .est-v { fill: var(--ink); font-size: 13.5px; }
+  </style>
+</head>
+<body>
+  <div id="deck">
+    <section id="diagram" aria-label="System diagram">
+      <span id="topic"></span>
+      <!-- SVG for the active slide is injected here -->
+    </section>
+
+    <section id="script" aria-label="Script">
+      <div id="script-header">
+        <span id="script-num"></span>
+        <span id="script-title"></span>
+      </div>
+      <div id="script-body"></div>
+    </section>
+
+    <div id="controls">
+      <button class="nav" id="prev" aria-label="Previous slide">&#8592;</button>
+      <span id="counter"></span>
+      <button class="nav" id="next" aria-label="Next slide">&#8594;</button>
+    </div>
+  </div>
+
+  <script>
+    // ========================================================================
+    // EDIT THIS: the system being designed.
+    // ========================================================================
+    const TOPIC = "Design Uber";
+
+    // Shared <defs>: default arrowhead, a start-reversed variant for two-way
+    // edges, and accent-colored variants for edges added on the current slide.
+    const DEFS = `
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--line)"></path>
+        </marker>
+        <marker id="arrow-start" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--line)"></path>
+        </marker>
+        <marker id="arrow-new" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"></path>
+        </marker>
+        <marker id="arrow-start-new" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"></path>
+        </marker>
+      </defs>`;
+
+    // Labeled box. `kind` is a space-separated class list:
+    //   color: "client" | "service" | "data" | "infra" | "stream" | "ml"
+    //   style: optionally plus "tier" (pass-through layer) or "ghost" (dashed)
+    //   "new" is added automatically by the scene builder.
+    // `sub` is an optional second line (e.g. a technology or role note).
+    function box(x, y, w, h, label, kind = "", sub = "") {
+      const cx = x + w / 2;
+      const subText = sub
+        ? `<text class="sub" x="${cx}" y="${y + h / 2 + 12}">${sub}</text>`
+        : "";
+      const labelY = sub ? y + h / 2 - 7 : y + h / 2;
+      return `
+        <g class="box ${kind}">
+          <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <text x="${cx}" y="${labelY}">${label}</text>
+          ${subText}
+        </g>`;
+    }
+
+    // ========================================================================
+    // Requirement-slide helpers (slides 1–2). Use viewBox 0 0 1200 640.
+    // ========================================================================
+
+    // One numbered requirement card: a title plus 1–3 short lines.
+    function card(x, y, w, h, num, title, lines) {
+      const body = lines
+        .map((l, i) => `<text class="line" x="${x + 18}" y="${y + 66 + i * 21}">${l}</text>`)
+        .join("");
+      return `
+        <g class="card">
+          <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <circle class="badge" cx="${x + 30}" cy="${y + 30}" r="13"></circle>
+          <text class="badge-num" x="${x + 30}" y="${y + 30}">${num}</text>
+          <text class="title" x="${x + 52}" y="${y + 36}">${title}</text>
+          ${body}
+        </g>`;
+    }
+
+    // A grid of cards, numbered 1..N. items = [[title, [line, line]], ...]
+    function cardGrid(x0, y0, w, h, gap, cols, items) {
+      return items
+        .map((it, i) => {
+          const c = i % cols, r = Math.floor(i / cols);
+          return card(x0 + c * (w + gap), y0 + r * (h + gap), w, h, i + 1, it[0], it[1]);
+        })
+        .join("");
+    }
+
+    // Dashed strip with a title and lines (out-of-scope list, key takeaway).
+    function strip(x, y, w, h, title, lines) {
+      const body = lines
+        .map((l, i) => `<text class="strip-text" x="${x + 24}" y="${y + 64 + i * 22}">${l}</text>`)
+        .join("");
+      return `
+        <rect class="strip" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+        <text class="strip-title" x="${x + 24}" y="${y + 34}">${title}</text>
+        ${body}`;
+    }
+
+    // Accent-bordered panel of back-of-the-envelope estimates.
+    // rows = [[heading, [value, value]], ...]
+    function estimatesPanel(x, y, w, h, title, rows) {
+      let cy = y + 66;
+      const body = rows
+        .map(([k, vs]) => {
+          let s = `<text class="est-k" x="${x + 20}" y="${cy}">${k}</text>`;
+          vs.forEach((v) => { cy += 21; s += `<text class="est-v" x="${x + 20}" y="${cy}">${v}</text>`; });
+          cy += 36;
+          return s;
+        })
+        .join("");
+      return `
+        <rect class="panel-box" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+        <text class="panel-title" x="${x + 20}" y="${y + 32}">${title}</text>
+        ${body}`;
+    }
+
+    // ========================================================================
+    // Scene builder — shared by every deck. You should not need to edit this.
+    //
+    //   const scene = sceneBuilder(SCENE);
+    //   scene({ add: ["client", "server", "e_client_server"] })  // -> <svg>
+    //   scene({ add: ["db", "e_server_db"] })                    // cumulative
+    //   scene({ add: [...], remove: ["server"] })                // replace a box
+    //   scene()                                                  // no change
+    // ========================================================================
+
+    // Edge label position: midpoint of the longest segment. Above horizontal /
+    // diagonal segments, to the right of vertical ones. Override with `lp`.
+    function labelPos(e) {
+      if (e.lp) return e.lp;
+      let best = null, len = -1;
+      for (let i = 0; i < e.pts.length - 1; i++) {
+        const [x1, y1] = e.pts[i], [x2, y2] = e.pts[i + 1];
+        const l = Math.hypot(x2 - x1, y2 - y1);
+        if (l > len) { len = l; best = [x1, y1, x2, y2]; }
+      }
+      const [x1, y1, x2, y2] = best;
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+      return x1 === x2 ? [mx + 7, my + 4, "start"] : [mx, my - 7, "middle"];
+    }
+
+    function sceneBuilder(def) {
+      const boxes = Object.fromEntries(def.boxes.map((b) => [b.id, b]));
+      const visible = new Set();
+
+      return function step({ add = [], remove = [] } = {}) {
+        remove.forEach((id) => visible.delete(id));
+        add.forEach((id) => visible.add(id));
+        const fresh = new Set(add);
+        const isOn = (id) => visible.has(id);
+
+        const lines = [], labels = [], back = [], front = [], pts = [];
+
+        const drawEdge = (pathPts, cls, label, lp) => {
+          const d = pathPts.map((p, i) => `${i ? "L" : "M"}${p[0]},${p[1]}`).join(" ");
+          lines.push(`<path class="edge ${cls}" d="${d}"></path>`);
+          pathPts.forEach((p) => pts.push(p));
+          if (label) {
+            const [lx, ly, anchor] = lp;
+            const nw = cls.includes("new") ? "new" : "";
+            labels.push(`<text class="edge-label ${nw}" x="${lx}" y="${ly}" style="text-anchor:${anchor}">${label}</text>`);
+          }
+        };
+
+        // Boxes ("tier" boxes go behind the edges, everything else in front).
+        def.boxes.forEach((b) => {
+          if (!isOn(b.id)) return;
+          const kind = `${b.kind}${fresh.has(b.id) ? " new" : ""}`;
+          const svg = box(b.x, b.y, b.w, b.h, b.label, kind, b.sub || "");
+          (b.kind.includes("tier") ? back : front).push(svg);
+          pts.push([b.x, b.y], [b.x + b.w, b.y + b.h]);
+        });
+
+        // Explicit edges: shown when added AND both endpoints are visible.
+        def.edges.forEach((e) => {
+          if (!isOn(e.id) || !isOn(e.from) || !isOn(e.to)) return;
+          const cls = [
+            fresh.has(e.id) ? "new" : "",
+            e.both ? "both" : "",
+            e.async ? "async" : "",
+          ].join(" ");
+          drawEdge(e.pts, cls, e.label, e.label ? labelPos(e) : null);
+        });
+
+        // Optional "bus": a hub (gateway / load balancer) fans out to member
+        // boxes via a vertical line. Members join the bus as they are added.
+        const bus = def.bus;
+        if (bus && isOn(bus.hub)) {
+          const members = bus.members.filter(isOn).map((id) => boxes[id]);
+          if (members.length) {
+            const hubNew = fresh.has(bus.hub);
+            const ys = members.map((b) => b.y + b.h / 2).concat([bus.hubY]);
+            const top = Math.min(...ys), bottom = Math.max(...ys);
+            const pn = hubNew ? "new plain" : "plain";
+            drawEdge([[bus.hubX, bus.hubY], [bus.x, bus.hubY]], pn, bus.label, bus.lp);
+            drawEdge([[bus.x, top], [bus.x, bottom]], pn);
+            members.forEach((b) => {
+              const y = b.y + b.h / 2;
+              drawEdge([[bus.x, y], [b.x, y]], hubNew || fresh.has(b.id) ? "new" : "");
+            });
+          }
+        }
+
+        // Auto-fit the viewBox to what is visible (with a minimum size).
+        const pad = 40;
+        let x0 = Math.min(...pts.map((p) => p[0])) - pad;
+        let y0 = Math.min(...pts.map((p) => p[1])) - pad;
+        let x1 = Math.max(...pts.map((p) => p[0])) + pad;
+        let y1 = Math.max(...pts.map((p) => p[1])) + pad;
+        const minW = 900, minH = 460;
+        if (x1 - x0 < minW) { const g = (minW - (x1 - x0)) / 2; x0 -= g; x1 += g; }
+        if (y1 - y0 < minH) { const g = (minH - (y1 - y0)) / 2; y0 -= g; y1 += g; }
+
+        return `
+          <svg viewBox="${x0} ${y0} ${x1 - x0} ${y1 - y0}" xmlns="http://www.w3.org/2000/svg">
+            ${DEFS}
+            ${back.join("")}
+            ${lines.join("")}
+            ${front.join("")}
+            ${labels.join("")}
+          </svg>`;
+      };
+    }
+
+    // ========================================================================
+    // SCENES
+    //
+    // MAIN: the whole ride-hailing system. Columns:
+    //   clients | gateways | services | data / maps | async + payments | payments
+    // Slides 3–4 use a monolithic "server" that occupies the services column;
+    // it is removed on slide 5 when the system splits by traffic shape.
+    // ========================================================================
+    const SCENE_MAIN = {
+      boxes: [
+        // Clients
+        { id: "rider",      x: 40,   y: 90,  w: 170, h: 124, label: "Rider App", kind: "client", sub: "iOS · Android" },
+        { id: "driver",     x: 40,   y: 310, w: 170, h: 124, label: "Driver App", kind: "client", sub: "GPS ping every 4 s" },
+        // Gateways
+        { id: "apigw",      x: 290,  y: 90,  w: 180, h: 124, label: "API Gateway", kind: "infra", sub: "HTTPS · auth · limits" },
+        { id: "rtgw",       x: 290,  y: 310, w: 180, h: 124, label: "Realtime Gateway", kind: "infra", sub: "WebSockets · stateful" },
+        { id: "push",       x: 290,  y: 480, w: 180, h: 54,  label: "APNs / FCM", kind: "ghost", sub: "app in background" },
+        // Slides 3–4 only: the naive single server
+        { id: "server",     x: 550,  y: 90,  w: 190, h: 344, label: "Server", kind: "service", sub: "one process does it all" },
+        // Services
+        { id: "pricing",    x: 550,  y: 20,  w: 190, h: 54,  label: "Pricing Service", kind: "service", sub: "fare quotes" },
+        { id: "trip",       x: 550,  y: 90,  w: 190, h: 124, label: "Trip Service", kind: "service", sub: "state machine · owner" },
+        { id: "dispatch",   x: 550,  y: 250, w: 190, h: 100, label: "Dispatch Service", kind: "service", sub: "matching · offers" },
+        { id: "location",   x: 550,  y: 380, w: 190, h: 54,  label: "Location Service", kind: "service", sub: "ingest · map-match" },
+        // Data + maps
+        { id: "surgestore", x: 830,  y: 20,  w: 180, h: 54,  label: "Surge Store", kind: "data", sub: "multiplier per hex cell" },
+        { id: "db",         x: 830,  y: 90,  w: 180, h: 54,  label: "Database", kind: "data", sub: "PostgreSQL · one primary" },
+        { id: "tripdb",     x: 830,  y: 90,  w: 180, h: 54,  label: "Trip Store", kind: "data", sub: "sharded by city" },
+        { id: "maps",       x: 830,  y: 160, w: 180, h: 54,  label: "Maps / ETA", kind: "ghost", sub: "routing · traffic" },
+        { id: "geo",        x: 830,  y: 250, w: 180, h: 184, label: "Geo Index", kind: "data", sub: "in-memory · H3 cells" },
+        { id: "kafka",      x: 830,  y: 460, w: 180, h: 54,  label: "Kafka", kind: "stream", sub: "trip + location events" },
+        // Async consumers, payments, other regions
+        { id: "regions",    x: 1090, y: 90,  w: 190, h: 54,  label: "Other Regions ×N", kind: "ghost", sub: "cells · failover" },
+        { id: "payment",    x: 1090, y: 380, w: 190, h: 54,  label: "Payment Service", kind: "service", sub: "idempotent charges" },
+        { id: "surge",      x: 1090, y: 460, w: 190, h: 54,  label: "Surge Pipeline", kind: "stream", sub: "Flink · supply vs demand" },
+        { id: "lake",       x: 1090, y: 540, w: 190, h: 54,  label: "Data Lake", kind: "ml", sub: "analytics · ETA models" },
+        { id: "psp",        x: 1360, y: 300, w: 190, h: 54,  label: "Payment Processor", kind: "ghost", sub: "third party" },
+        { id: "ledger",     x: 1360, y: 380, w: 190, h: 54,  label: "Ledger", kind: "data", sub: "double-entry · append-only" },
+      ],
+      edges: [
+        // Naive starting point
+        { id: "e_rider_server", from: "rider", to: "server", pts: [[210, 152], [550, 152]], label: "request ride · poll status", both: true },
+        { id: "e_driver_server", from: "driver", to: "server", pts: [[210, 372], [550, 372]], label: "location every 4 s · accept", both: true },
+        { id: "e_server_db", from: "server", to: "db", pts: [[740, 117], [830, 117]], label: "SQL", both: true },
+        // Split by traffic shape
+        { id: "e_rider_apigw", from: "rider", to: "apigw", pts: [[210, 152], [290, 152]], label: "HTTPS", both: true },
+        { id: "e_driver_location", from: "driver", to: "location", pts: [[210, 407], [550, 407]], label: "location pings · 1.25M/s" },
+        { id: "e_trip_db", from: "trip", to: "db", pts: [[740, 117], [830, 117]], label: "SQL", both: true },
+        { id: "e_location_db", from: "location", to: "db", pts: [[740, 420], [800, 420], [800, 132], [830, 132]], label: "UPDATE", lp: [806, 300, "start"] },
+        // Geo index, dispatch, maps
+        { id: "e_location_geo", from: "location", to: "geo", pts: [[740, 407], [830, 407]], label: "upsert" },
+        { id: "e_trip_dispatch", from: "trip", to: "dispatch", pts: [[645, 214], [645, 250]], label: "find a driver" },
+        { id: "e_dispatch_geo", from: "dispatch", to: "geo", pts: [[740, 300], [830, 300]], label: "nearby" },
+        { id: "e_dispatch_maps", from: "dispatch", to: "maps", pts: [[740, 265], [785, 265], [785, 200], [830, 200]], label: "ETAs", lp: [779, 236, "end"] },
+        // Realtime gateway
+        { id: "e_driver_rtgw", from: "driver", to: "rtgw", pts: [[210, 372], [290, 372]], label: "pings · offers", both: true },
+        { id: "e_rtgw_location", from: "rtgw", to: "location", pts: [[470, 407], [550, 407]], label: "positions", both: true },
+        { id: "e_dispatch_rtgw", from: "dispatch", to: "rtgw", pts: [[550, 340], [470, 340]], label: "offers", lp: [510, 360, "middle"], both: true },
+        { id: "e_rider_rtgw", from: "rider", to: "rtgw", pts: [[180, 214], [180, 262], [330, 262], [330, 310]], label: "live tracking", lp: [255, 255, "middle"], both: true },
+        { id: "e_trip_rtgw", from: "trip", to: "rtgw", pts: [[550, 200], [500, 200], [500, 318], [470, 318]], label: "status", lp: [504, 250, "start"] },
+        { id: "e_rtgw_push", from: "rtgw", to: "push", pts: [[380, 434], [380, 480]], label: "fallback" },
+        { id: "e_push_driver", from: "push", to: "driver", pts: [[290, 507], [125, 507], [125, 434]], label: "wake-up", lp: [210, 500, "middle"] },
+        // Trip store
+        { id: "e_trip_tripdb", from: "trip", to: "tripdb", pts: [[740, 117], [830, 117]], label: "CAS", both: true },
+        // Event log
+        { id: "e_trip_kafka", from: "trip", to: "kafka", pts: [[740, 190], [770, 190], [770, 474], [830, 474]], label: "trip events", lp: [776, 452, "start"], async: true },
+        { id: "e_location_kafka", from: "location", to: "kafka", pts: [[645, 434], [645, 497], [830, 497]], label: "location stream", lp: [737, 490, "middle"], async: true },
+        // Pricing and surge
+        { id: "e_pricing_maps", from: "pricing", to: "maps", pts: [[740, 60], [800, 60], [800, 175], [830, 175]], label: "route", lp: [806, 150, "start"] },
+        { id: "e_pricing_surgestore", from: "pricing", to: "surgestore", pts: [[740, 40], [830, 40]], label: "surge" },
+        { id: "e_kafka_surge", from: "kafka", to: "surge", pts: [[1010, 487], [1090, 487]] },
+        { id: "e_surge_store", from: "surge", to: "surgestore", pts: [[1280, 487], [1310, 487], [1310, 47], [1010, 47]], label: "multipliers every ~1 min", lp: [1160, 40, "middle"] },
+        // Payments
+        { id: "e_kafka_payment", from: "kafka", to: "payment", pts: [[1010, 470], [1060, 470], [1060, 407], [1090, 407]], label: "completed", lp: [1054, 447, "end"] },
+        { id: "e_payment_ledger", from: "payment", to: "ledger", pts: [[1280, 407], [1360, 407]], label: "entries" },
+        { id: "e_payment_psp", from: "payment", to: "psp", pts: [[1250, 380], [1250, 327], [1360, 327]], label: "charge", lp: [1325, 320, "middle"] },
+        // Analytics
+        { id: "e_kafka_lake", from: "kafka", to: "lake", pts: [[1010, 504], [1045, 504], [1045, 567], [1090, 567]] },
+        // Other regions
+        { id: "e_tripdb_regions", from: "tripdb", to: "regions", pts: [[1010, 117], [1090, 117]], both: true, async: true },
+      ],
+      // The API gateway fans out to the request/response services along a bus.
+      bus: { hub: "apigw", hubX: 470, hubY: 152, x: 510, members: ["pricing", "trip"] },
+    };
+
+    // MATCH: a zoomed-in view of the Dispatch Service, laid out as the
+    // pipeline one ride request flows through, left to right.
+    const SCENE_MATCH = {
+      boxes: [
+        { id: "trip",    x: 40,   y: 200, w: 170, h: 54, label: "Trip Service", kind: "service", sub: "trip T42 wants a car" },
+        { id: "geo",     x: 270,  y: 60,  w: 180, h: 54, label: "Geo Index", kind: "data", sub: "drivers per H3 cell" },
+        { id: "cand",    x: 270,  y: 200, w: 180, h: 54, label: "Candidate Search", kind: "service", sub: "expanding rings" },
+        { id: "filter",  x: 510,  y: 200, w: 170, h: 54, label: "Filter", kind: "service", sub: "status · vehicle · rules" },
+        { id: "state",   x: 510,  y: 340, w: 170, h: 54, label: "Driver State", kind: "data", sub: "free · offered · on trip" },
+        { id: "maps",    x: 740,  y: 60,  w: 170, h: 54, label: "Maps / ETA", kind: "ghost", sub: "many-to-one ETAs" },
+        { id: "rank",    x: 740,  y: 200, w: 170, h: 54, label: "ETA Ranking", kind: "service", sub: "road time, not distance" },
+        { id: "batch",   x: 970,  y: 200, w: 180, h: 54, label: "Batch Optimizer", kind: "service", sub: "~2 s window · global" },
+        { id: "offer",   x: 1210, y: 200, w: 180, h: 54, label: "Offer Manager", kind: "service", sub: "one at a time · 15 s" },
+        { id: "driver",  x: 1450, y: 200, w: 160, h: 54, label: "Driver App", kind: "client", sub: "accept / decline" },
+      ],
+      edges: [
+        { id: "m_trip_cand", from: "trip", to: "cand", pts: [[210, 227], [270, 227]] },
+        { id: "m_geo_cand", from: "geo", to: "cand", pts: [[360, 114], [360, 200]], label: "k-ring lookup" },
+        { id: "m_cand_filter", from: "cand", to: "filter", pts: [[450, 227], [510, 227]] },
+        { id: "m_state_filter", from: "state", to: "filter", pts: [[595, 340], [595, 254]], label: "status" },
+        { id: "m_filter_rank", from: "filter", to: "rank", pts: [[680, 227], [740, 227]] },
+        { id: "m_maps_rank", from: "maps", to: "rank", pts: [[825, 114], [825, 200]], label: "ETA matrix" },
+        { id: "m_rank_batch", from: "rank", to: "batch", pts: [[910, 227], [970, 227]] },
+        { id: "m_batch_offer", from: "batch", to: "offer", pts: [[1150, 227], [1210, 227]] },
+        { id: "m_offer_driver", from: "offer", to: "driver", pts: [[1390, 227], [1450, 227]], both: true },
+        { id: "m_offer_state", from: "offer", to: "state", pts: [[1290, 254], [1290, 367], [680, 367]], label: "lock: free → offered (compare-and-set + TTL)", lp: [985, 360, "middle"] },
+        { id: "m_retry", from: "offer", to: "batch", pts: [[1300, 200], [1300, 160], [1060, 160], [1060, 200]], label: "decline / timeout → next best", lp: [1180, 153, "middle"], async: true },
+        { id: "m_matched", from: "offer", to: "trip", pts: [[1340, 254], [1340, 440], [125, 440], [125, 254]], label: "accepted → trip becomes MATCHED", lp: [732, 433, "middle"] },
+      ],
+    };
+
+    const main = sceneBuilder(SCENE_MAIN);
+    const match = sceneBuilder(SCENE_MATCH);
+
+    // ========================================================================
+    // SLIDES
+    // ========================================================================
+    const SLIDES = [
+      {
+        // --- Slide 1: functional requirements ---
+        diagram: `
+          <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
+            <text class="heading" x="30" y="42">Functional requirements</text>
+            <text class="subheading" x="330" y="42">what riders and drivers can do</text>
+            ${cardGrid(30, 66, 370, 128, 15, 3, [
+              ["Request a ride", ["Set pickup and dropoff", "Upfront fare and ETA before confirming"]],
+              ["Driver availability", ["Go online and offline", "Stream GPS location while online"]],
+              ["Matching", ["Find a nearby available driver", "Never assign one driver to two trips"]],
+              ["Accept / decline", ["Driver gets an offer with a ~15 s timeout", "Decline or timeout → next driver"]],
+              ["Live tracking", ["Rider watches the car approach", "and follows the trip on a map"]],
+              ["Trip lifecycle", ["Requested → matched → arriving →", "in progress → completed (or cancelled)"]],
+              ["Dynamic pricing", ["Surge multiplier per area", "from live supply vs. demand"]],
+              ["Payment", ["Charge the card on file, exactly once", "Pay out the driver"]],
+              ["Ratings &amp; history", ["Riders and drivers rate each other", "Past trips and receipts"]],
+            ])}
+            ${strip(30, 512, 1140, 100, "Out of scope (mentioned, not designed)", [
+              "UberEats &amp; delivery  ·  Pool / shared rides  ·  Scheduled rides  ·  In-app chat &amp; calls  ·  Fraud &amp; safety  ·  Driver onboarding / KYC",
+              "Building the maps and routing engine (we call it as a service)  ·  Payment-processor internals",
+            ])}
+          </svg>`,
+        script: {
+          title: "Functional requirements: what we're building",
+          html: `
+            <p>Before drawing anything I want to agree on <strong>what Uber does</strong> for
+            this design. There are two kinds of user, <strong>riders</strong> and
+            <strong>drivers</strong>, and the product is the moment they're brought together.</p>
+            <p>A rider opens the app, sets a <strong>pickup and dropoff</strong>, and sees an
+            <strong>upfront fare and an ETA</strong> before confirming. Meanwhile drivers who
+            are <strong>online</strong> stream their GPS location continuously. When a rider
+            confirms, we <strong>match</strong> them with a nearby available driver. The
+            invariant I care most about here: <strong>one driver is never assigned to two
+            trips</strong>. The driver gets an <strong>offer</strong> with a short timeout,
+            around 15 seconds. If they decline or ignore it, we move on to the next
+            driver.</p>
+            <p>Once matched, the rider watches the car <strong>approach on a map</strong>, and
+            the trip moves through a <strong>lifecycle</strong>: requested, matched, arriving,
+            in progress, completed, with cancellation possible at most steps. Prices are
+            <strong>dynamic</strong>: when demand outstrips supply in an area, a surge
+            multiplier applies. At the end we <strong>charge the card on file exactly
+            once</strong> and credit the driver. Both sides <strong>rate</strong> each other,
+            and everyone can see their trip history and receipts.</p>
+            <p>I'm leaving out UberEats and delivery, Pool (shared rides change matching a
+            lot), scheduled rides, in-app chat and calls, fraud and safety, and driver
+            onboarding. I'm also <strong>not designing the maps engine</strong> itself.
+            Routing over a road graph with live traffic is its own huge problem, so I'll treat
+            "give me the route and ETA from A to B" as a service we call. The same goes for the
+            internals of the card networks.</p>`
+        }
+      },
+      {
+        // --- Slide 2: non-functional requirements + estimates ---
+        diagram: `
+          <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
+            <text class="heading" x="30" y="42">Non-functional requirements</text>
+            <text class="subheading" x="372" y="42">how well it has to do it</text>
+            ${cardGrid(30, 66, 255, 128, 13, 3, [
+              ["Scale", ["20M trips/day worldwide", "~5M drivers online at peak"]],
+              ["Match latency", ["A match within seconds", "Nearby search &lt; 100 ms"]],
+              ["Fresh locations", ["Positions ≤ ~5 s old", "Lossy is OK, stale is not"]],
+              ["Consistency", ["Strong: trips, assignment", "Eventual: locations, map"]],
+              ["99.99% available", ["Request + match path", "Trips survive flaky phones"]],
+              ["Durability", ["Trips &amp; payments never lost", "Location history can be lossy"]],
+              ["Exactly-once pay", ["Idempotent charges", "Safe under any retry"]],
+              ["Geo-partitioned", ["Demand is local: shard by city", "Failures stay in one region"]],
+              ["Spiky", ["Concerts, rain, New Year's Eve", "10× local surges"]],
+            ])}
+            ${estimatesPanel(832, 66, 338, 410, "Back of the envelope", [
+              ["Location writes", ["5M drivers ÷ 4 s ≈ 1.25M writes/s"]],
+              ["Trips", ["20M/day ≈ 230/s average", "~1–2K/s at peak"]],
+              ["Live locations", ["5M × ~100 B ≈ 500 MB", "fits in RAM, sharded by region"]],
+              ["Trip storage", ["~5 KB × 20M/day ≈ 100 GB/day", "≈ 35 TB/yr"]],
+            ])}
+            ${strip(30, 496, 1140, 100, "Takeaway: a firehose of locations and a trickle of trips that must be exact", [
+              "1.25M location writes/s, each overwritten seconds later → an in-memory geo index, never a row in a SQL table",
+              "~1K trips/s with strict state and money attached → a small, strongly consistent store  ·  shard everything by city",
+            ])}
+          </svg>`,
+        script: {
+          title: "Non-functional requirements and back-of-the-envelope math",
+          html: `
+            <p>Now the qualities. For <strong>scale</strong> I'll assume about
+            <strong>20 million trips a day</strong> worldwide and about <strong>5 million
+            drivers online</strong> at the global peak. Riders expect a <strong>match within a
+            few seconds</strong>, which means the "who's near me" query needs to come back in
+            well under 100 milliseconds. Driver positions should be <strong>at most a few
+            seconds old</strong>; dropping an update is fine, as the next one is coming
+            anyway.</p>
+            <p><strong>Consistency is split down the middle</strong>, and this shapes the whole
+            design. Trip state and driver assignment must be <strong>strongly
+            consistent</strong>: double-booking a driver or charging someone twice is a real
+            failure. Locations and the map are <strong>eventually consistent</strong>: a car
+            icon a second behind reality is fine. The request path needs <strong>four
+            nines</strong>, and a trip must survive the driver's phone going through a tunnel.
+            Payments are <strong>exactly-once</strong>. Demand is intensely
+            <strong>local</strong> (a rider in Paris never needs a driver in Tokyo), which is a
+            gift for partitioning. And traffic is <strong>spiky</strong>: a concert letting out
+            puts 10× normal demand on a few city blocks.</p>
+            <p>The numbers. <strong>Location writes</strong>: 5 million drivers pinging every 4
+            seconds is about <strong>1.25 million writes per second</strong>. Compare that to
+            <strong>trips</strong>: 20 million a day is only about 230 per second on average,
+            maybe a couple of thousand at peak. The current location of every driver is about
+            5 million × 100 bytes, roughly <strong>half a gigabyte</strong>, so the whole live
+            map fits in memory. Trip records are about 100 GB a day.</p>
+            <p>So the takeaway: there are two very different problems here. A
+            <strong>firehose</strong> of tiny, short-lived location writes that need fast
+            spatial queries, and a <strong>trickle</strong> of trips that must be exact. I'll
+            keep those two worlds separate throughout.</p>`
+        }
+      },
+      {
+        // --- Slide 3: simplest thing ---
+        diagram: main({ add: ["rider", "driver", "server", "e_rider_server", "e_driver_server"] }),
+        script: {
+          title: "Start simple: two apps and one server",
+          html: `
+            <p>Let's start with the simplest system that could work. Two apps,
+            <strong>rider</strong> and <strong>driver</strong>, and a <strong>single
+            server</strong>.</p>
+            <p>The driver app, while online, sends the server its <strong>GPS location every
+            few seconds</strong> over plain HTTPS. The server keeps a map of driver ID to latest
+            position in memory. When a rider requests a ride, the server
+            <strong>scans every driver</strong>, computes the straight-line distance to the
+            pickup, and picks the closest one who isn't busy. The driver app is polling too, so
+            on its next poll it sees "you have a ride request", and the driver taps accept.
+            The rider app polls for status and the driver's position, and draws the car on a
+            map.</p>
+            <p>This actually works for a single small city. It nails down the
+            <strong>core loop</strong> I want to keep in mind for the rest of the design:
+            drivers report where they are, a rider asks for a ride, we pick a driver, the driver
+            agrees, and both sides watch the trip progress.</p>
+            <p>But almost everything about it breaks at scale. Everything lives in one
+            process's memory, so a restart loses every in-flight trip. The full scan is
+            O(drivers) per request. Polling wastes battery and adds seconds of latency to
+            every offer. And one box can't take a million writes a second. Let's fix these one
+            at a time, starting with the most basic: durability.</p>`
+        }
+      },
+      {
+        // --- Slide 4: database ---
+        diagram: main({ add: ["db", "e_server_db"] }),
+        script: {
+          title: "Persist trips (and, naively, locations) in a database",
+          html: `
+            <p>The first thing we need is a <strong>database</strong>, because a trip in
+            progress, and certainly a payment, must survive a server restart. A relational
+            database like PostgreSQL is a natural first choice: we have
+            <strong>riders</strong>, <strong>drivers</strong>, <strong>trips</strong> and
+            <strong>payments</strong>, which reference each other, and we want transactions
+            around changes like "assign this driver to this trip".</p>
+            <p>The trips table holds the pickup, dropoff, rider, driver, fare and, crucially,
+            a <strong>status</strong> column. The naive move is to also put driver locations
+            in the database: a <em>drivers</em> table with <em>lat</em> and <em>lng</em>
+            columns, updated on every ping, and a "nearby drivers" query like
+            <em>WHERE lat BETWEEN … AND lng BETWEEN …</em>.</p>
+            <p>This is the point where I'd stop and look at the numbers from the last slide,
+            because this design fails in two specific ways. First, <strong>write
+            volume</strong>. 1.25 million UPDATEs a second, each one durably written to a log
+            and replicated, for data that's obsolete four seconds later. We'd be paying for
+            durability on the least valuable data in the system. Second, <strong>the
+            query</strong>. A B-tree index on latitude, or even a composite index, handles a
+            two-dimensional range badly: it narrows by latitude and then scans a long strip of
+            the planet for longitude. Spatial index extensions help with the query but not the
+            write rate.</p>
+            <p>So the database stays, but only for the data that deserves it, which is trips
+            and money. Locations need a different home. First, though, let's pull those two
+            kinds of traffic apart.</p>`
+        }
+      },
+      {
+        // --- Slide 5: split by traffic shape ---
+        diagram: main({
+          add: ["apigw", "trip", "location", "e_rider_apigw", "e_driver_location", "e_trip_db", "e_location_db"],
+          remove: ["server"],
+        }),
+        script: {
+          title: "Split by traffic shape: trips vs. locations",
+          html: `
+            <p>The single server is doing two jobs with completely different profiles, so let's
+            split it. The <strong>Trip Service</strong> owns the business workflow: quotes,
+            requests, cancellations, the trip's state. It handles the trickle, a couple of
+            thousand requests per second, each of which matters. The <strong>Location
+            Service</strong> takes the firehose of driver pings: high volume, tiny payloads,
+            and individually almost worthless.</p>
+            <p>Splitting lets them <strong>scale and fail independently</strong>. The location
+            tier can be a big fleet of simple ingest nodes. If it falls behind, positions get a
+            little stale but trips keep working. A bug in trip logic doesn't stop us from
+            knowing where cars are. They also deploy at different speeds: pricing and trip
+            rules change constantly, while location ingest barely changes.</p>
+            <p>Riders' requests now go through an <strong>API gateway</strong>, which handles
+            TLS, authentication, rate limiting and routing to the right service, so individual
+            services don't each reimplement that. Driver pings go straight to the location
+            service for now. We'll give drivers a better channel shortly.</p>
+            <p>The Location Service also does a little real work on each ping: it
+            <strong>validates</strong> it (drop impossible jumps, bad accuracy) and
+            <strong>map-matches</strong> it, snapping a noisy GPS point onto the road the car
+            is actually on. A raw GPS fix in a city canyon can be off by 50 meters, which puts
+            a driver on the wrong side of a river. It still writes to the database, which is
+            the part we fix next.</p>`
+        }
+      },
+      {
+        // --- Slide 6: geo index ---
+        diagram: main({ add: ["geo", "e_location_geo"], remove: ["e_location_db"] }),
+        script: {
+          title: "The geo index: drivers bucketed into hexagonal cells",
+          html: `
+            <p>Locations move into a purpose-built <strong>in-memory geo index</strong>.
+            The trick behind every geo index is the same: <strong>turn two-dimensional
+            positions into one-dimensional keys</strong> so that "near me" becomes a handful of
+            key lookups rather than a scan.</p>
+            <p>There are three common options. A <strong>geohash</strong> interleaves the bits
+            of latitude and longitude into a string, so nearby points tend to share a prefix.
+            It's simple and works in any key-value store, but cells are rectangles that
+            distort with latitude, and two points across a cell boundary can have very
+            different prefixes. A <strong>quadtree</strong> splits space adaptively, subdividing
+            busy areas like Manhattan more finely than empty desert, but it's a tree to keep
+            balanced in memory as drivers move. Uber built and open-sourced
+            <strong>H3</strong>, a grid of <strong>hexagons</strong> at multiple resolutions.
+            Hexagons have a lovely property: all six neighbors are the same distance from the
+            center, so "every cell within k steps" (a <strong>k-ring</strong>) approximates a
+            circle well.</p>
+            <p>I'll use H3 at a resolution where a cell is a few hundred meters across. The
+            index is just a map from <strong>cell ID → set of driver IDs</strong>, plus
+            <strong>driver ID → latest position and cell</strong>. Each ping is an upsert: if the
+            driver crossed into a new cell, move them between sets. Entries carry a
+            <strong>TTL</strong> of around 30 seconds, so a driver whose phone died quietly
+            disappears from the map instead of getting offers forever.</p>
+            <p>Half a gigabyte for the whole world fits on one machine, but the write rate
+            doesn't, so we <strong>shard by region</strong>: each city's cells live on a small
+            group of nodes, replicated for availability but <strong>not durable</strong>. If we
+            lose a node, the next round of pings rebuilds it within seconds. That's the
+            trade-off that makes 1.25 million writes a second cheap.</p>`
+        }
+      },
+      {
+        // --- Slide 7: dispatch ---
+        diagram: main({ add: ["dispatch", "e_trip_dispatch", "e_dispatch_geo"] }),
+        script: {
+          title: "A dispatch service owns matching",
+          html: `
+            <p>Matching gets its own service: <strong>Dispatch</strong>. When the Trip Service
+            creates a ride request, it asks Dispatch to find a driver. Dispatch queries the geo
+            index for drivers near the pickup and decides who gets the offer.</p>
+            <p>Why separate this from the Trip Service? Because matching is where the
+            interesting, fast-changing logic lives, and it has a different consistency shape
+            from the trip itself. The Trip Service is the <strong>system of record</strong>
+            for a trip: it's careful, transactional, and tells you what happened. Dispatch is
+            a <strong>real-time decision engine</strong>: it keeps hot in-memory state about
+            which drivers are free, which have outstanding offers, and how demand is building
+            up in each area, and it makes thousands of decisions a second. Its algorithms get
+            tuned constantly (Uber has been through many generations of matching), and
+            isolating them keeps that churn away from the trip record.</p>
+            <p>Dispatch is also naturally <strong>partitioned by geography</strong>. A pickup in
+            Chicago only ever competes for drivers in Chicago. So we shard dispatch by region,
+            with each instance owning a set of H3 cells. Uber's own dispatch system used a
+            consistent-hashing ring to assign ownership, so any node can forward a request to
+            the node that owns that area. Having <strong>one owner per area</strong> also
+            makes the hardest invariant much easier, as we'll see: two requests that could
+            both want the same driver are handled by the same process.</p>`
+        }
+      },
+      {
+        // --- Slide 8: maps / ETA ---
+        diagram: main({ add: ["maps", "e_dispatch_maps"] }),
+        script: {
+          title: "Maps and ETAs: distance is the wrong metric",
+          html: `
+            <p>There's a problem with "closest driver". <strong>Straight-line distance is a
+            poor proxy for how long a driver will take to arrive.</strong> A driver 300 meters
+            away on the other side of a river, a highway or a one-way grid might be 10 minutes
+            out, while one a kilometer away on the same road is three minutes out. What the
+            rider experiences, and what wastes drivers' time, is <strong>ETA</strong>.</p>
+            <p>So Dispatch calls a <strong>Maps / ETA service</strong>. I said in the
+            requirements that I'm not designing this, so it's drawn as a dashed box. But it's
+            worth saying what it does: it holds a road graph with turn restrictions and
+            <strong>live traffic speeds</strong> (derived, conveniently, from our own drivers'
+            location stream), runs a fast routing algorithm (contraction hierarchies or
+            similar, so a route is milliseconds rather than a full Dijkstra over a continent),
+            and corrects the result with an ML model trained on actual past trip times.</p>
+            <p>The interface we need is <strong>many-to-one</strong>: "here are 30 candidate
+            drivers; give me each one's ETA to this pickup" in a single call. Doing 30
+            separate routing requests would blow the latency budget.</p>
+            <p>The same service will be used again later by pricing (the route and expected
+            duration determine the fare) and by the rider app to show "your driver is 4
+            minutes away". Because it's on the critical path for matching, Dispatch should
+            <strong>degrade gracefully</strong> if it's slow: fall back to distance multiplied
+            by a typical city speed, rather than failing the match.</p>
+            <p>Dispatch is now the heart of the system, so let's zoom in on it.</p>`
+        }
+      },
+      {
+        // --- Slide 9: matching deep dive 1 — candidate search ---
+        diagram: match({ add: ["trip", "geo", "cand", "m_trip_cand", "m_geo_cand"] }),
+        script: {
+          title: "Matching deep dive ①: candidate search",
+          html: `
+            <p>We're now inside the Dispatch Service, following a single ride request, trip
+            T42, from left to right. The goal of this pipeline: <strong>pick one driver,
+            quickly, without ever double-booking</strong>, and do it in a way that's good for
+            the whole city and not just this one rider.</p>
+            <p>Step one is <strong>candidate search</strong>. We convert the pickup point into
+            its H3 cell and ask the geo index for the drivers in that cell and its first ring of
+            neighbors. If that returns too few drivers, say fewer than 10 or 20, we
+            <strong>expand</strong> to the next ring, and the next, up to a cap of a few
+            kilometers. In dense downtown areas the first ring is plenty. In the suburbs we
+            might go out several rings.</p>
+            <p>Two details matter here. The search is a set of <strong>direct key
+            lookups</strong>, one per cell, rather than a range scan, so it's fast and its cost
+            is predictable. And we deliberately <strong>over-fetch</strong>: we want a pool of
+            perhaps 20–50 drivers, not just the nearest one, because the next steps will
+            discard some and reorder the rest.</p>
+            <p>Positions in the index are a few seconds stale, which is fine at this stage.
+            We're finding <em>plausible</em> candidates, not making a final decision. Accuracy
+            matters later, when we compute ETAs from each driver's most recent ping.</p>`
+        }
+      },
+      {
+        // --- Slide 10: matching deep dive 2 — filter + driver state ---
+        diagram: match({ add: ["filter", "state", "m_cand_filter", "m_state_filter"] }),
+        script: {
+          title: "Matching deep dive ②: filter on driver state",
+          html: `
+            <p>Next we <strong>filter</strong> the candidate pool. Being near the pickup isn't
+            enough; a driver must actually be eligible.</p>
+            <p>The most important check is <strong>driver state</strong>. Dispatch keeps a
+            small state machine per driver: <strong>offline</strong>, <strong>free</strong>,
+            <strong>offered</strong> (an offer is outstanding and we're waiting for an answer),
+            and <strong>on trip</strong>. Only free drivers pass, with one useful exception:
+            a driver who's on trip but <strong>about to drop off</strong> nearby can be
+            considered for a back-to-back trip. That keeps busy drivers busy, and it's often
+            faster for the rider than someone further away who's idle.</p>
+            <p>Then the product rules: the right <strong>vehicle type</strong> (UberX vs. XL vs.
+            Black), wheelchair-accessible if requested, airport queue rules, and any
+            <strong>preferences or blocks</strong> such as a rider and driver who rated each other
+            one star and should not be paired again.</p>
+            <p>Where does driver state live? It's owned by Dispatch, in memory, in the same
+            regional shard as the geo index for that area, so this filter costs no network
+            hops. It's <strong>more important than location</strong>, so it is replicated and
+            changes to it are logged, but it's still kept separate from the trip record. The
+            trip record says "trip T42 was assigned driver D7". Driver state says "D7 is busy
+            right now". We'll use this state to enforce exclusivity in a moment.</p>`
+        }
+      },
+      {
+        // --- Slide 11: matching deep dive 3 — ETA ranking ---
+        diagram: match({ add: ["rank", "maps", "m_filter_rank", "m_maps_rank"] }),
+        script: {
+          title: "Matching deep dive ③: rank by ETA",
+          html: `
+            <p>Now we <strong>rank</strong> the eligible drivers, and as I argued earlier, the
+            primary signal is <strong>ETA to the pickup</strong>, not distance. We send the
+            whole filtered set to the Maps service as one many-to-one request and get back an
+            ETA matrix.</p>
+            <p>ETA alone isn't the whole score, though. A real ranking might also weigh
+            things like <strong>heading</strong> (a driver pointed toward the pickup beats one
+            facing away, even at equal ETA, since U-turns are slow and error-prone), the
+            driver's <strong>acceptance likelihood</strong> (a driver who declines most
+            offers wastes the rider's time), and <strong>fairness</strong>, spreading trips
+            across drivers who've been waiting a long time rather than always picking the same
+            lucky one parked downtown.</p>
+            <p>I'd keep this as a scoring function: weighted terms whose weights get tuned with
+            experiments, because the "right" balance between rider wait time and driver
+            utilization is a business decision, not an engineering one.</p>
+            <p>The output of this stage is an ordered list of drivers for trip T42. The obvious
+            next step would be "offer the trip to the top driver". But that's
+            <strong>greedy</strong>, and greedy matching has a problem.</p>`
+        }
+      },
+      {
+        // --- Slide 12: matching deep dive 4 — batch optimizer ---
+        diagram: match({ add: ["batch", "m_rank_batch"] }),
+        script: {
+          title: "Matching deep dive ④: batch matching beats greedy",
+          html: `
+            <p>Picture two riders, A and B, requesting a second apart, and two free drivers,
+            1 and 2. Driver 1 is 2 minutes from A and 3 minutes from B. Driver 2 is 10
+            minutes from A but 4 minutes from B. Greedy, first-come-first-served matching gives
+            A driver 1 (2 minutes), and B is left with driver 2 (4 minutes): 6 minutes of
+            total waiting. That happens to be fine. But reverse the arrival order and greedy
+            gives B driver 1 (3 minutes) and A driver 2 (10 minutes): 13 minutes total, when 6
+            was available. <strong>The order requests arrive in shouldn't decide the
+            outcome.</strong></p>
+            <p>So instead of matching each request the instant it arrives, Dispatch
+            <strong>collects requests in a short window</strong>, on the order of a couple of
+            seconds, for each area. It then solves a <strong>global assignment</strong> over
+            every open request and free driver in that area together. That's a classic
+            bipartite matching problem: minimize total ETA, with the same fairness and
+            acceptance terms as cost adjustments. The Hungarian algorithm or a min-cost-flow
+            solver handles a few hundred by a few hundred in milliseconds.</p>
+            <p>The trade-off is explicit: we <strong>add up to ~2 seconds of latency</strong> to
+            every match in exchange for <strong>shorter average pickups and higher driver
+            utilization</strong> across the city. Riders don't notice 2 seconds against a
+            4-minute pickup; they very much notice a 10-minute one. In quiet areas with only a
+            single request in the window, this simply reduces to greedy. And because each
+            dispatch shard owns its area, the optimizer sees every competing request there,
+            with no cross-node coordination needed.</p>`
+        }
+      },
+      {
+        // --- Slide 13: matching deep dive 5 — offers + locking ---
+        diagram: match({
+          add: ["offer", "driver", "m_batch_offer", "m_offer_driver", "m_offer_state", "m_retry", "m_matched"],
+        }),
+        script: {
+          title: "Matching deep dive ⑤: offers, timeouts and the driver lock",
+          html: `
+            <p>Finally, the <strong>Offer Manager</strong> turns an assignment into an actual
+            match, and this is where we enforce the core invariant: <strong>a driver is never
+            assigned to two trips</strong>.</p>
+            <p>Before sending an offer, it <strong>locks</strong> the driver by atomically moving
+            their state from <em>free</em> to <em>offered(T42)</em>. That's a
+            <strong>compare-and-set</strong>: it succeeds only if the driver is still free. If
+            anything else got there first, the CAS fails and we take the next driver. The lock
+            has a <strong>TTL</strong> of about 15 seconds, the offer timeout. So if Dispatch
+            crashes mid-offer, or the driver's phone vanishes, the driver frees up
+            automatically rather than being stuck forever. Because one dispatch shard owns the
+            area, this CAS is local and fast. For drivers near a shard boundary, ownership of
+            the <em>driver</em> follows their current cell, so there's still exactly one place
+            the lock lives.</p>
+            <p>Then the offer goes to the <strong>driver's app</strong>. Three outcomes:
+            <strong>accept</strong>, and Dispatch tells the Trip Service, which records driver
+            D7 on trip T42 and moves it to <strong>MATCHED</strong>; <strong>decline</strong>;
+            or <strong>timeout</strong>. On either of the last two we release the lock and loop
+            back to the optimizer for the <strong>next best</strong> driver, typically
+            excluding this one for this trip.</p>
+            <p>Why offer to <strong>one driver at a time</strong> rather than broadcasting to five
+            and taking the first to tap? Broadcasting is faster, but four drivers get a
+            notification that disappears in their hands, which trains them to ignore offers
+            and feels terrible. Sequential offers with a short timeout are the better product.
+            Some systems compromise by offering to a second driver if the first hasn't
+            responded within a few seconds.</p>
+            <p>That's matching. Let's zoom back out and fix how all these messages actually
+            reach the phones.</p>`
+        }
+      },
+      {
+        // --- Slide 14: realtime gateway ---
+        diagram: main({
+          add: ["rtgw", "e_driver_rtgw", "e_rtgw_location", "e_dispatch_rtgw"],
+          remove: ["e_driver_location"],
+        }),
+        script: {
+          title: "A realtime gateway: persistent connections for drivers",
+          html: `
+            <p>Back in the full system. The offer manager needs to reach a specific driver's
+            phone <strong>within a second</strong>, and so far drivers only poll. Polling every
+            second would cost battery and multiply our request rate; polling every 10 seconds
+            would eat most of the 15-second offer window. So drivers keep a
+            <strong>persistent connection</strong> to a new <strong>Realtime
+            Gateway</strong> tier, a WebSocket or a similar long-lived stream.</p>
+            <p>That connection is two-way, so it carries traffic in both directions. Location
+            pings go <strong>up</strong> it, which is much cheaper than a fresh HTTPS request
+            every 4 seconds: no repeated handshakes or headers, just a few bytes per message.
+            Offers come <strong>down</strong> it, and the driver's accept or decline goes back
+            up.</p>
+            <p>The gateways are <strong>stateful</strong>: each one holds hundreds of thousands
+            of open connections, so we keep them deliberately thin. They authenticate the
+            connection, keep a registry of <strong>which gateway holds which driver</strong>,
+            and forward messages; all decisions stay in the services behind them. When Dispatch
+            wants to offer trip T42 to driver D7, it looks up D7's gateway and sends the
+            message there.</p>
+            <p>Mobile connections are flaky, so the protocol has to assume
+            <strong>disconnects</strong>. Every downstream message has a sequence number, and
+            the app acknowledges what it has received. On reconnect, to any gateway, the app
+            says "I last saw message 812" and the gateway replays anything newer. An offer
+            that's already expired is simply not replayed.</p>`
+        }
+      },
+      {
+        // --- Slide 15: rider tracking + push ---
+        diagram: main({ add: ["push", "e_rider_rtgw", "e_trip_rtgw", "e_rtgw_push", "e_push_driver"] }),
+        script: {
+          title: "Live tracking for riders, and push as a fallback",
+          html: `
+            <p>Riders need the same channel. Once a trip is matched, the rider app opens a
+            connection to the Realtime Gateway and <strong>subscribes</strong> to that trip.
+            Two kinds of message flow to it. The <strong>Trip Service</strong> pushes status
+            changes: "driver assigned", "arriving", "trip started". The <strong>Location
+            Service</strong> forwards the assigned driver's position as each ping arrives, so the
+            car moves smoothly on the rider's map.</p>
+            <p>The location fan-out here is <strong>tiny</strong>: one driver's pings go to one
+            rider (or a handful of people sharing their trip status). It isn't like a chat
+            channel with thousands of members. The Location Service keeps a small map of
+            <em>driver → subscribers</em> for active trips and forwards each ping to the right
+            gateway. The client also <strong>interpolates</strong> between pings along the
+            route, so a 4-second update interval still looks like smooth movement.</p>
+            <p>What if the app isn't running? A driver who's online but has switched to another
+            app, or whose OS has suspended the connection, can't receive an offer over a
+            socket. So the gateway falls back to <strong>APNs / FCM</strong> push notifications
+            to <strong>wake the app</strong>, which then reconnects and pulls the pending
+            offer. Push alone isn't reliable or fast enough to carry the offer itself, but it's
+            a good doorbell. The same mechanism tells a rider "your driver has arrived" when
+            their phone is in their pocket.</p>`
+        }
+      },
+      {
+        // --- Slide 16: trip state machine + trip store ---
+        diagram: main({ add: ["tripdb", "e_trip_tripdb"], remove: ["db"] }),
+        script: {
+          title: "The trip state machine and a sharded trip store",
+          html: `
+            <p>Now let's look harder at the <strong>trip</strong> itself, the record that must
+            be exactly right. A trip is a <strong>state machine</strong>:
+            <em>REQUESTED → MATCHED → DRIVER_ARRIVING → IN_PROGRESS → COMPLETED</em>, with
+            <em>CANCELLED</em> reachable from most states. The Trip Service is the only
+            writer, and only legal transitions are allowed.</p>
+            <p>The danger is <strong>races</strong>. The rider taps cancel at the same moment
+            the driver taps accept. Two Trip Service instances process them concurrently. If both
+            just read the row, decide, and write, we end up with a cancelled trip that has a
+            driver driving to it. The fix is <strong>conditional writes</strong>: every update
+            says "set status = MATCHED <em>where status = REQUESTED and version = 7</em>". Exactly
+            one of the racing writes wins, and the loser re-reads and reacts, telling the
+            driver "sorry, the rider cancelled". Every transition also carries an
+            <strong>idempotency key</strong> from the client, so a retried "start trip" tap
+            is harmless.</p>
+            <p>The single PostgreSQL primary becomes a <strong>sharded Trip Store</strong>,
+            partitioned by <strong>city</strong> (or region) and then by trip ID. City
+            sharding matches how everything else is partitioned, keeps a city's hot data
+            together, and lets one region's database fail without touching others. I'd use a
+            store with strongly consistent single-row conditional writes: sharded MySQL or
+            Postgres, or a NewSQL store like Spanner or CockroachDB. Uber built its own,
+            Schemaless and later Docstore, on top of MySQL. At a couple of thousand trips per
+            second the volume is modest; the hard requirement is correctness.</p>
+            <p>Completed trips are rarely updated, so after some months they can move to
+            cheaper storage for history and receipts.</p>`
+        }
+      },
+      {
+        // --- Slide 17: Kafka ---
+        diagram: main({ add: ["kafka", "e_trip_kafka", "e_location_kafka"] }),
+        script: {
+          title: "An event log: Kafka for trip and location events",
+          html: `
+            <p>A lot of things want to <strong>react</strong> to what's happening on the
+            platform: pricing wants to know where demand and supply are; payments need to know a
+            trip completed; analytics, fraud and ETA-model training want everything. We don't
+            want the Trip Service calling each of those synchronously. It would be slow,
+            fragile, and every new consumer would mean a change to the core service.</p>
+            <p>So we add <strong>Kafka</strong> as the platform's event log. The Trip Service
+            publishes an event for every state transition: <em>trip_requested</em>,
+            <em>trip_matched</em>, <em>trip_completed</em>, and so on. The Location Service
+            publishes the location stream, possibly sampled down for consumers that don't need
+            every ping. Topics are partitioned by trip ID or driver ID, so events about the same
+            entity stay in order.</p>
+            <p>One subtlety: the trip write and the event publish must not
+            <strong>disagree</strong>. If we commit the trip and then crash before publishing,
+            payments would never hear the trip ended. The standard fix is a
+            <strong>transactional outbox</strong>: write the event into an outbox table in the
+            same transaction as the trip update, and have a relay publish the outbox to Kafka.
+            Alternatively, use change-data-capture on the trip store. Either way, consumers see
+            every event <strong>at least once</strong>, so each consumer must be
+            idempotent.</p>
+            <p>Kafka also gives us <strong>replay</strong>. A new consumer, or a fixed buggy
+            one, can rewind and reprocess history. The next few slides are all consumers of
+            this log.</p>`
+        }
+      },
+      {
+        // --- Slide 18: pricing ---
+        diagram: main({ add: ["pricing", "e_pricing_maps"] }),
+        script: {
+          title: "Pricing: upfront fare quotes",
+          html: `
+            <p>Back to the very first thing the rider sees: an <strong>upfront fare</strong>.
+            When the rider sets a destination, the app asks the <strong>Pricing
+            Service</strong> for a quote, via the gateway, for each product (UberX, XL,
+            Comfort and so on).</p>
+            <p>The base fare comes from the <strong>route</strong>: Pricing asks the Maps service
+            for the expected distance and duration from pickup to dropoff, then applies the
+            city's rate card (base fee + per-minute + per-kilometer + booking fee, with
+            minimums, tolls and airport surcharges). Then it multiplies by the current
+            <strong>surge multiplier</strong> for the pickup area, which we'll compute on the
+            next slide.</p>
+            <p>The important design point is that the quote is a <strong>commitment</strong>.
+            Pricing returns a <strong>quote ID</strong> with the price and an expiry, a few
+            minutes, and stores it, or signs it so it can't be tampered with. When the rider
+            hits request, the Trip Service checks that the quote is still valid and locks that
+            price into the trip. That way the rider pays what they were shown, even if the
+            surge changes in the seconds between the quote and the tap. It also means an
+            expensive quote isn't silently re-priced. If the quote expired, the app asks for a
+            new one and shows it.</p>
+            <p>Quotes are a <strong>read-heavy</strong> path: people check prices far more often
+            than they request. Pricing is stateless and scales horizontally, and the surge
+            multiplier it reads is a precomputed value, not something computed per
+            request.</p>`
+        }
+      },
+      {
+        // --- Slide 19: surge ---
+        diagram: main({ add: ["surge", "surgestore", "e_kafka_surge", "e_surge_store", "e_pricing_surgestore"] }),
+        script: {
+          title: "Surge: streaming supply and demand per hex cell",
+          html: `
+            <p>Surge pricing exists to <strong>rebalance the market</strong>. When demand in an
+            area outstrips the drivers available, a higher price both tempers demand and pulls
+            drivers toward that area. To do that we need a live picture of supply and demand
+            per area, and Kafka already carries both.</p>
+            <p>A <strong>stream processor</strong> (Flink, say) consumes the event log and,
+            for each H3 cell, maintains <strong>sliding-window counts</strong> over the last
+            few minutes: <strong>demand</strong> from <em>trip_requested</em> events (plus app
+            opens, since people who check a price and leave are demand too), and
+            <strong>supply</strong> from free drivers in the location stream. Every minute or so it
+            computes a multiplier from the ratio, <strong>smoothed</strong> across neighboring
+            cells and over time, so prices don't jump wildly or flicker block by block. The
+            result is written to a small <strong>Surge Store</strong> (a key-value store keyed
+            by cell) that the Pricing Service reads on every quote.</p>
+            <p>A few deliberate choices here. Surge is <strong>eventually consistent</strong> and
+            a minute or so behind reality. That's fine, and it's actually desirable: a
+            multiplier that changed every second would be impossible for a driver to act on.
+            It's <strong>off the critical path</strong>: if the pipeline stalls, Pricing uses the
+            last value and then falls back to 1.0× after it goes stale, so a pipeline failure
+            costs revenue, not rides. And it's per city, with <strong>caps</strong> set by
+            policy. Some cities and emergencies legally limit surge, so the cap is a business
+            rule applied at quote time, not hard-coded in the pipeline.</p>`
+        }
+      },
+      {
+        // --- Slide 20: payments ---
+        diagram: main({
+          add: ["payment", "ledger", "psp", "e_kafka_payment", "e_payment_ledger", "e_payment_psp"],
+        }),
+        script: {
+          title: "Payments: exactly-once charges and a ledger",
+          html: `
+            <p>When a trip reaches <strong>COMPLETED</strong>, the rider must be charged
+            <strong>exactly once</strong>. The <strong>Payment Service</strong> consumes
+            <em>trip_completed</em> from Kafka. It's asynchronous on purpose: the rider shouldn't
+            wait on a card network to get out of the car, and if the processor is down we want
+            to retry later, not fail the trip.</p>
+            <p>"At least once" delivery from Kafka plus retries everywhere is a recipe for
+            double charges, so <strong>idempotency</strong> is the core of this service. Every
+            charge has an <strong>idempotency key</strong> derived from the trip, like
+            <em>charge:T42</em>. The Payment Service records the payment intent under that key
+            before calling out, and passes the same key to the <strong>payment
+            processor</strong> (Stripe, Braintree, Adyen), which also deduplicates on it. A
+            redelivered event or a retry after a timeout finds the existing record and either
+            returns its result or resumes it. It never creates a second charge. Many teams also
+            <strong>pre-authorize</strong> the card for the quoted amount at request time, so
+            the charge at the end rarely fails.</p>
+            <p>Money is tracked in a <strong>double-entry ledger</strong>: an append-only log
+            where every movement is a balanced pair of entries. The rider's card is debited for
+            the fare; the driver's earnings account, Uber's fee and taxes are credited. Entries
+            are never updated or deleted. A refund is a new, reversing entry. That makes the
+            books auditable and lets a daily <strong>reconciliation</strong> job compare our
+            ledger against the processor's settlement reports and flag any mismatch. Driver
+            payouts are then a periodic batch job over their earnings balance.</p>`
+        }
+      },
+      {
+        // --- Slide 21: data lake ---
+        diagram: main({ add: ["lake", "e_kafka_lake"] }),
+        script: {
+          title: "The data lake: analytics and the models that feed back in",
+          html: `
+            <p>Every event on Kafka also lands in a <strong>data lake</strong>: columnar files
+            on object storage (Parquet on S3 or HDFS), queried with Spark, Presto or Hive. Trips,
+            location traces, offers and whether they were accepted, quotes and whether they
+            converted. This is where the offline side of the business lives.</p>
+            <p>Some of it is classic analytics: city operations dashboards, finance,
+            experiment analysis. But a lot of it <strong>feeds back into the online
+            system</strong>, and that's why it's on the architecture diagram. The
+            <strong>ETA model</strong> that corrects the routing engine is trained on billions
+            of real trips: predicted vs. actual arrival times. The
+            <strong>acceptance-likelihood</strong> scores used in dispatch ranking come from
+            historical offer outcomes. <strong>Surge</strong> parameters and the matching
+            optimizer's weights are tuned by replaying past demand in simulation. Supply
+            positioning, nudging idle drivers toward where demand will be in 15 minutes,
+            comes from demand forecasts trained here.</p>
+            <p>Ratings and trip history fit here too. A rating is just a small write through
+            the Trip Service at the end of a trip. A driver's average rating is an
+            aggregate that's recomputed in batch and pushed back to the profile, rather than
+            computed live. The trip history list in the app reads from the trip store, and
+            older trips fall back to archived storage.</p>
+            <p>The key principle: <strong>nothing online depends on the lake being up</strong>.
+            Models and parameters are published back to the online services as artifacts, so
+            the lake can be slow or down without affecting a single ride.</p>`
+        }
+      },
+      {
+        // --- Slide 22: multi-region ---
+        diagram: main({ add: ["regions", "e_tripdb_regions"] }),
+        script: {
+          title: "Going global: regions, cells and surviving failover",
+          html: `
+            <p>Finally, <strong>going global</strong>. Ride-hailing is the most partitionable
+            system I can think of: a trip starts and ends in one city. So the natural unit of
+            deployment is a <strong>cell</strong>: a full copy of this stack serving a set of
+            cities, in a nearby region. Requests are routed to the cell that owns the city at
+            the rider's location. A bad deploy or a database problem then affects a few
+            cities, not the planet, and we roll out changes cell by cell.</p>
+            <p>Each cell's trip store is <strong>replicated to a standby region</strong>. If a
+            region fails, its cities fail over. The hard part is the trips already in flight.
+            Replication is asynchronous (synchronous cross-region writes would add latency to
+            every transition), so the standby may be a few seconds behind. Uber's answer is
+            neat: the <strong>driver's phone</strong> holds a signed, encrypted copy of the
+            current trip state, updated on each transition. After failover, when the driver
+            app reconnects to the new region, it hands that state back, and the backend
+            restores any trips it missed. The phone acts as a last-resort replica that's
+            always in the right place.</p>
+            <p>The rest rebuilds itself. The <strong>geo index</strong> isn't replicated at
+            all: within seconds of failover, drivers' pings repopulate it from scratch.
+            <strong>Dispatch</strong> state (who's free, who has an offer) is rebuilt from the
+            trip store plus fresh pings. Surge falls back to defaults until the pipeline
+            catches up. Money flows stay exactly-once because of the idempotency keys, even if
+            a charge is retried from the other region.</p>`
+        }
+      },
+      {
+        // --- Slide 23: the complete system ---
+        diagram: main(),
+        script: {
+          title: "The complete system: following one ride end to end",
+          html: `
+            <p>To close, let me follow one ride through the finished system. Maya, in
+            Chicago, opens the app at 11pm outside a concert.</p>
+            <p>Her app asks the <strong>Pricing Service</strong> for a quote through the
+            <strong>API gateway</strong>. Pricing gets the route from <strong>Maps</strong>
+            and the multiplier for her H3 cell from the <strong>Surge Store</strong>, where
+            the <strong>surge pipeline</strong> has already noticed requests spiking and free
+            drivers thinning out. She sees $24, valid for two minutes, and taps request. The
+            <strong>Trip Service</strong> validates the quote and writes trip T42 as REQUESTED
+            to the <strong>Trip Store</strong>, emitting an event to <strong>Kafka</strong>.</p>
+            <p><strong>Dispatch</strong> takes it. It pulls candidates from the
+            <strong>geo index</strong> (fed by 1.25 million pings a second through the
+            <strong>Realtime Gateways</strong> and <strong>Location Service</strong>), filters
+            to free drivers, ranks them by real ETA, and solves a two-second batch together
+            with the 40 other requests outside the venue. It locks driver D7 with a
+            compare-and-set and offers the trip down D7's WebSocket. D7 accepts; the Trip
+            Service moves T42 to MATCHED with a conditional write. Maya watches D7's car
+            approach in real time. Twenty minutes later the trip is COMPLETED, and the
+            <strong>Payment Service</strong> charges her card exactly once using the key
+            <em>charge:T42</em>, writing balanced entries to the <strong>ledger</strong>. All
+            of it lands in the <strong>data lake</strong>, and next week's ETA model is a little
+            better for it.</p>
+            <p>The themes I'd underline: <strong>separate the firehose from the
+            trickle</strong>, with locations in memory and lossy while trips are durable and
+            strongly consistent; <strong>geography is the partition key</strong> for the geo
+            index, dispatch, storage and failover alike; <strong>one owner per area</strong>
+            plus a compare-and-set lock, so a driver is never double-booked; <strong>batch
+            matching on ETA</strong> rather than greedy matching on distance; and an
+            <strong>event log</strong> so pricing, payments and analytics react without slowing
+            the ride down. With more time I'd go deeper on shared rides (Pool turns matching
+            into a routing problem), on fraud, and on how the ETA model itself is built.</p>`
+        }
+      }
+    ];
+    // ========================================================================
+    // Engine — shared by every deck. You should not need to edit below here.
+    // ========================================================================
+    let index = 0;
+
+    const el = {
+      topic: document.getElementById("topic"),
+      diagram: document.getElementById("diagram"),
+      num: document.getElementById("script-num"),
+      title: document.getElementById("script-title"),
+      body: document.getElementById("script-body"),
+      prev: document.getElementById("prev"),
+      next: document.getElementById("next"),
+      counter: document.getElementById("counter"),
+    };
+
+    function render() {
+      const slide = SLIDES[index];
+      el.topic.textContent = TOPIC;
+
+      // Replace the SVG (keep the #topic badge, which lives before it).
+      const existing = el.diagram.querySelector("svg");
+      if (existing) existing.remove();
+      el.diagram.insertAdjacentHTML("beforeend", slide.diagram);
+
+      el.num.textContent = `Slide ${index + 1} of ${SLIDES.length}`;
+      el.title.textContent = slide.script.title;
+      el.body.innerHTML = slide.script.html;
+
+      el.counter.textContent = `${index + 1} / ${SLIDES.length}`;
+      el.prev.disabled = index === 0;
+      el.next.disabled = index === SLIDES.length - 1;
+
+      el.script.scrollTop = 0;
+    }
+
+    function go(delta) {
+      const next = index + delta;
+      if (next < 0 || next >= SLIDES.length) return;
+      index = next;
+      render();
+    }
+
+    el.prev.addEventListener("click", () => go(-1));
+    el.next.addEventListener("click", () => go(1));
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowLeft") go(-1);
+      if (e.key === "ArrowRight") go(1);
+    });
+
+    // #script is referenced in render() for scroll reset.
+    el.script = document.getElementById("script");
+
+    render();
+  </script>
+</body>
+</html>
