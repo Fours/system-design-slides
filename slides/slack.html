@@ -1,0 +1,1157 @@
+<!DOCTYPE html>
+<!--
+  ============================================================================
+  SYSTEM DESIGN WALKTHROUGH — DESIGN SLACK
+  ============================================================================
+
+  Built from slides/example.html. Same layout, theme, navigation and engine.
+
+    - Slides 1–2: functional / non-functional requirements (card grids).
+    - Slides 3–16: one scene (SCENE) that grows from a single chat server to
+      the full system. The central arc is real-time delivery: WebSocket push
+      (slide 5) → stateless webapp vs. stateful gateways (6) → channel
+      servers for per-channel ordering and fan-out (7).
+
+  Navigation (shared by every deck): on-screen back/forward arrows, plus the
+  Left/Right arrow keys.
+
+  The file is fully self-contained — no build step, no external dependencies.
+  ============================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Design Slack — System Design Walkthrough</title>
+  <style>
+    :root {
+      /* ---- Theme tokens (edit here, not inline) ---- */
+      --bg: #0f172a;            /* page background */
+      --panel: #1e293b;         /* diagram panel */
+      --panel-2: #172033;       /* script panel */
+      --ink: #e2e8f0;           /* primary text */
+      --ink-dim: #94a3b8;       /* secondary text */
+      --accent: #38bdf8;        /* highlights, arrows, titles, "new" glow */
+      --border: #334155;        /* panel + box borders */
+
+      /* ---- Diagram element colors (used inside the SVGs) ---- */
+      --box-fill: #0b1222;
+      --box-stroke: #475569;
+      --box-ink: #e2e8f0;
+      --line: #64748b;
+      --client: #38bdf8;        /* clients / users / external actors */
+      --service: #a78bfa;       /* app / services   */
+      --data: #34d399;          /* data stores      */
+      --infra: #facc15;         /* gateways, load balancers, CDN, DNS */
+      --stream: #f472b6;        /* queues, event streaming */
+      --ml: #fb923c;            /* ML / batch compute */
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    /* Deck fills the viewport; diagram on top (large), script on bottom (smaller). */
+    #deck {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      padding: 16px;
+      gap: 12px;
+    }
+
+    /* ---- Top: diagram ---- */
+    #diagram {
+      flex: 1 1 62%;
+      min-height: 0;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      position: relative;
+    }
+    #diagram svg { width: 100%; height: 100%; }
+
+    /* Topic badge, top-left of the diagram panel */
+    #topic {
+      position: absolute;
+      top: 12px;
+      left: 16px;
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ink-dim);
+    }
+
+    /* ---- Bottom: script ---- */
+    #script {
+      flex: 0 0 34%;
+      min-height: 0;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px 22px;
+      overflow-y: auto;
+    }
+    #script-header {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 10px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    #script-num {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--bg);
+      background: var(--accent);
+      border-radius: 999px;
+      padding: 3px 11px;
+      white-space: nowrap;
+    }
+    #script-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--accent);
+    }
+    #script-body {
+      font-size: 15px;
+      line-height: 1.6;
+      color: var(--ink);
+    }
+    #script-body p { margin: 0 0 10px; }
+    #script-body strong { color: var(--ink); }
+    #script-body em { color: var(--ink-dim); font-style: normal; }
+
+    /* ---- Controls ---- */
+    #controls {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      flex: 0 0 auto;
+    }
+    .nav {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--ink);
+      font-size: 20px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+    }
+    .nav:hover:not(:disabled) { background: var(--border); border-color: var(--accent); }
+    .nav:disabled { opacity: 0.35; cursor: default; }
+    #counter {
+      font-size: 14px;
+      color: var(--ink-dim);
+      min-width: 70px;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ---- Reusable SVG diagram helpers ---- */
+    .box rect {
+      fill: var(--box-fill);
+      stroke: var(--box-stroke);
+      stroke-width: 1.5;
+      rx: 10;
+    }
+    .box.client rect { stroke: var(--client); }
+    .box.service rect { stroke: var(--service); }
+    .box.data rect { stroke: var(--data); }
+    .box.infra rect { stroke: var(--infra); }
+    .box.stream rect { stroke: var(--stream); }
+    .box.ml rect { stroke: var(--ml); }
+    /* A layer that other edges pass through (e.g. a cache tier). Drawn behind edges. */
+    .box.tier rect { fill: rgba(52, 211, 153, 0.06); stroke-dasharray: 5 5; }
+    /* Something that exists but we are not drawing in detail (other regions, 3rd parties). */
+    .box.ghost rect { fill: transparent; stroke-dasharray: 7 6; }
+    /* Added on the current slide (set automatically by the scene builder). */
+    .box.new rect { stroke-width: 3; filter: drop-shadow(0 0 7px var(--accent)); }
+    .box text {
+      fill: var(--box-ink);
+      font-size: 15px;
+      font-weight: 600;
+      text-anchor: middle;
+      dominant-baseline: middle;
+    }
+    .box .sub {
+      fill: var(--ink-dim);
+      font-size: 11px;
+      font-weight: 500;
+    }
+    .edge {
+      stroke: var(--line);
+      stroke-width: 1.8;
+      fill: none;
+      marker-end: url(#arrow);
+    }
+    .edge.both { marker-start: url(#arrow-start); }      /* two-way */
+    .edge.plain { marker-end: none; }                    /* no arrowhead */
+    .edge.async { stroke-dasharray: 6 5; }               /* async / background flow */
+    .edge.new { stroke: var(--accent); marker-end: url(#arrow-new); }
+    .edge.new.both { marker-start: url(#arrow-start-new); }
+    .edge.new.plain { marker-end: none; }
+    .edge-label {
+      fill: var(--ink-dim);
+      font-size: 11px;
+      text-anchor: middle;
+      /* Halo in the panel color keeps labels readable where they cross lines. */
+      paint-order: stroke;
+      stroke: var(--panel);
+      stroke-width: 4px;
+      stroke-linejoin: round;
+    }
+    .edge-label.new { fill: var(--accent); }
+
+    /* ---- Requirement slides (slides 1–2) ---- */
+    .heading { fill: var(--accent); font-size: 24px; font-weight: 700; }
+    .subheading { fill: var(--ink-dim); font-size: 14px; }
+    .card rect { fill: var(--box-fill); stroke: var(--box-stroke); stroke-width: 1.5; }
+    .card .badge { fill: var(--accent); }
+    .card .badge-num { fill: var(--bg); font-size: 13px; font-weight: 700; text-anchor: middle; dominant-baseline: central; }
+    .card .title { fill: var(--box-ink); font-size: 17px; font-weight: 700; }
+    .card .line { fill: var(--ink-dim); font-size: 13.5px; }
+    .panel-box { fill: var(--box-fill); stroke: var(--accent); stroke-width: 1.5; }
+    .panel-title { fill: var(--accent); font-size: 17px; font-weight: 700; }
+    .strip { fill: transparent; stroke: var(--box-stroke); stroke-width: 1.5; stroke-dasharray: 7 6; }
+    .strip-title { fill: var(--ink); font-size: 15px; font-weight: 700; }
+    .strip-text { fill: var(--ink-dim); font-size: 13.5px; }
+    .est-k { fill: var(--accent); font-size: 13.5px; font-weight: 700; }
+    .est-v { fill: var(--ink); font-size: 13.5px; }
+  </style>
+</head>
+<body>
+  <div id="deck">
+    <section id="diagram" aria-label="System diagram">
+      <span id="topic"></span>
+      <!-- SVG for the active slide is injected here -->
+    </section>
+
+    <section id="script" aria-label="Script">
+      <div id="script-header">
+        <span id="script-num"></span>
+        <span id="script-title"></span>
+      </div>
+      <div id="script-body"></div>
+    </section>
+
+    <div id="controls">
+      <button class="nav" id="prev" aria-label="Previous slide">&#8592;</button>
+      <span id="counter"></span>
+      <button class="nav" id="next" aria-label="Next slide">&#8594;</button>
+    </div>
+  </div>
+
+  <script>
+    // ========================================================================
+    // EDIT THIS: the system being designed.
+    // ========================================================================
+    const TOPIC = "Design Slack";
+
+    // Shared <defs>: default arrowhead, a start-reversed variant for two-way
+    // edges, and accent-colored variants for edges added on the current slide.
+    const DEFS = `
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--line)"></path>
+        </marker>
+        <marker id="arrow-start" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--line)"></path>
+        </marker>
+        <marker id="arrow-new" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"></path>
+        </marker>
+        <marker id="arrow-start-new" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"></path>
+        </marker>
+      </defs>`;
+
+    // Labeled box. `kind` is a space-separated class list:
+    //   color: "client" | "service" | "data" | "infra" | "stream" | "ml"
+    //   style: optionally plus "tier" (pass-through layer) or "ghost" (dashed)
+    //   "new" is added automatically by the scene builder.
+    // `sub` is an optional second line (e.g. a technology or role note).
+    function box(x, y, w, h, label, kind = "", sub = "") {
+      const cx = x + w / 2;
+      const subText = sub
+        ? `<text class="sub" x="${cx}" y="${y + h / 2 + 12}">${sub}</text>`
+        : "";
+      const labelY = sub ? y + h / 2 - 7 : y + h / 2;
+      return `
+        <g class="box ${kind}">
+          <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <text x="${cx}" y="${labelY}">${label}</text>
+          ${subText}
+        </g>`;
+    }
+
+    // ========================================================================
+    // Requirement-slide helpers (slides 1–2). Use viewBox 0 0 1200 640.
+    // ========================================================================
+
+    // One numbered requirement card: a title plus 1–3 short lines.
+    function card(x, y, w, h, num, title, lines) {
+      const body = lines
+        .map((l, i) => `<text class="line" x="${x + 18}" y="${y + 66 + i * 21}">${l}</text>`)
+        .join("");
+      return `
+        <g class="card">
+          <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <circle class="badge" cx="${x + 30}" cy="${y + 30}" r="13"></circle>
+          <text class="badge-num" x="${x + 30}" y="${y + 30}">${num}</text>
+          <text class="title" x="${x + 52}" y="${y + 36}">${title}</text>
+          ${body}
+        </g>`;
+    }
+
+    // A grid of cards, numbered 1..N. items = [[title, [line, line]], ...]
+    function cardGrid(x0, y0, w, h, gap, cols, items) {
+      return items
+        .map((it, i) => {
+          const c = i % cols, r = Math.floor(i / cols);
+          return card(x0 + c * (w + gap), y0 + r * (h + gap), w, h, i + 1, it[0], it[1]);
+        })
+        .join("");
+    }
+
+    // Dashed strip with a title and lines (out-of-scope list, key takeaway).
+    function strip(x, y, w, h, title, lines) {
+      const body = lines
+        .map((l, i) => `<text class="strip-text" x="${x + 24}" y="${y + 64 + i * 22}">${l}</text>`)
+        .join("");
+      return `
+        <rect class="strip" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+        <text class="strip-title" x="${x + 24}" y="${y + 34}">${title}</text>
+        ${body}`;
+    }
+
+    // Accent-bordered panel of back-of-the-envelope estimates.
+    // rows = [[heading, [value, value]], ...]
+    function estimatesPanel(x, y, w, h, title, rows) {
+      let cy = y + 66;
+      const body = rows
+        .map(([k, vs]) => {
+          let s = `<text class="est-k" x="${x + 20}" y="${cy}">${k}</text>`;
+          vs.forEach((v) => { cy += 21; s += `<text class="est-v" x="${x + 20}" y="${cy}">${v}</text>`; });
+          cy += 36;
+          return s;
+        })
+        .join("");
+      return `
+        <rect class="panel-box" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+        <text class="panel-title" x="${x + 20}" y="${y + 32}">${title}</text>
+        ${body}`;
+    }
+
+    // ========================================================================
+    // Scene builder — shared by every deck. You should not need to edit this.
+    //
+    //   const scene = sceneBuilder(SCENE);
+    //   scene({ add: ["client", "server", "e_client_server"] })  // -> <svg>
+    //   scene({ add: ["db", "e_server_db"] })                    // cumulative
+    //   scene({ add: [...], remove: ["server"] })                // replace a box
+    //   scene()                                                  // no change
+    // ========================================================================
+
+    // Edge label position: midpoint of the longest segment. Above horizontal /
+    // diagonal segments, to the right of vertical ones. Override with `lp`.
+    function labelPos(e) {
+      if (e.lp) return e.lp;
+      let best = null, len = -1;
+      for (let i = 0; i < e.pts.length - 1; i++) {
+        const [x1, y1] = e.pts[i], [x2, y2] = e.pts[i + 1];
+        const l = Math.hypot(x2 - x1, y2 - y1);
+        if (l > len) { len = l; best = [x1, y1, x2, y2]; }
+      }
+      const [x1, y1, x2, y2] = best;
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+      return x1 === x2 ? [mx + 7, my + 4, "start"] : [mx, my - 7, "middle"];
+    }
+
+    function sceneBuilder(def) {
+      const boxes = Object.fromEntries(def.boxes.map((b) => [b.id, b]));
+      const visible = new Set();
+
+      return function step({ add = [], remove = [] } = {}) {
+        remove.forEach((id) => visible.delete(id));
+        add.forEach((id) => visible.add(id));
+        const fresh = new Set(add);
+        const isOn = (id) => visible.has(id);
+
+        const lines = [], labels = [], back = [], front = [], pts = [];
+
+        const drawEdge = (pathPts, cls, label, lp) => {
+          const d = pathPts.map((p, i) => `${i ? "L" : "M"}${p[0]},${p[1]}`).join(" ");
+          lines.push(`<path class="edge ${cls}" d="${d}"></path>`);
+          pathPts.forEach((p) => pts.push(p));
+          if (label) {
+            const [lx, ly, anchor] = lp;
+            const nw = cls.includes("new") ? "new" : "";
+            labels.push(`<text class="edge-label ${nw}" x="${lx}" y="${ly}" style="text-anchor:${anchor}">${label}</text>`);
+          }
+        };
+
+        // Boxes ("tier" boxes go behind the edges, everything else in front).
+        def.boxes.forEach((b) => {
+          if (!isOn(b.id)) return;
+          const kind = `${b.kind}${fresh.has(b.id) ? " new" : ""}`;
+          const svg = box(b.x, b.y, b.w, b.h, b.label, kind, b.sub || "");
+          (b.kind.includes("tier") ? back : front).push(svg);
+          pts.push([b.x, b.y], [b.x + b.w, b.y + b.h]);
+        });
+
+        // Explicit edges: shown when added AND both endpoints are visible.
+        def.edges.forEach((e) => {
+          if (!isOn(e.id) || !isOn(e.from) || !isOn(e.to)) return;
+          const cls = [
+            fresh.has(e.id) ? "new" : "",
+            e.both ? "both" : "",
+            e.async ? "async" : "",
+          ].join(" ");
+          drawEdge(e.pts, cls, e.label, e.label ? labelPos(e) : null);
+        });
+
+        // Optional "bus": a hub (gateway / load balancer) fans out to member
+        // boxes via a vertical line. Members join the bus as they are added.
+        const bus = def.bus;
+        if (bus && isOn(bus.hub)) {
+          const members = bus.members.filter(isOn).map((id) => boxes[id]);
+          if (members.length) {
+            const hubNew = fresh.has(bus.hub);
+            const ys = members.map((b) => b.y + b.h / 2).concat([bus.hubY]);
+            const top = Math.min(...ys), bottom = Math.max(...ys);
+            const pn = hubNew ? "new plain" : "plain";
+            drawEdge([[bus.hubX, bus.hubY], [bus.x, bus.hubY]], pn, bus.label, bus.lp);
+            drawEdge([[bus.x, top], [bus.x, bottom]], pn);
+            members.forEach((b) => {
+              const y = b.y + b.h / 2;
+              drawEdge([[bus.x, y], [b.x, y]], hubNew || fresh.has(b.id) ? "new" : "");
+            });
+          }
+        }
+
+        // Auto-fit the viewBox to what is visible (with a minimum size).
+        const pad = 40;
+        let x0 = Math.min(...pts.map((p) => p[0])) - pad;
+        let y0 = Math.min(...pts.map((p) => p[1])) - pad;
+        let x1 = Math.max(...pts.map((p) => p[0])) + pad;
+        let y1 = Math.max(...pts.map((p) => p[1])) + pad;
+        const minW = 900, minH = 460;
+        if (x1 - x0 < minW) { const g = (minW - (x1 - x0)) / 2; x0 -= g; x1 += g; }
+        if (y1 - y0 < minH) { const g = (minH - (y1 - y0)) / 2; y0 -= g; y1 += g; }
+
+        return `
+          <svg viewBox="${x0} ${y0} ${x1 - x0} ${y1 - y0}" xmlns="http://www.w3.org/2000/svg">
+            ${DEFS}
+            ${back.join("")}
+            ${lines.join("")}
+            ${front.join("")}
+            ${labels.join("")}
+          </svg>`;
+      };
+    }
+
+    // ========================================================================
+    // EDIT THIS: the scene — every component of the FINAL system.
+    //
+    // Layout tips:
+    //   - Sketch the final diagram first; lay it out in columns
+    //     (clients | edge/infra | services | data | async) with a fixed row
+    //     pitch (~70px for 54px-tall boxes) so horizontal edges line up.
+    //   - Aim for a wide, short canvas (roughly 2:1 or wider); the diagram
+    //     panel is much wider than it is tall.
+    //   - Box: { id, x, y, w, h, label, kind, sub }. Keep labels short enough
+    //     for the box width (~8px per character at 15px bold).
+    //   - Edge: { id, from, to, pts: [[x,y], ...], label?, lp?, both?, async? }
+    //     `pts` is a polyline; route around boxes through the gaps between
+    //     columns. `lp: [x, y, "start" | "middle"]` overrides label placement.
+    //   - A box that only exists early on (e.g. a monolithic "server") can
+    //     share space with boxes that replace it later; remove it on the
+    //     slide that splits it up.
+    // ========================================================================
+    const SCENE = {
+      boxes: [
+        // Clients
+        { id: "client",    x: 40,   y: 90,  w: 170, h: 370, label: "Slack Clients", kind: "client", sub: "desktop · web · mobile" },
+        // Edge / infra
+        { id: "cdn",       x: 280,  y: 20,  w: 170, h: 54,  label: "CDN", kind: "infra", sub: "file downloads" },
+        { id: "flannel",   x: 280,  y: 90,  w: 170, h: 54,  label: "Edge Cache", kind: "infra", sub: "Flannel · boot data" },
+        { id: "lb",        x: 280,  y: 230, w: 170, h: 54,  label: "Load Balancer", kind: "infra", sub: "HTTPS API" },
+        { id: "gw",        x: 280,  y: 370, w: 170, h: 124, label: "Gateway Servers", kind: "infra", sub: "WebSockets · stateful" },
+        // Slides 3–5 only: the naive single server (same spot as the webapp)
+        { id: "server",    x: 530,  y: 160, w: 190, h: 124, label: "Chat Server", kind: "service", sub: "one process does it all" },
+        // Services
+        { id: "file",      x: 530,  y: 20,  w: 190, h: 54,  label: "File Service", kind: "service", sub: "upload · signed URLs" },
+        { id: "search",    x: 530,  y: 90,  w: 190, h: 54,  label: "Search Service", kind: "service", sub: "permission-aware" },
+        { id: "webapp",    x: 530,  y: 160, w: 190, h: 124, label: "Webapp (API)", kind: "service", sub: "stateless · any request" },
+        { id: "cs",        x: 530,  y: 370, w: 190, h: 124, label: "Channel Servers", kind: "service", sub: "pub/sub · hashed by channel" },
+        { id: "presence",  x: 530,  y: 510, w: 190, h: 54,  label: "Presence Service", kind: "service", sub: "in-memory · by user" },
+        // Data
+        { id: "blob",      x: 800,  y: 20,  w: 180, h: 54,  label: "Blob Store", kind: "data", sub: "files · thumbnails" },
+        { id: "searchidx", x: 800,  y: 90,  w: 180, h: 54,  label: "Search Index", kind: "data", sub: "per workspace" },
+        { id: "db",        x: 800,  y: 160, w: 180, h: 124, label: "Database", kind: "data", sub: "MySQL · one primary" },
+        { id: "vitess",    x: 800,  y: 160, w: 180, h: 124, label: "Vitess (MySQL)", kind: "data", sub: "by channel · workspace" },
+        { id: "queue",     x: 800,  y: 300, w: 180, h: 54,  label: "Job Queue", kind: "stream", sub: "Kafka + Redis" },
+        // Async workers and the outside world
+        { id: "indexer",   x: 1050, y: 90,  w: 190, h: 54,  label: "Search Indexer", kind: "service", sub: "async · seconds" },
+        { id: "regions",   x: 1050, y: 160, w: 190, h: 54,  label: "Other Regions ×N", kind: "ghost", sub: "edge PoPs · standbys" },
+        { id: "notif",     x: 1050, y: 300, w: 190, h: 54,  label: "Notification Workers", kind: "service", sub: "who · when · dedupe" },
+        { id: "push",      x: 1050, y: 440, w: 190, h: 54,  label: "APNs / FCM · Email", kind: "ghost", sub: "third parties" },
+      ],
+      edges: [
+        // Naive starting point
+        { id: "e_client_server", from: "client", to: "server", pts: [[210, 222], [530, 222]], label: "HTTPS", both: true },
+        { id: "e_server_db", from: "server", to: "db", pts: [[720, 222], [800, 222]], label: "SQL", both: true },
+        { id: "e_client_server_ws", from: "client", to: "server", pts: [[210, 262], [530, 262]], label: "WebSocket (push)", both: true },
+        // Stateless API vs. stateful connections
+        { id: "e_client_lb", from: "client", to: "lb", pts: [[210, 257], [280, 257]], label: "HTTPS", both: true },
+        { id: "e_client_gw", from: "client", to: "gw", pts: [[210, 420], [280, 420]], label: "WebSocket", both: true },
+        { id: "e_webapp_db", from: "webapp", to: "db", pts: [[720, 222], [800, 222]], label: "SQL", both: true },
+        { id: "e_webapp_gw_direct", from: "webapp", to: "gw", pts: [[600, 284], [600, 432], [450, 432]], label: "which gateway holds Bob?", lp: [608, 340, "start"] },
+        // Channel servers
+        { id: "e_webapp_cs", from: "webapp", to: "cs", pts: [[625, 284], [625, 370]], label: "publish" },
+        { id: "e_gw_cs", from: "gw", to: "cs", pts: [[450, 432], [530, 432]], label: "events", both: true },
+        // Sharded database
+        { id: "e_webapp_vitess", from: "webapp", to: "vitess", pts: [[720, 222], [800, 222]], label: "SQL", both: true },
+        // Edge cache
+        { id: "e_client_flannel", from: "client", to: "flannel", pts: [[210, 117], [280, 117]], label: "boot", both: true },
+        { id: "e_flannel_lb", from: "flannel", to: "lb", pts: [[365, 144], [365, 230]], label: "miss" },
+        // Presence
+        { id: "e_gw_presence", from: "gw", to: "presence", pts: [[365, 494], [365, 537], [530, 537]], label: "presence", lp: [447, 530, "middle"], both: true },
+        // Job queue and its consumers
+        { id: "e_webapp_queue", from: "webapp", to: "queue", pts: [[720, 272], [760, 272], [760, 327], [800, 327]], label: "jobs", lp: [766, 304, "start"], async: true },
+        { id: "e_queue_notif", from: "queue", to: "notif", pts: [[980, 327], [1050, 327]] },
+        { id: "e_notif_push", from: "notif", to: "push", pts: [[1145, 354], [1145, 440]], label: "push · email" },
+        { id: "e_queue_indexer", from: "queue", to: "indexer", pts: [[980, 312], [1015, 312], [1015, 130], [1050, 130]] },
+        { id: "e_indexer_idx", from: "indexer", to: "searchidx", pts: [[1050, 104], [980, 104]] },
+        { id: "e_search_idx", from: "search", to: "searchidx", pts: [[720, 117], [800, 117]] },
+        // Files
+        { id: "e_file_blob", from: "file", to: "blob", pts: [[720, 47], [800, 47]], label: "upload" },
+        { id: "e_cdn_client", from: "cdn", to: "client", pts: [[280, 47], [125, 47], [125, 90]], label: "files", lp: [205, 40, "middle"] },
+        { id: "e_cdn_blob", from: "cdn", to: "blob", pts: [[365, 20], [365, -15], [890, -15], [890, 20]], label: "origin pull · signed URLs", lp: [628, -22, "middle"] },
+        // Multi-region
+        { id: "e_vitess_regions", from: "vitess", to: "regions", pts: [[980, 187], [1050, 187]], both: true, async: true },
+      ],
+      // The load balancer fans out to the HTTP services along a vertical bus.
+      bus: { hub: "lb", hubX: 450, hubY: 257, x: 490, members: ["file", "search", "webapp"] },
+    };
+
+    const scene = sceneBuilder(SCENE);
+
+    // ========================================================================
+    // EDIT THIS: one entry per step of the design.
+    // ========================================================================
+    const SLIDES = [
+      {
+        // --- Slide 1: functional requirements ---
+        diagram: `
+          <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
+            <text class="heading" x="30" y="42">Functional requirements</text>
+            <text class="subheading" x="330" y="42">what a user can do</text>
+            ${cardGrid(30, 66, 370, 128, 15, 3, [
+              ["Workspaces &amp; channels", ["Public and private channels", "Join, leave, invite members"]],
+              ["Send messages", ["Real-time delivery to online members", "Same order on every screen"]],
+              ["DMs &amp; group DMs", ["1:1 and small-group conversations", "Modeled as tiny private channels"]],
+              ["Threads &amp; reactions", ["Threaded replies, emoji reactions", "Edit and delete your messages"]],
+              ["History &amp; sync", ["Scroll back through all history", "Desktop, web, mobile stay in sync"]],
+              ["Unreads &amp; mentions", ["Read position per channel", "Badge counts and @mentions"]],
+              ["Presence &amp; typing", ["Online / away indicators", "“Alice is typing…”"]],
+              ["Notifications", ["Mobile push or email when away", "Respects per-user preferences"]],
+              ["Search &amp; files", ["Full-text, permission-aware search", "Upload and preview files"]],
+            ])}
+            ${strip(30, 512, 1140, 100, "Out of scope (mentioned, not designed)", [
+              "Huddles &amp; calls  ·  Slack Connect (cross-company channels)  ·  Apps, bots &amp; workflows  ·  Compliance / eDiscovery  ·  SSO &amp; auth  ·  Billing",
+              "Rich-text rendering and client UI: we design what the backend stores and delivers, not how the client draws it",
+            ])}
+          </svg>`,
+        script: {
+          title: "Functional requirements: what we're building",
+          html: `
+            <p>Before drawing anything I want to pin down <strong>what Slack does</strong> for
+            the purposes of this design, because it has grown into a large platform. I'll focus
+            on the core: real-time team messaging.</p>
+            <p>The basic unit is a <strong>workspace</strong> (one company or team) containing
+            <strong>channels</strong>, both public ones anyone in the workspace can join and
+            private, invite-only ones. Inside a channel you <strong>send messages</strong>, and
+            the defining property is that they appear <strong>in real time</strong> for
+            everyone currently online, in the same order for everyone. <strong>DMs and group
+            DMs</strong> are the same experience with a fixed set of people. On top of that come
+            the conversation features: <strong>threads</strong>, emoji
+            <strong>reactions</strong>, and editing or deleting your own messages.</p>
+            <p>Unlike a lot of chat apps, Slack is a <strong>system of record</strong>. You can
+            scroll back through years of <strong>history</strong>, and every device you own
+            (desktop, browser, phone) stays in sync. That includes <strong>unread
+            state</strong>: the bold channel names, badge counts and @mentions all have to agree
+            across devices.</p>
+            <p>Around that core are <strong>presence</strong> (the green dot) and typing
+            indicators, <strong>notifications</strong> by mobile push or email when you're away,
+            <strong>search</strong> across everything you're allowed to see, and
+            <strong>file</strong> sharing.</p>
+            <p>I'm leaving out Huddles and calls, Slack Connect channels shared between
+            companies, the apps, bots and workflow platform, enterprise compliance such as
+            eDiscovery and legal holds, SSO and billing. Each is a real system that could be its
+            own interview. Where the core design affects them, I'll say so.</p>`
+        }
+      },
+      {
+        // --- Slide 2: non-functional requirements + estimates ---
+        diagram: `
+          <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
+            <text class="heading" x="30" y="42">Non-functional requirements</text>
+            <text class="subheading" x="372" y="42">how well it has to do it</text>
+            ${cardGrid(30, 66, 255, 128, 13, 3, [
+              ["Scale", ["50M DAU · ~1M workspaces", "Biggest orgs: 500K members"]],
+              ["Real-time", ["Delivery to online members", "&lt; 500 ms p99"]],
+              ["Ordering", ["One total order per channel", "No gaps, no duplicates"]],
+              ["Durability", ["An acked message is never lost", "History kept indefinitely"]],
+              ["99.99% available", ["Disconnect → reconnect", "and catch up, never lose data"]],
+              ["Multi-tenant", ["Isolation between workspaces", "No noisy neighbors"]],
+              ["Data residency", ["A workspace's data can be", "pinned to a chosen region"]],
+              ["Bursty", ["Weekday working-hour peaks", "Reconnect storms after outages"]],
+              ["Huge channels", ["#general with 100K+ members", "Fan-out must stay bounded"]],
+            ])}
+            ${estimatesPanel(832, 66, 338, 410, "Back of the envelope", [
+              ["Messages", ["50M × ~50/day ≈ 2.5B/day", "≈ 30K/s avg · ~100K/s peak"]],
+              ["Live connections", ["~30M concurrent WebSockets", "(several devices per user)"]],
+              ["Fan-out", ["~20 online members per message", "≈ 1M socket deliveries/s"]],
+              ["Storage", ["~1 KB with indexes × 2.5B/day", "≈ 2.5 TB/day ≈ 1 PB/yr"]],
+            ])}
+            ${strip(30, 496, 1140, 100, "Takeaway: the problem is connections and fan-out, not storage", [
+              "Tens of millions of long-lived sockets + strict per-channel order → separate the stateful connection tier from the stateless API",
+              "Gateways hold sockets  ·  one owner per channel for order &amp; fan-out  ·  DB sharded by tenant / channel  ·  offline users → push",
+            ])}
+          </svg>`,
+        script: {
+          title: "Non-functional requirements and back-of-the-envelope math",
+          html: `
+            <p>Now the qualities the system needs. On <strong>scale</strong>, I'll assume
+            around 50 million daily users across about a million workspaces. Most workspaces
+            are small, but the biggest enterprises have half a million members, and that skew
+            matters as much as the totals do.</p>
+            <p>The product has to feel instant, so a message should reach online members in
+            under <strong>500 milliseconds</strong> at p99. Everyone must see a channel's
+            messages in the <strong>same order</strong>, with no gaps or duplicates, even across
+            reconnects. Once the sender sees "sent," the message is
+            <strong>durable</strong>, and history is kept indefinitely on paid plans.</p>
+            <p>Companies run their day on Slack, so I'm targeting <strong>99.99%</strong>
+            availability. The more precise requirement is that losing a connection means a
+            quick reconnect and catch-up, never lost data. It's <strong>multi-tenant</strong>,
+            so one giant customer mustn't slow everyone else down, and some customers require
+            their data to stay in a particular region. Traffic is <strong>bursty</strong>: it
+            follows the working day in each time zone, and the worst moment is right after an
+            outage, when everybody reconnects at once.</p>
+            <p>The numbers: 50 million people sending about 50 messages a day is roughly
+            <strong>2.5 billion messages a day</strong>, around 30,000 a second on average and
+            100,000 at peak. Storage comes to about a petabyte a year. That's big, but it's a
+            solved problem. The numbers that actually shape the design are about
+            <strong>30 million open WebSockets</strong> at any moment, and roughly a
+            <strong>million socket deliveries a second</strong> once each message fans out to
+            its online members.</p>
+            <p>So the takeaway is that the hard part is <strong>connections and
+            fan-out</strong>, not storage. That points to a separate tier that holds sockets,
+            something that owns each channel's order and fan-out, a database sharded by tenant,
+            and push notifications for whoever is offline. Let's build up to that.</p>`
+        }
+      },
+      {
+        // --- Slide 3: the simplest possible starting point ---
+        diagram: scene({ add: ["client", "server", "e_client_server"] }),
+        script: {
+          title: "Start simple: one client, one chat server",
+          html: `
+            <p>I'll start with the simplest thing that could work: a <strong>Slack
+            client</strong> (desktop, web or mobile) talking to a single <strong>chat
+            server</strong> over HTTPS. To send, the client POSTs the text and a channel ID. To
+            receive, it asks the server "anything new in this channel since the last message I
+            saw?"</p>
+            <p>Even this toy version forces two decisions that last all the way to the final
+            diagram. First, <strong>everything is a channel</strong>. Public channels, private
+            channels, DMs and group DMs are the same object with different membership rules. A
+            DM is a private channel with exactly two members. That gives us one code path for
+            sending, storing, ordering and fan-out instead of four.</p>
+            <p>Second, the client and server talk in terms of <strong>a channel ID plus a
+            position in that channel</strong>. "Give me everything after position X" is how the
+            client will catch up after a reconnect, how a second device syncs, and how unread
+            counts are computed. I'll make that position concrete when we get to storage.</p>
+            <p>The obvious problems: this server keeps everything in memory, so a restart loses
+            all history. And asking the server whether there's anything new is
+            <strong>polling</strong>, which is either slow or wasteful. Let's fix those one at a
+            time, starting with durability.</p>`
+        }
+      },
+      {
+        // --- Slide 4: a database ---
+        diagram: scene({ add: ["db", "e_server_db"] }),
+        script: {
+          title: "Persist every message in a database",
+          html: `
+            <p>Messages are the product's core asset. People search back years to find a
+            decision, so <strong>losing an acknowledged message is unacceptable</strong>. The
+            server writes every message to a <strong>relational database</strong>, MySQL here,
+            before it acknowledges the send to the client.</p>
+            <p>The central table is simple: <em>messages(channel_id, ts, user_id, text,
+            thread_ts, …)</em>. The interesting column is <strong>ts</strong>, a timestamp-like
+            ID that is unique and strictly increasing within a channel and also serves as the
+            message's identity. The primary key is <strong>(channel_id, ts)</strong>, so the most
+            common query, "the latest 50 messages in this channel" or "everything after ts X,"
+            is a single range scan on a single index.</p>
+            <p>The rest of the model hangs off that. A <strong>thread reply</strong> is a
+            message whose <em>thread_ts</em> points at its parent. <strong>Reactions</strong>
+            are a small table keyed by message. <strong>Edits and deletes</strong> update the
+            row and are also emitted as events, so clients can patch what they're already
+            showing. For unreads, each user has a <strong>read cursor</strong> per channel,
+            <em>last_read_ts</em>. The unread count is "messages in this channel with ts greater
+            than my cursor," and a mention badge is the same query restricted to messages that
+            mention me.</p>
+            <p>Why relational, rather than a wide-column store like Cassandra, which many chat
+            systems use? Slack's data is <strong>very relational</strong>: workspaces,
+            channels, memberships, permissions and messages all reference each other, and
+            nearly every lookup is scoped to one workspace. A transactional store with secondary
+            indexes makes those queries easy. That only holds up at scale if we shard it, which
+            we'll get to shortly.</p>`
+        }
+      },
+      {
+        // --- Slide 5: WebSocket push ---
+        diagram: scene({ add: ["e_client_server_ws"] }),
+        script: {
+          title: "Real-time delivery: push over a WebSocket",
+          html: `
+            <p>Polling is the next problem. If 30 million clients poll every channel every few
+            seconds, nearly every request comes back empty. If they poll slowly, messages feel
+            laggy. Neither meets the <strong>500 ms</strong> target.</p>
+            <p>So the client opens a <strong>WebSocket</strong>, a long-lived, bidirectional
+            connection, and the server pushes events down it as they happen: new message,
+            edit, reaction, member joined, someone is typing. It's one socket <em>per
+            device</em>, not per channel, so a user in 200 channels still holds one
+            connection.</p>
+            <p>I'm deliberately keeping <strong>sends on plain HTTPS</strong>, not on the
+            socket. A POST has a clear success or failure, goes through the same auth, rate
+            limiting and validation as every other API call, and carries a
+            <strong>client-generated message ID</strong>, so a retry after a timeout can never
+            create a duplicate. The socket is for the <strong>server-to-client</strong>
+            direction, where push is the whole point.</p>
+            <p>This introduces the most important idea in the design: the socket is a
+            <strong>fast path, not the source of truth</strong>. Sockets drop constantly.
+            Laptops sleep, phones switch networks, deploys restart servers. When a client
+            reconnects, it doesn't assume it saw everything. It asks the API for each channel's
+            messages after the last ts it has. Because the database is authoritative and every
+            message has an ordered position, a dropped socket costs a bit of latency and never
+            costs data.</p>`
+        }
+      },
+      {
+        // --- Slide 6: split stateless API from stateful connections ---
+        diagram: scene({
+          add: ["webapp", "lb", "gw", "e_client_lb", "e_client_gw", "e_webapp_db", "e_webapp_gw_direct"],
+          remove: ["server"],
+        }),
+        script: {
+          title: "Split the stateless API from the stateful connections",
+          html: `
+            <p>One server can't hold 30 million sockets. A well-tuned machine holds a few hundred
+            thousand mostly idle WebSockets, so we need on the order of a hundred machines just
+            for connections. And holding connections is a very different job from serving API
+            requests.</p>
+            <p>So I split the server in two. The <strong>webapp</strong> is a
+            <strong>stateless</strong> fleet that handles every HTTP API call: send a message,
+            fetch history, create a channel, move a read cursor. It sits behind a
+            <strong>load balancer</strong>, any request can go to any server, and we can deploy
+            it many times a day. <strong>Gateway servers</strong> are the
+            <strong>stateful</strong> tier. Each one holds a large number of open WebSockets and
+            does very little else: authenticate the connection, remember which channels each
+            socket cares about, and push events down.</p>
+            <p>The split matters for operations as much as for scale. Redeploying a stateless
+            webapp is free. Restarting a gateway disconnects every client on it, so gateways are
+            deployed slowly and drained gently, and we want their code to be <strong>small and
+            rarely changed</strong>. Keeping business logic out of the gateway is what makes that
+            possible.</p>
+            <p>But it raises the question on the highlighted line. When Alice posts in #eng, the
+            webapp that handled her request has to get the message to whichever gateways #eng's
+            online members happen to be connected to. It doesn't know which those are, and it
+            shouldn't have to track 30 million sockets to find out. We need something in the
+            middle that knows who is listening to each channel.</p>`
+        }
+      },
+      {
+        // --- Slide 7: channel servers ---
+        diagram: scene({ add: ["cs", "e_webapp_cs", "e_gw_cs"], remove: ["e_webapp_gw_direct"] }),
+        script: {
+          title: "Channel servers: one owner per channel for order and fan-out",
+          html: `
+            <p>That something is a tier of <strong>channel servers</strong>, an in-memory
+            publish/subscribe layer. Every channel is assigned to exactly one channel server by
+            <strong>consistent hashing</strong> on its channel ID. A small coordination service
+            holds the hash ring, so every webapp and gateway agrees on who owns what.</p>
+            <p>Here's the flow. When a client connects, its gateway <strong>subscribes</strong>
+            to the channel servers that own that user's channels, once per gateway per channel,
+            however many local users share it. When Alice posts, the webapp writes to the
+            database and then <strong>publishes</strong> to the channel server that owns #eng.
+            That server sends the event to each subscribed gateway, and each gateway writes it
+            to its local sockets. A message to 1,000 online members becomes one publish, a few
+            dozen gateway hops, and 1,000 cheap local writes.</p>
+            <p><strong>Single ownership</strong> also gives us <strong>ordering</strong>. All of
+            a channel's events pass through one process, so every subscriber sees them in the
+            same order. The ts from the database lets a client spot a gap and fill it with one
+            API call.</p>
+            <p>Channel servers hold <strong>no durable state</strong>, only subscriptions and a
+            short buffer of recent events. If one dies, its channels re-hash to its neighbors,
+            gateways re-subscribe, and clients catch up from the database. With consistent
+            hashing, only the failed server's share of channels moves.</p>
+            <p>And the giant <em>#general</em> with 100,000 members? Fan-out happens per gateway,
+            not per user, so its cost is bounded by the number of gateways. That's what this
+            layering buys us. For the very largest channels we can also restrict who can post
+            and coalesce noisy events like reactions.</p>`
+        }
+      },
+      {
+        // --- Slide 8: shard the database ---
+        diagram: scene({ add: ["vitess", "e_webapp_vitess"], remove: ["db"] }),
+        script: {
+          title: "Shard the database by workspace, then by channel",
+          html: `
+            <p>Now the database. At 2.5 billion messages and roughly 2.5 TB a day, a single MySQL
+            primary is out of the question, so we have to <strong>shard</strong>. The question
+            is the shard key.</p>
+            <p>The natural first choice, and what Slack originally did, is to shard by
+            <strong>workspace</strong>. Almost every query is scoped to one workspace, so it
+            lands on one shard with real joins and transactions. Tenant isolation comes for free:
+            a customer's data lives together and can be moved, backed up or pinned to a region
+            as a unit.</p>
+            <p>The weakness is <strong>skew</strong>. A 500,000-person enterprise lands on one
+            shard and turns it into a hot spot, and a channel shared between two companies
+            doesn't belong to either workspace. So the mature design puts
+            <strong>Vitess</strong>, a sharding layer for MySQL, in front of the databases.
+            That lets each table pick its own key: messages by <strong>channel ID</strong>,
+            workspace metadata by workspace, users by user ID. Vitess routes each query to the
+            right shard, so the webapp never hard-codes the topology, and hot shards can be split
+            online.</p>
+            <p>Each shard is a primary with replicas. Writes go to the primary and are
+            <strong>semi-synchronously replicated</strong> before we acknowledge the send, which
+            is how "acked means durable" survives a machine dying. History reads can go to
+            replicas, because a slightly stale page of history is fine when the client merges in
+            live events on top. The one place we need read-your-writes is right after a send,
+            and the sender's client already has that message locally.</p>`
+        }
+      },
+      {
+        // --- Slide 9: edge cache for boot and reconnect ---
+        diagram: scene({ add: ["flannel", "e_client_flannel", "e_flannel_lb"] }),
+        script: {
+          title: "Fast startup and reconnects: the edge cache",
+          html: `
+            <p>A surprisingly hard problem for Slack is <strong>startup</strong>. When a client
+            launches it needs the channel list, channel members, user profiles, custom emoji and
+            unread counts. Originally that was one giant "boot" API call. For a
+            500,000-person enterprise it returned tens of megabytes, hammered the database, and
+            ran every time anyone opened a laptop.</p>
+            <p>The fix is an <strong>edge cache</strong> (Slack calls theirs Flannel). It's an
+            application-aware cache that sits close to users and holds per-workspace metadata:
+            users, channels, emoji. Two ideas make it work. First, <strong>lazy
+            loading</strong>: the client boots with a minimal payload (its own channels and
+            unread counts) and fetches profiles and channel details only when it needs to render
+            them. Second, the cache <strong>stays warm by listening to the same event
+            stream</strong> as the gateways, so a renamed channel or a new avatar updates it in
+            place instead of expiring it. On a miss it falls through to the API.</p>
+            <p>It also defends against the scariest traffic on the requirements slide: the
+            <strong>reconnect storm</strong>. After an outage, or at 9 a.m. on a Monday,
+            millions of clients connect at once. Three things keep that from becoming a second
+            outage. Clients reconnect with <strong>jittered exponential backoff</strong>. Boot is
+            served from the edge cache, not the database. And catch-up is
+            <strong>incremental</strong>, "events since ts X for my channels," rather than a full
+            reload.</p>
+            <p>Multi-device sync falls out of the same mechanism. Each device is just another
+            client with its own socket and its own catch-up. What they share is your
+            <strong>read cursor</strong>: reading a channel on your laptop moves it through the
+            API, the change fans out as an event, and your phone's badge clears.</p>`
+        }
+      },
+      {
+        // --- Slide 10: presence ---
+        diagram: scene({ add: ["presence", "e_gw_presence"] }),
+        script: {
+          title: "Presence and typing: ephemeral, high-volume, never stored",
+          html: `
+            <p>Next, the green dot. <strong>Presence</strong> looks trivial, but it's the
+            highest-volume data in the system, and its properties are the opposite of messages:
+            it's <strong>ephemeral</strong>, it changes constantly, and losing an update is
+            harmless.</p>
+            <p>So it gets its own <strong>presence service</strong>, entirely in memory and
+            sharded by user ID. The gateways are the source of truth for "is this user
+            connected": they report when a user's first socket opens or last socket closes.
+            Clients also report active or idle based on input. Presence never touches the
+            database.</p>
+            <p>The trick is to <strong>not broadcast it</strong>. If every status change went to
+            every member of every channel the user belongs to, a 100,000-person workspace would
+            melt every morning. Instead, clients <strong>subscribe to presence only for the
+            users currently on screen</strong>, such as the DM list or the members of the channel
+            you're viewing. Gateways pass those subscriptions to the presence service, which
+            pushes changes only to interested gateways. We also <strong>debounce</strong>
+            flapping connections, so a phone hopping from Wi-Fi to cellular doesn't blink
+            offline and back.</p>
+            <p><strong>Typing indicators</strong> are even more ephemeral. The client sends
+            "typing in #eng" up its socket, the gateway relays it to that channel's server, and
+            it fans out like a message but is never stored, never retried, and dropped first
+            under load. If one is lost, nobody notices. That's the right trade-off, and it's why
+            typing skips the webapp and the database entirely.</p>`
+        }
+      },
+      {
+        // --- Slide 11: job queue ---
+        diagram: scene({ add: ["queue", "e_webapp_queue"] }),
+        script: {
+          title: "Take slow work off the send path: the job queue",
+          html: `
+            <p>Look at what happens synchronously on a send today: write to the database, then
+            publish to the channel server. Both are needed before the sender sees "sent" and
+            online members see the message. But a message also triggers plenty of work that
+            <strong>nobody is waiting for</strong>: push notifications, email digests, search
+            indexing, link previews, bot and webhook integrations, analytics.</p>
+            <p>Doing that inline would make sending slow and fragile. A slow link-preview fetch
+            shouldn't delay delivery. So the webapp <strong>enqueues jobs</strong> on a durable
+            <strong>job queue</strong> and returns. Slack's version puts <strong>Kafka</strong>
+            in front as a durable buffer, with <strong>Redis</strong> scheduling execution, and a
+            fleet of workers pulls from it.</p>
+            <p>Three properties matter. It's <strong>durable</strong>, so a crashed worker
+            doesn't lose a job. It's <strong>at-least-once</strong>, so every worker has to be
+            idempotent, keyed by message ID, or a retry sends two notifications. And it's
+            <strong>partitioned and rate-limited per tenant</strong>, so one workspace doing a
+            huge import can't starve everyone else's notifications. That's the multi-tenant
+            requirement showing up in the async path.</p>
+            <p>The queue also <strong>absorbs bursts</strong>. If traffic triples at 9 a.m., the
+            queue gets longer for a few minutes, while real-time delivery, which never touches
+            the queue, stays fast. That's the general shape of the design: keep the
+            latency-critical path as short as possible and make everything else
+            asynchronous.</p>`
+        }
+      },
+      {
+        // --- Slide 12: notifications ---
+        diagram: scene({ add: ["notif", "push", "e_queue_notif", "e_notif_push"] }),
+        script: {
+          title: "Notifications: deciding who to bother, and when",
+          html: `
+            <p>The first consumer of the queue is <strong>notifications</strong>. For every new
+            message, the notification workers decide whether and how to notify each member. A
+            lot of product complexity lives here, so it's worth walking through the
+            decision.</p>
+            <p>You're notified if the message is a DM, mentions you, mentions a group you're in
+            (@here, @channel, a user group), matches one of your keywords, or is in a channel you
+            follow closely. It's suppressed if you've muted the channel, turned on Do Not
+            Disturb, are outside your notification schedule, or <strong>already saw it</strong>.
+            That last one matters most: if you're active in the desktop app, your phone
+            shouldn't buzz. So the workers check <strong>presence</strong> and your
+            <strong>read cursor</strong>, and they usually wait a short delay before a mobile
+            push in case another device reads the message first.</p>
+            <p>Delivery goes to <strong>APNs and FCM</strong> for mobile push and to an email
+            provider for digests. They're third parties, so they're drawn as ghosts. The workers
+            <strong>dedupe</strong> by message and device, retry with backoff, and prune dead
+            device tokens.</p>
+            <p>Notice the big-channel problem coming back. An <em>@channel</em> in a
+            100,000-person channel is 100,000 decisions. Because it's an async job, it can be
+            split into batches across many workers. The last phone might buzz a few seconds
+            later, which is fine for push. Real-time delivery to everyone online already happened
+            through the channel servers.</p>`
+        }
+      },
+      {
+        // --- Slide 13: search ---
+        diagram: scene({ add: ["search", "searchidx", "indexer", "e_search_idx", "e_queue_indexer", "e_indexer_idx"] }),
+        script: {
+          title: "Search that respects permissions",
+          html: `
+            <p>Search comes next, and Slack's has a twist most search systems don't:
+            <strong>results must respect permissions</strong>. You must never see a hit from a
+            private channel you're not in, not even a snippet or a count.</p>
+            <p>The pipeline: the <strong>search indexer</strong> consumes message jobs (new
+            messages, edits, deletes) from the queue, tokenizes them, and writes them to a
+            <strong>search index</strong>, an inverted index on Solr or Elasticsearch. The
+            index is <strong>partitioned by workspace</strong>, so a query only touches its own
+            tenant's shards, and the biggest enterprises can get dedicated ones. Indexing is
+            asynchronous, so a brand-new message may take a few seconds to become searchable,
+            which users accept.</p>
+            <p>The <strong>search service</strong> answers queries. Each indexed message carries
+            its <em>channel_id</em>, and every query is filtered to the channels the user can
+            read. Enforcing access at query time, rather than storing an access list per user
+            per document, means nothing in the index changes when someone joins or leaves a
+            channel. For people in thousands of channels, we cache their channel set and filter
+            efficiently.</p>
+            <p>Ranking goes beyond text match: recency, whether you're in the channel, whether
+            the author is someone you work with, and engagement like replies and reactions. The
+            other piece to get right is <strong>deletion</strong>. When a message is deleted or a
+            retention policy expires it, the delete has to reach the index promptly. A deleted
+            message still showing up in search is a trust problem, not just a bug.</p>`
+        }
+      },
+      {
+        // --- Slide 14: files ---
+        diagram: scene({ add: ["file", "blob", "cdn", "e_file_blob", "e_cdn_client", "e_cdn_blob"] }),
+        script: {
+          title: "Files: blob storage, signed URLs and a CDN",
+          html: `
+            <p>Files get shared constantly: screenshots, PDFs, logs. They're <strong>large,
+            immutable and read many times</strong>, which is exactly what a relational database
+            is bad at, so they never go in MySQL.</p>
+            <p>The <strong>file service</strong> owns metadata and permissions. To upload, the
+            client asks for an upload slot and gets back a <strong>pre-signed URL</strong>, then
+            sends the bytes directly to the <strong>blob store</strong> (S3-style object
+            storage), so big uploads don't tie up webapp servers. When the upload finishes, the
+            file service records the metadata (owner, channel, size, type) and posts a message
+            that references the file. Async workers then generate <strong>thumbnails and
+            previews</strong> and scan for malware.</p>
+            <p>Downloads go through the <strong>CDN</strong>. The subtlety is that these files
+            are <strong>private</strong>: a public CDN link to a confidential PDF is a data leak.
+            So the file service hands out <strong>short-lived signed URLs</strong>, and only
+            after checking that the requester can see the channel the file was shared in. The
+            CDN caches the bytes, and the signature limits who can fetch them and for how
+            long.</p>
+            <p>Files are also by far the biggest storage cost, far more than message text.
+            Lifecycle rules move older files to cheaper storage tiers, and workspace retention
+            settings can delete them entirely. A delete has to cascade to thumbnails, CDN caches
+            and the search index.</p>`
+        }
+      },
+      {
+        // --- Slide 15: multi-region ---
+        diagram: scene({ add: ["regions", "e_vitess_regions"] }),
+        script: {
+          title: "Going global: edge regions and home regions",
+          html: `
+            <p>Last, geography. Two different requirements push us to multiple regions, and
+            they want slightly different things.</p>
+            <p><strong>Latency</strong> wants the connection tier near users. A WebSocket from
+            Sydney to Virginia adds a couple of hundred milliseconds to every event. So we deploy
+            <strong>gateway servers and the edge cache in edge regions</strong> around the
+            world. Clients connect to the nearest one, and the long hop back to the workspace's
+            region runs over our own backbone on connections that are already warm.</p>
+            <p><strong>Data residency</strong> wants data in a specific place: a European
+            customer may require that its messages are stored only in the EU. So every workspace
+            has a <strong>home region</strong> where its shards, files and search index live.
+            This is easy precisely because we shard by tenant and channel. Placement is a
+            property of the workspace, not of individual rows.</p>
+            <p>For availability, each home region replicates to a standby in another region (the
+            dashed line), so we can fail a region over, and within a region every tier is spread
+            across availability zones. What we're <strong>not</strong> doing is active-active
+            writes to the same channel in two regions. That would break the single-owner
+            ordering the channel servers give us, and chat users notice out-of-order messages
+            far more than an extra 100 ms.</p>
+            <p>The hard edge case is a channel shared by two companies with different home
+            regions. That's Slack Connect, which we put out of scope at the start.</p>`
+        }
+      },
+      {
+        // --- Slide 16: the complete system ---
+        diagram: scene(),
+        script: {
+          title: "The complete system: following one message end to end",
+          html: `
+            <p>To close, let me follow one message through the finished system. Alice, in
+            London, types "deploy is green" in #eng and hits enter.</p>
+            <p>Her client <strong>POSTs</strong> through the load balancer to a
+            <strong>webapp</strong> server, with a client-generated ID so a retry can't
+            duplicate it. The webapp checks that she's a member, writes the message to the
+            <strong>Vitess</strong> shard for #eng (replicated before it acks), and
+            <strong>publishes</strong> it to the <strong>channel server</strong> that owns
+            #eng. That server fans it out to every <strong>gateway</strong> with a subscriber,
+            and the gateways push it down the <strong>WebSockets</strong> of members who are
+            online, in channel order, in well under half a second. Meanwhile the webapp has
+            <strong>enqueued a job</strong>: the <strong>indexer</strong> makes the message
+            searchable within seconds, and the <strong>notification workers</strong> find the
+            members who are offline or mentioned and haven't read it, and push to their
+            phones.</p>
+            <p>Bob's laptop was asleep. It reconnects through the nearest
+            <strong>edge</strong>, boots from the <strong>edge cache</strong>, and asks for
+            everything in his channels after his last ts. No message is lost and nothing is
+            reloaded from scratch. His unread badge comes from his read cursor, and clearing it
+            on one device clears it on all of them.</p>
+            <p>The themes I'd underline: a <strong>stateless API kept separate from a stateful
+            connection tier</strong>; <strong>one owner per channel</strong>, which gives
+            ordering and a fan-out cost that scales with gateways, not members; the
+            <strong>database as the source of truth</strong>, with sockets as a best-effort fast
+            path backed by ts-based catch-up; <strong>sharding by tenant and channel</strong>
+            for isolation, residency and scale; and an <strong>async job queue</strong> for
+            everything nobody is waiting on. With more time, I'd go deeper next on Slack Connect
+            across organizations, enterprise retention and compliance, and the platform for bots
+            and workflows.</p>`
+        }
+      }
+    ];
+
+    // ========================================================================
+    // Engine — shared by every deck. You should not need to edit below here.
+    // ========================================================================
+    let index = 0;
+
+    const el = {
+      topic: document.getElementById("topic"),
+      diagram: document.getElementById("diagram"),
+      num: document.getElementById("script-num"),
+      title: document.getElementById("script-title"),
+      body: document.getElementById("script-body"),
+      prev: document.getElementById("prev"),
+      next: document.getElementById("next"),
+      counter: document.getElementById("counter"),
+    };
+
+    function render() {
+      const slide = SLIDES[index];
+      el.topic.textContent = TOPIC;
+
+      // Replace the SVG (keep the #topic badge, which lives before it).
+      const existing = el.diagram.querySelector("svg");
+      if (existing) existing.remove();
+      el.diagram.insertAdjacentHTML("beforeend", slide.diagram);
+
+      el.num.textContent = `Slide ${index + 1} of ${SLIDES.length}`;
+      el.title.textContent = slide.script.title;
+      el.body.innerHTML = slide.script.html;
+
+      el.counter.textContent = `${index + 1} / ${SLIDES.length}`;
+      el.prev.disabled = index === 0;
+      el.next.disabled = index === SLIDES.length - 1;
+
+      el.script.scrollTop = 0;
+    }
+
+    function go(delta) {
+      const next = index + delta;
+      if (next < 0 || next >= SLIDES.length) return;
+      index = next;
+      render();
+    }
+
+    el.prev.addEventListener("click", () => go(-1));
+    el.next.addEventListener("click", () => go(1));
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowLeft") go(-1);
+      if (e.key === "ArrowRight") go(1);
+    });
+
+    // #script is referenced in render() for scroll reset.
+    el.script = document.getElementById("script");
+
+    render();
+  </script>
+</body>
+</html>
