@@ -1,0 +1,1413 @@
+<!DOCTYPE html>
+<!--
+  ============================================================================
+  SYSTEM DESIGN WALKTHROUGH — DESIGN GOOGLE DOCS
+  ============================================================================
+
+  Built from slides/example.html (see that file for how the scene builder and
+  requirement-slide helpers work). This deck uses two scenes:
+    - SCENE_MAIN: the full system, built up slide by slide.
+    - SCENE_OT:   a zoomed-in deep dive on one collaboration session
+                  (Operational Transformation), slides 6–11.
+  ============================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Design Google Docs — System Design Walkthrough</title>
+  <style>
+    :root {
+      /* ---- Theme tokens (edit here, not inline) ---- */
+      --bg: #0f172a;            /* page background */
+      --panel: #1e293b;         /* diagram panel */
+      --panel-2: #172033;       /* script panel */
+      --ink: #e2e8f0;           /* primary text */
+      --ink-dim: #94a3b8;       /* secondary text */
+      --accent: #38bdf8;        /* highlights, arrows, titles, "new" glow */
+      --border: #334155;        /* panel + box borders */
+
+      /* ---- Diagram element colors (used inside the SVGs) ---- */
+      --box-fill: #0b1222;
+      --box-stroke: #475569;
+      --box-ink: #e2e8f0;
+      --line: #64748b;
+      --client: #38bdf8;        /* clients / users / external actors */
+      --service: #a78bfa;       /* app / services   */
+      --data: #34d399;          /* data stores      */
+      --infra: #facc15;         /* gateways, load balancers, CDN, DNS */
+      --stream: #f472b6;        /* queues, event streaming */
+      --ml: #fb923c;            /* ML / batch compute */
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    /* Deck fills the viewport; diagram on top (large), script on bottom (smaller). */
+    #deck {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      padding: 16px;
+      gap: 12px;
+    }
+
+    /* ---- Top: diagram ---- */
+    #diagram {
+      flex: 1 1 62%;
+      min-height: 0;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      position: relative;
+    }
+    #diagram svg { width: 100%; height: 100%; }
+
+    /* Topic badge, top-left of the diagram panel */
+    #topic {
+      position: absolute;
+      top: 12px;
+      left: 16px;
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ink-dim);
+    }
+
+    /* ---- Bottom: script ---- */
+    #script {
+      flex: 0 0 25%;
+      min-height: 0;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 18px 22px;
+      overflow-y: auto;
+    }
+    #script-header {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 10px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    #script-num {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--bg);
+      background: var(--accent);
+      border-radius: 999px;
+      padding: 3px 11px;
+      white-space: nowrap;
+    }
+    #script-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--accent);
+    }
+    #script-body {
+      font-size: 15px;
+      line-height: 1.6;
+      color: var(--ink);
+    }
+    #script-body p { margin: 0 0 10px; }
+    #script-body strong { color: var(--ink); }
+    #script-body em { color: var(--ink-dim); font-style: normal; }
+
+    /* ---- Controls ---- */
+    #controls {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      flex: 0 0 auto;
+    }
+    .nav {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--ink);
+      font-size: 20px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+    }
+    .nav:hover:not(:disabled) { background: var(--border); border-color: var(--accent); }
+    .nav:disabled { opacity: 0.35; cursor: default; }
+    #counter {
+      font-size: 14px;
+      color: var(--ink-dim);
+      min-width: 70px;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ---- Reusable SVG diagram helpers ---- */
+    .box rect {
+      fill: var(--box-fill);
+      stroke: var(--box-stroke);
+      stroke-width: 1.5;
+      rx: 10;
+    }
+    .box.client rect { stroke: var(--client); }
+    .box.service rect { stroke: var(--service); }
+    .box.data rect { stroke: var(--data); }
+    .box.infra rect { stroke: var(--infra); }
+    .box.stream rect { stroke: var(--stream); }
+    .box.ml rect { stroke: var(--ml); }
+    /* A layer that other edges pass through (e.g. a cache tier). Drawn behind edges. */
+    .box.tier rect { fill: rgba(52, 211, 153, 0.06); stroke-dasharray: 5 5; }
+    /* Something that exists but we are not drawing in detail (other regions, 3rd parties). */
+    .box.ghost rect { fill: transparent; stroke-dasharray: 7 6; }
+    /* Added on the current slide (set automatically by the scene builder). */
+    .box.new rect { stroke-width: 3; filter: drop-shadow(0 0 7px var(--accent)); }
+    .box text {
+      fill: var(--box-ink);
+      font-size: 15px;
+      font-weight: 600;
+      text-anchor: middle;
+      dominant-baseline: middle;
+    }
+    .box .sub {
+      fill: var(--ink-dim);
+      font-size: 11px;
+      font-weight: 500;
+    }
+    .edge {
+      stroke: var(--line);
+      stroke-width: 1.8;
+      fill: none;
+      marker-end: url(#arrow);
+    }
+    .edge.both { marker-start: url(#arrow-start); }      /* two-way */
+    .edge.plain { marker-end: none; }                    /* no arrowhead */
+    .edge.async { stroke-dasharray: 6 5; }               /* async / background flow */
+    .edge.new { stroke: var(--accent); marker-end: url(#arrow-new); }
+    .edge.new.both { marker-start: url(#arrow-start-new); }
+    .edge.new.plain { marker-end: none; }
+    .edge-label {
+      fill: var(--ink-dim);
+      font-size: 11px;
+      text-anchor: middle;
+      /* Halo in the panel color keeps labels readable where they cross lines. */
+      paint-order: stroke;
+      stroke: var(--panel);
+      stroke-width: 4px;
+      stroke-linejoin: round;
+    }
+    .edge-label.new { fill: var(--accent); }
+
+    /* ---- Requirement slides (slides 1–2) ---- */
+    .heading { fill: var(--accent); font-size: 24px; font-weight: 700; }
+    .subheading { fill: var(--ink-dim); font-size: 14px; }
+    .card rect { fill: var(--box-fill); stroke: var(--box-stroke); stroke-width: 1.5; }
+    .card .badge { fill: var(--accent); }
+    .card .badge-num { fill: var(--bg); font-size: 13px; font-weight: 700; text-anchor: middle; dominant-baseline: central; }
+    .card .title { fill: var(--box-ink); font-size: 17px; font-weight: 700; }
+    .card .line { fill: var(--ink-dim); font-size: 13.5px; }
+    .panel-box { fill: var(--box-fill); stroke: var(--accent); stroke-width: 1.5; }
+    .panel-title { fill: var(--accent); font-size: 17px; font-weight: 700; }
+    .strip { fill: transparent; stroke: var(--box-stroke); stroke-width: 1.5; stroke-dasharray: 7 6; }
+    .strip-title { fill: var(--ink); font-size: 15px; font-weight: 700; }
+    .strip-text { fill: var(--ink-dim); font-size: 13.5px; }
+    .est-k { fill: var(--accent); font-size: 13.5px; font-weight: 700; }
+    .est-v { fill: var(--ink); font-size: 13.5px; }
+  </style>
+</head>
+<body>
+  <div id="deck">
+    <section id="diagram" aria-label="System diagram">
+      <span id="topic"></span>
+      <!-- SVG for the active slide is injected here -->
+    </section>
+
+    <section id="script" aria-label="Script">
+      <div id="script-header">
+        <span id="script-num"></span>
+        <span id="script-title"></span>
+      </div>
+      <div id="script-body"></div>
+    </section>
+
+    <div id="controls">
+      <button class="nav" id="prev" aria-label="Previous slide">&#8592;</button>
+      <span id="counter"></span>
+      <button class="nav" id="next" aria-label="Next slide">&#8594;</button>
+    </div>
+  </div>
+
+  <script>
+    // ========================================================================
+    // EDIT THIS: the system being designed.
+    // ========================================================================
+    const TOPIC = "Design Google Docs";
+
+    // Shared <defs>: default arrowhead, a start-reversed variant for two-way
+    // edges, and accent-colored variants for edges added on the current slide.
+    const DEFS = `
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--line)"></path>
+        </marker>
+        <marker id="arrow-start" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--line)"></path>
+        </marker>
+        <marker id="arrow-new" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"></path>
+        </marker>
+        <marker id="arrow-start-new" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"></path>
+        </marker>
+      </defs>`;
+
+    // Labeled box. `kind` is a space-separated class list:
+    //   color: "client" | "service" | "data" | "infra" | "stream" | "ml"
+    //   style: optionally plus "tier" (pass-through layer) or "ghost" (dashed)
+    //   "new" is added automatically by the scene builder.
+    // `sub` is an optional second line (e.g. a technology or role note).
+    function box(x, y, w, h, label, kind = "", sub = "") {
+      const cx = x + w / 2;
+      const subText = sub
+        ? `<text class="sub" x="${cx}" y="${y + h / 2 + 12}">${sub}</text>`
+        : "";
+      const labelY = sub ? y + h / 2 - 7 : y + h / 2;
+      return `
+        <g class="box ${kind}">
+          <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <text x="${cx}" y="${labelY}">${label}</text>
+          ${subText}
+        </g>`;
+    }
+
+    // ========================================================================
+    // Requirement-slide helpers (slides 1–2). Use viewBox 0 0 1200 640.
+    // ========================================================================
+
+    // One numbered requirement card: a title plus 1–3 short lines.
+    function card(x, y, w, h, num, title, lines) {
+      const body = lines
+        .map((l, i) => `<text class="line" x="${x + 18}" y="${y + 66 + i * 21}">${l}</text>`)
+        .join("");
+      return `
+        <g class="card">
+          <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <circle class="badge" cx="${x + 30}" cy="${y + 30}" r="13"></circle>
+          <text class="badge-num" x="${x + 30}" y="${y + 30}">${num}</text>
+          <text class="title" x="${x + 52}" y="${y + 36}">${title}</text>
+          ${body}
+        </g>`;
+    }
+
+    // A grid of cards, numbered 1..N. items = [[title, [line, line]], ...]
+    function cardGrid(x0, y0, w, h, gap, cols, items) {
+      return items
+        .map((it, i) => {
+          const c = i % cols, r = Math.floor(i / cols);
+          return card(x0 + c * (w + gap), y0 + r * (h + gap), w, h, i + 1, it[0], it[1]);
+        })
+        .join("");
+    }
+
+    // Dashed strip with a title and lines (out-of-scope list, key takeaway).
+    function strip(x, y, w, h, title, lines) {
+      const body = lines
+        .map((l, i) => `<text class="strip-text" x="${x + 24}" y="${y + 64 + i * 22}">${l}</text>`)
+        .join("");
+      return `
+        <rect class="strip" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+        <text class="strip-title" x="${x + 24}" y="${y + 34}">${title}</text>
+        ${body}`;
+    }
+
+    // Accent-bordered panel of back-of-the-envelope estimates.
+    // rows = [[heading, [value, value]], ...]
+    function estimatesPanel(x, y, w, h, title, rows) {
+      let cy = y + 66;
+      const body = rows
+        .map(([k, vs]) => {
+          let s = `<text class="est-k" x="${x + 20}" y="${cy}">${k}</text>`;
+          vs.forEach((v) => { cy += 21; s += `<text class="est-v" x="${x + 20}" y="${cy}">${v}</text>`; });
+          cy += 36;
+          return s;
+        })
+        .join("");
+      return `
+        <rect class="panel-box" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+        <text class="panel-title" x="${x + 20}" y="${y + 32}">${title}</text>
+        ${body}`;
+    }
+
+    // ========================================================================
+    // Scene builder — shared by every deck. You should not need to edit this.
+    //
+    //   const scene = sceneBuilder(SCENE);
+    //   scene({ add: ["client", "server", "e_client_server"] })  // -> <svg>
+    //   scene({ add: ["db", "e_server_db"] })                    // cumulative
+    //   scene({ add: [...], remove: ["server"] })                // replace a box
+    //   scene()                                                  // no change
+    // ========================================================================
+
+    // Edge label position: midpoint of the longest segment. Above horizontal /
+    // diagonal segments, to the right of vertical ones. Override with `lp`.
+    function labelPos(e) {
+      if (e.lp) return e.lp;
+      let best = null, len = -1;
+      for (let i = 0; i < e.pts.length - 1; i++) {
+        const [x1, y1] = e.pts[i], [x2, y2] = e.pts[i + 1];
+        const l = Math.hypot(x2 - x1, y2 - y1);
+        if (l > len) { len = l; best = [x1, y1, x2, y2]; }
+      }
+      const [x1, y1, x2, y2] = best;
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+      return x1 === x2 ? [mx + 7, my + 4, "start"] : [mx, my - 7, "middle"];
+    }
+
+    function sceneBuilder(def) {
+      const boxes = Object.fromEntries(def.boxes.map((b) => [b.id, b]));
+      const visible = new Set();
+
+      return function step({ add = [], remove = [] } = {}) {
+        remove.forEach((id) => visible.delete(id));
+        add.forEach((id) => visible.add(id));
+        const fresh = new Set(add);
+        const isOn = (id) => visible.has(id);
+
+        const lines = [], labels = [], back = [], front = [], pts = [];
+
+        const drawEdge = (pathPts, cls, label, lp) => {
+          const d = pathPts.map((p, i) => `${i ? "L" : "M"}${p[0]},${p[1]}`).join(" ");
+          lines.push(`<path class="edge ${cls}" d="${d}"></path>`);
+          pathPts.forEach((p) => pts.push(p));
+          if (label) {
+            const [lx, ly, anchor] = lp;
+            const nw = cls.includes("new") ? "new" : "";
+            labels.push(`<text class="edge-label ${nw}" x="${lx}" y="${ly}" style="text-anchor:${anchor}">${label}</text>`);
+          }
+        };
+
+        // Boxes ("tier" boxes go behind the edges, everything else in front).
+        def.boxes.forEach((b) => {
+          if (!isOn(b.id)) return;
+          const kind = `${b.kind}${fresh.has(b.id) ? " new" : ""}`;
+          const svg = box(b.x, b.y, b.w, b.h, b.label, kind, b.sub || "");
+          (b.kind.includes("tier") ? back : front).push(svg);
+          pts.push([b.x, b.y], [b.x + b.w, b.y + b.h]);
+        });
+
+        // Explicit edges: shown when added AND both endpoints are visible.
+        def.edges.forEach((e) => {
+          if (!isOn(e.id) || !isOn(e.from) || !isOn(e.to)) return;
+          const cls = [
+            fresh.has(e.id) ? "new" : "",
+            e.both ? "both" : "",
+            e.async ? "async" : "",
+          ].join(" ");
+          drawEdge(e.pts, cls, e.label, e.label ? labelPos(e) : null);
+        });
+
+        // Optional "bus": a hub (gateway / load balancer) fans out to member
+        // boxes via a vertical line. Members join the bus as they are added.
+        const bus = def.bus;
+        if (bus && isOn(bus.hub)) {
+          const members = bus.members.filter(isOn).map((id) => boxes[id]);
+          if (members.length) {
+            const hubNew = fresh.has(bus.hub);
+            const ys = members.map((b) => b.y + b.h / 2).concat([bus.hubY]);
+            const top = Math.min(...ys), bottom = Math.max(...ys);
+            const pn = hubNew ? "new plain" : "plain";
+            drawEdge([[bus.hubX, bus.hubY], [bus.x, bus.hubY]], pn, bus.label, bus.lp);
+            drawEdge([[bus.x, top], [bus.x, bottom]], pn);
+            members.forEach((b) => {
+              const y = b.y + b.h / 2;
+              drawEdge([[bus.x, y], [b.x, y]], hubNew || fresh.has(b.id) ? "new" : "");
+            });
+          }
+        }
+
+        // Auto-fit the viewBox to what is visible (with a minimum size).
+        const pad = 40;
+        let x0 = Math.min(...pts.map((p) => p[0])) - pad;
+        let y0 = Math.min(...pts.map((p) => p[1])) - pad;
+        let x1 = Math.max(...pts.map((p) => p[0])) + pad;
+        let y1 = Math.max(...pts.map((p) => p[1])) + pad;
+        const minW = 900, minH = 460;
+        if (x1 - x0 < minW) { const g = (minW - (x1 - x0)) / 2; x0 -= g; x1 += g; }
+        if (y1 - y0 < minH) { const g = (minH - (y1 - y0)) / 2; y0 -= g; y1 += g; }
+
+        return `
+          <svg viewBox="${x0} ${y0} ${x1 - x0} ${y1 - y0}" xmlns="http://www.w3.org/2000/svg">
+            ${DEFS}
+            ${back.join("")}
+            ${lines.join("")}
+            ${front.join("")}
+            ${labels.join("")}
+          </svg>`;
+      };
+    }
+
+    // ========================================================================
+    // SCENE_MAIN — every component of the final Google Docs system.
+    //
+    // Columns: clients | edge (LB, gateway, CDN) | services | data | async | external
+    // ========================================================================
+    const SCENE_MAIN = {
+      boxes: [
+        // Clients
+        { id: "client",    x: 40,   y: 160, w: 170, h: 324, label: "Docs Clients", kind: "client", sub: "web · mobile · desktop" },
+        { id: "local",     x: 40,   y: 510, w: 170, h: 54,  label: "Local Store", kind: "data", sub: "IndexedDB · pending ops" },
+        // Edge
+        { id: "lb",        x: 280,  y: 183, w: 180, h: 54,  label: "Load Balancer", kind: "infra", sub: "HTTPS API" },
+        { id: "gw",        x: 280,  y: 360, w: 180, h: 124, label: "WS Gateways", kind: "infra", sub: "WebSockets · stateful" },
+        { id: "cdn",       x: 280,  y: 510, w: 180, h: 54,  label: "CDN", kind: "infra", sub: "images · signed URLs" },
+        // Slides 3–11 only: the naive single server (same spot as the doc service)
+        { id: "server",    x: 540,  y: 160, w: 200, h: 100, label: "Docs Server", kind: "service", sub: "one process does it all" },
+        // Services
+        { id: "search",    x: 540,  y: 20,  w: 200, h: 54,  label: "Search Service", kind: "service", sub: "permission-aware" },
+        { id: "comments",  x: 540,  y: 90,  w: 200, h: 54,  label: "Comment Service", kind: "service", sub: "threads · @mentions" },
+        { id: "docapi",    x: 540,  y: 160, w: 200, h: 100, label: "Doc Service", kind: "service", sub: "stateless · open · list · share" },
+        { id: "acl",       x: 540,  y: 280, w: 200, h: 54,  label: "ACL Service", kind: "service", sub: "Zanzibar-style tuples" },
+        { id: "sessions",  x: 540,  y: 360, w: 200, h: 124, label: "Collab Sessions", kind: "service", sub: "OT · one owner per doc" },
+        { id: "directory", x: 540,  y: 510, w: 200, h: 54,  label: "Session Directory", kind: "infra", sub: "doc → server leases" },
+        // Data
+        { id: "searchidx", x: 820,  y: 20,  w: 190, h: 54,  label: "Search Index", kind: "data", sub: "inverted · + ACL principals" },
+        { id: "db",        x: 820,  y: 160, w: 190, h: 100, label: "Database", kind: "data", sub: "whole doc per row" },
+        { id: "metadb",    x: 820,  y: 90,  w: 190, h: 244, label: "Metadata DB", kind: "data", sub: "Spanner · docs · ACLs" },
+        { id: "oplog",     x: 820,  y: 360, w: 190, h: 54,  label: "Op Log", kind: "data", sub: "Bigtable · doc_id + rev" },
+        { id: "blob",      x: 820,  y: 430, w: 190, h: 54,  label: "Blob Store", kind: "data", sub: "snapshots · images" },
+        { id: "regions",   x: 820,  y: 510, w: 190, h: 54,  label: "Other Regions ×N", kind: "ghost", sub: "replicas · failover" },
+        // Async
+        { id: "indexer",   x: 1090, y: 20,  w: 200, h: 54,  label: "Search Indexer", kind: "service", sub: "debounced per doc" },
+        { id: "kafka",     x: 1090, y: 160, w: 200, h: 254, label: "Change Feed", kind: "stream", sub: "Kafka · keyed by doc_id" },
+        { id: "compactor", x: 1090, y: 430, w: 200, h: 54,  label: "Snapshot Worker", kind: "service", sub: "snapshots · revisions" },
+        // Notifications and the outside world
+        { id: "email",     x: 1360, y: 20,  w: 190, h: 54,  label: "Email · Push", kind: "ghost", sub: "third parties" },
+        { id: "notif",     x: 1360, y: 160, w: 190, h: 54,  label: "Notification Workers", kind: "service", sub: "who · when · dedupe" },
+      ],
+      edges: [
+        // Naive starting point
+        { id: "e_client_server", from: "client", to: "server", pts: [[210, 190], [540, 190]], label: "HTTPS: load · save whole doc", both: true },
+        { id: "e_server_db", from: "server", to: "db", pts: [[740, 210], [820, 210]], label: "SQL", both: true },
+        { id: "e_client_server_ws", from: "client", to: "server", pts: [[210, 235], [540, 235]], label: "ops over WebSocket", both: true },
+        // Split API from collaboration
+        { id: "e_client_lb", from: "client", to: "lb", pts: [[210, 210], [280, 210]], label: "HTTPS", both: true },
+        { id: "e_client_gw", from: "client", to: "gw", pts: [[210, 422], [280, 422]], label: "WebSocket", both: true },
+        { id: "e_gw_sessions", from: "gw", to: "sessions", pts: [[460, 422], [540, 422]], label: "ops · cursors", both: true },
+        { id: "e_docapi_db", from: "docapi", to: "db", pts: [[740, 210], [820, 210]], label: "SQL", both: true },
+        { id: "e_sessions_db", from: "sessions", to: "db", pts: [[740, 422], [780, 422], [780, 245], [820, 245]], label: "save", lp: [786, 330, "start"] },
+        // Directory
+        { id: "e_sessions_dir", from: "sessions", to: "directory", pts: [[640, 484], [640, 510]], label: "lease", both: true },
+        { id: "e_gw_dir", from: "gw", to: "directory", pts: [[460, 470], [540, 530]], label: "owner?", lp: [510, 480, "middle"] },
+        // Storage split
+        { id: "e_docapi_meta", from: "docapi", to: "metadb", pts: [[740, 210], [820, 210]], label: "SQL", both: true },
+        { id: "e_sessions_oplog", from: "sessions", to: "oplog", pts: [[740, 387], [820, 387]], label: "append" },
+        { id: "e_sessions_blob", from: "sessions", to: "blob", pts: [[820, 457], [740, 457]], label: "load" },
+        // Permissions
+        { id: "e_docapi_acl", from: "docapi", to: "acl", pts: [[640, 260], [640, 280]] },
+        { id: "e_sessions_acl", from: "sessions", to: "acl", pts: [[640, 360], [640, 334]], label: "check on join" },
+        { id: "e_acl_meta", from: "acl", to: "metadb", pts: [[740, 307], [820, 307]], label: "tuples" },
+        // Change feed
+        { id: "e_oplog_kafka", from: "oplog", to: "kafka", pts: [[1010, 387], [1090, 387]], label: "ops" },
+        { id: "e_meta_kafka", from: "metadb", to: "kafka", pts: [[1010, 230], [1090, 230]], label: "CDC" },
+        // Snapshots and history
+        { id: "e_kafka_compactor", from: "kafka", to: "compactor", pts: [[1190, 414], [1190, 430]] },
+        { id: "e_compactor_blob", from: "compactor", to: "blob", pts: [[1090, 457], [1010, 457]], label: "every N ops" },
+        // Comments
+        { id: "e_comments_meta", from: "comments", to: "metadb", pts: [[740, 117], [820, 117]], label: "threads" },
+        // Notifications
+        { id: "e_kafka_notif", from: "kafka", to: "notif", pts: [[1290, 187], [1360, 187]] },
+        { id: "e_notif_email", from: "notif", to: "email", pts: [[1455, 160], [1455, 74]], label: "send" },
+        // Search
+        { id: "e_kafka_indexer", from: "kafka", to: "indexer", pts: [[1190, 160], [1190, 74]], label: "doc changed" },
+        { id: "e_indexer_idx", from: "indexer", to: "searchidx", pts: [[1090, 47], [1010, 47]] },
+        { id: "e_search_idx", from: "search", to: "searchidx", pts: [[740, 47], [820, 47]], label: "query" },
+        // Images
+        { id: "e_client_cdn", from: "client", to: "cdn", pts: [[210, 470], [245, 470], [245, 537], [280, 537]] },
+        { id: "e_cdn_blob", from: "cdn", to: "blob", pts: [[370, 564], [370, 600], [790, 600], [790, 475], [820, 475]], label: "origin pull · signed URLs", lp: [580, 593, "middle"] },
+        // Offline
+        { id: "e_client_local", from: "client", to: "local", pts: [[125, 484], [125, 510]], label: "offline", both: true },
+        // Multi-region
+        { id: "e_blob_regions", from: "blob", to: "regions", pts: [[915, 484], [915, 510]], label: "all stores replicate", both: true, async: true },
+      ],
+      // The load balancer fans out to the HTTP services along a vertical bus.
+      bus: { hub: "lb", hubX: 460, hubY: 210, x: 500, members: ["search", "comments", "docapi"] },
+    };
+
+    // ========================================================================
+    // SCENE_OT — zoomed-in view of one collaboration session (one document).
+    // ========================================================================
+    const SCENE_OT = {
+      boxes: [
+        { id: "clientA", x: 40,  y: 30,  w: 200, h: 60, label: "Client A", kind: "client", sub: "applies own edits instantly" },
+        { id: "pendA",   x: 40,  y: 120, w: 200, h: 54, label: "Pending Ops (A)", kind: "data", sub: "1 in flight · rest buffered" },
+        { id: "clientB", x: 40,  y: 330, w: 200, h: 60, label: "Client B", kind: "client", sub: "applies own edits instantly" },
+        { id: "pendB",   x: 40,  y: 420, w: 200, h: 54, label: "Pending Ops (B)", kind: "data", sub: "1 in flight · rest buffered" },
+        { id: "seq",     x: 330, y: 140, w: 200, h: 70, label: "Sequencer", kind: "service", sub: "one per doc · rev N → N+1" },
+        { id: "bc",      x: 330, y: 330, w: 200, h: 70, label: "Broadcaster", kind: "service", sub: "ack sender · ops to others" },
+        { id: "hist",    x: 620, y: 30,  w: 210, h: 60, label: "Recent Ops", kind: "data", sub: "revisions k…N, in memory" },
+        { id: "tr",      x: 620, y: 140, w: 210, h: 70, label: "OT Transform", kind: "service", sub: "rebase op onto rev N" },
+        { id: "cur",     x: 620, y: 330, w: 210, h: 70, label: "Cursor Map", kind: "data", sub: "selections · ephemeral" },
+        { id: "log",     x: 920, y: 30,  w: 210, h: 60, label: "Op Log", kind: "data", sub: "durable append before ack" },
+        { id: "state",   x: 920, y: 140, w: 210, h: 70, label: "Doc State", kind: "data", sub: "in memory · at rev N" },
+        { id: "anch",    x: 920, y: 330, w: 210, h: 70, label: "Anchors in Model", kind: "data", sub: "comments · suggestions" },
+      ],
+      edges: [
+        // The naive version: ops go straight to the sequencer and are applied as-is
+        { id: "d_a_seq", from: "clientA", to: "seq", pts: [[240, 75], [285, 75], [285, 165], [330, 165]], label: "op @ rev k", lp: [248, 68, "start"] },
+        { id: "d_b_seq", from: "clientB", to: "seq", pts: [[240, 350], [285, 350], [285, 190], [330, 190]], label: "op @ rev k′", lp: [248, 343, "start"] },
+        { id: "d_seq_state", from: "seq", to: "state", pts: [[530, 175], [920, 175]], label: "apply as-is ✗" },
+        // Transform
+        { id: "d_seq_tr", from: "seq", to: "tr", pts: [[530, 175], [620, 175]] },
+        { id: "d_hist_tr", from: "hist", to: "tr", pts: [[725, 90], [725, 140]], label: "ops k+1…N", both: true },
+        { id: "d_tr_state", from: "tr", to: "state", pts: [[830, 175], [920, 175]], label: "apply" },
+        // Durable append, then ack + broadcast
+        { id: "d_tr_log", from: "tr", to: "log", pts: [[830, 155], [875, 155], [875, 60], [920, 60]], label: "append", lp: [882, 118, "start"] },
+        { id: "d_tr_bc", from: "tr", to: "bc", pts: [[680, 210], [680, 270], [430, 270], [430, 330]], label: "after append", lp: [555, 263, "middle"] },
+        { id: "d_bc_a", from: "bc", to: "clientA", pts: [[330, 345], [305, 345], [305, 50], [240, 50]], label: "ack · remote ops", lp: [248, 43, "start"] },
+        { id: "d_bc_b", from: "bc", to: "clientB", pts: [[330, 370], [240, 370]] },
+        // Client-side pending ops
+        { id: "d_a_pend", from: "clientA", to: "pendA", pts: [[140, 90], [140, 120]] },
+        { id: "d_pendA_seq", from: "pendA", to: "seq", pts: [[240, 147], [330, 165]] },
+        { id: "d_b_pend", from: "clientB", to: "pendB", pts: [[140, 390], [140, 420]] },
+        { id: "d_pendB_seq", from: "pendB", to: "seq", pts: [[240, 447], [285, 447], [285, 190], [330, 190]] },
+        // Presence
+        { id: "d_bc_cur", from: "bc", to: "cur", pts: [[530, 365], [620, 365]], label: "cursors", both: true },
+        { id: "d_tr_cur", from: "tr", to: "cur", pts: [[760, 210], [760, 330]], label: "shift positions" },
+        // Anchors
+        { id: "d_state_anch", from: "state", to: "anch", pts: [[1025, 210], [1025, 330]], label: "ranges move with text" },
+      ],
+    };
+
+    const main = sceneBuilder(SCENE_MAIN);
+    const ot = sceneBuilder(SCENE_OT);
+
+    // ========================================================================
+    // SLIDES
+    // ========================================================================
+    const SLIDES = [
+      {
+        // --- Slide 1: functional requirements ---
+        diagram: `
+          <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
+            <text class="heading" x="30" y="42">Functional requirements</text>
+            <text class="subheading" x="330" y="42">what a user can do</text>
+            ${cardGrid(30, 66, 370, 128, 15, 3, [
+              ["Create &amp; open docs", ["New doc in one click; list of recent docs", "Opens and is editable in under a second"]],
+              ["Real-time co-editing", ["Many people type in the same doc at once", "Everyone converges to the same text"]],
+              ["Presence", ["Live cursors and selections", "Avatars of who is in the doc right now"]],
+              ["Comments &amp; suggestions", ["Anchored to a range of text", "Stay attached as the text around them changes"]],
+              ["Version history", ["Browse past revisions by time and author", "Name a version; restore any of them"]],
+              ["Sharing &amp; permissions", ["Owner · editor · commenter · viewer", "Per person, per group, or by link"]],
+              ["Offline editing", ["Keep typing with no connection", "Merge cleanly when you reconnect"]],
+              ["Search", ["Find docs by title and content", "Only docs you're allowed to see"]],
+            ])}
+            ${strip(30, 496, 1140, 100, "Out of scope (mentioned, not designed)", [
+              "Sheets &amp; Slides  ·  Spell check &amp; grammar  ·  Voice / video  ·  Import / export conversion  ·  Add-ons  ·  Billing",
+              "Rendering and page layout: we design how edits are synchronized and stored, not how the editor draws pages",
+            ])}
+          </svg>`,
+        script: {
+          title: "Functional requirements: what we're building",
+          html: `
+            <p>Before drawing anything I want to agree on <strong>what Google Docs does</strong>
+            for this design. On the surface it's a word processor in the browser. The reason it's
+            an interesting systems question is that it's a <strong>shared</strong> word
+            processor: several people edit the same document at the same moment and all of them
+            see the same result.</p>
+            <p>The basics are <strong>creating and opening documents</strong>, quickly. A doc
+            should be editable within about a second of clicking it, even if it's years old and
+            has a long edit history. The core is <strong>real-time collaborative
+            editing</strong>. Several people type, delete and format in the same doc at once,
+            everyone sees everyone else's changes within a fraction of a second, and, crucially,
+            <strong>everyone ends up with exactly the same document</strong>.</p>
+            <p>Around that core: <strong>presence</strong>, meaning the colored cursors and avatars
+            that show who's here and where they're working. <strong>Comments and
+            suggestions</strong> are anchored to a range of text, and they have to stay attached
+            to that text as people edit around it. <strong>Version history</strong> lets you see
+            who changed what, name a version, and restore an old one. <strong>Sharing</strong>
+            uses the familiar roles (owner, editor, commenter, viewer), granted to people, groups,
+            or anyone with the link. <strong>Offline editing</strong> lets you keep working on a
+            plane and merge when you land. And <strong>search</strong> finds documents by title
+            and content, among the ones you're allowed to see.</p>
+            <p>I'm leaving out Sheets and Slides, spell check, calls, import and export
+            conversion, add-ons and billing. I'm also not designing how the editor <em>renders</em>
+            pages. I'm designing how edits get from one person's keyboard to everyone else's
+            screen, and how they're stored.</p>`
+        }
+      },
+      {
+        // --- Slide 2: non-functional requirements + estimates ---
+        diagram: `
+          <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
+            <text class="heading" x="30" y="42">Non-functional requirements</text>
+            <text class="subheading" x="372" y="42">how well it has to do it</text>
+            ${cardGrid(30, 66, 255, 128, 13, 3, [
+              ["Scale", ["~1B users · 100M DAU", "~10B documents in total"]],
+              ["Collab latency", ["Remote edits visible", "&lt; 200 ms p99"]],
+              ["Fast open", ["Doc interactive in &lt; 1 s,", "even with a long history"]],
+              ["Durability", ["An acked edit is", "never lost (RPO ≈ 0)"]],
+              ["Convergence", ["Every copy of a doc reaches", "the same state, intent kept"]],
+              ["99.99% available", ["Editing survives server", "and region failures"]],
+              ["Collab size", ["Usually 1–5 editors", "Cap ~100 editors + viewers"]],
+              ["Eventual elsewhere", ["Search, doc lists, counts", "may lag by seconds"]],
+              ["Cost", ["Most docs are cold", "Idle docs must be cheap"]],
+            ])}
+            ${estimatesPanel(832, 66, 338, 410, "Back of the envelope", [
+              ["Open docs", ["~10M docs open at any moment", "~5M with someone actively typing"]],
+              ["Edit ops", ["~1 op/s per typer (keystrokes batched)", "≈ 2–5M ops/s at peak"]],
+              ["Storage", ["10B docs × ~50 KB ≈ 0.5 PB snapshots", "+ op logs &amp; history ≈ 1–1.5 PB"]],
+              ["Fan-out", ["~2 other people per open doc", "≈ 10M socket pushes/s"]],
+            ])}
+            ${strip(30, 496, 1140, 100, "Takeaway: tiny, frequent edits that need one order per document", [
+              "Millions of small ops per second, each needing a total order within its doc but none across docs → one sequencer per document",
+              "Stateful session per doc (OT)  ·  durable op log + periodic snapshots  ·  search, notifications and history off the hot path",
+            ])}
+          </svg>`,
+        script: {
+          title: "Non-functional requirements and back-of-the-envelope math",
+          html: `
+            <p>Now the qualities. On <strong>scale</strong> I'll assume around a billion users,
+            100 million daily actives, and roughly <strong>10 billion documents</strong>. The
+            vast majority of those documents are cold: written once and rarely opened.</p>
+            <p>The latency target that defines the product is <strong>collaboration
+            latency</strong>. When you type, a co-editor should see it within about
+            <strong>200 milliseconds</strong>. Your <em>own</em> typing must feel instant, so the
+            client can never wait for the server before showing a keystroke. Opening a doc should
+            take <strong>under a second</strong> no matter how long its history is.</p>
+            <p>For correctness there are two requirements. <strong>Durability</strong>: once the
+            server has acknowledged an edit, it's never lost, even if a machine dies a
+            millisecond later. And <strong>convergence</strong>: every copy of a document,
+            whether on the server or in each editor's browser, must end up in the
+            <em>same</em> state, and that state should respect what each person intended. If I
+            bold a word while you fix its spelling, the result should be the correctly spelled
+            word in bold.</p>
+            <p>I'm targeting <strong>99.99%</strong> availability for editing. Collaboration
+            groups are small, typically one to five editors, and I'll cap a doc at about a
+            hundred concurrent editors with more people viewing. Search, the doc list and
+            notifications can be <strong>eventually consistent</strong>.</p>
+            <p>The numbers: about 10 million docs open at once, maybe 5 million with someone
+            typing. Clients batch keystrokes into roughly one operation a second per typer, which
+            gives <strong>2 to 5 million ops a second</strong> at peak. Each op is tiny, tens of
+            bytes. Storage is around half a petabyte of snapshots plus the logs and history. Big,
+            but not the hard part.</p>
+            <p>The takeaway: this is a <strong>coordination problem</strong>, not a storage or
+            bandwidth problem. Each op must be ordered relative to the other ops <em>in the same
+            document</em>, but ops in different documents are completely independent. That
+            points to <strong>one sequencer per document</strong>, sharded across machines, with
+            everything else moved off that hot path.</p>`
+        }
+      },
+      {
+        // --- Slide 3: the simplest possible starting point ---
+        diagram: main({ add: ["client", "server", "e_client_server"] }),
+        script: {
+          title: "Start simple: one client, one server",
+          html: `
+            <p>Let's start with the simplest thing that could work: a <strong>Docs
+            client</strong>, which is the editor running in a browser or app, talking to a single
+            <strong>Docs server</strong> over HTTPS. Opening a doc fetches it, and the client
+            <strong>autosaves</strong> by sending the whole document back every few seconds.</p>
+            <p>The first decision that lasts through the final design is <strong>what a document
+            is</strong>. It isn't a file of bytes. It's a <strong>structured model</strong>: a
+            sequence of characters, plus formatting ranges (bold, heading, link) and embedded
+            objects like images and tables, each at a position in that sequence. The server and
+            every client hold this same model. Thinking of it as "a long string with annotations"
+            is what lets us describe changes as small edits at positions, which we'll need very
+            soon.</p>
+            <p>For one person this works fine. The obvious problems: everything lives in the
+            server's memory, so a restart loses every document. And it isn't collaborative at
+            all. Let's add storage first, and then see what goes wrong as soon as a second person
+            opens the same document.</p>`
+        }
+      },
+      {
+        // --- Slide 4: a database, and the lost-update problem ---
+        diagram: main({ add: ["db", "e_server_db"] }),
+        script: {
+          title: "Add a database, and discover lost updates",
+          html: `
+            <p>The server stores each document as a <strong>row in a database</strong>: the doc
+            ID, its owner and title, and the serialized document body. Every autosave overwrites
+            the body. Now nothing is lost when the server restarts.</p>
+            <p>Now Alice and Bob open the same doc. Alice fixes a typo in paragraph one. Bob
+            rewrites paragraph five. Alice's autosave lands, then Bob's autosave lands, carrying
+            <em>his</em> copy of the whole document, which still has the typo. Alice's fix
+            silently disappears. This is the classic <strong>lost update</strong>, and with
+            whole-document saves every few seconds it would happen constantly.</p>
+            <p>The textbook fixes don't fit a collaborative editor. <strong>Pessimistic
+            locking</strong>, check out the doc and nobody else can edit, is how shared Word files
+            used to work, and it's exactly the experience we're replacing.
+            <strong>Optimistic concurrency</strong>, where each save carries a version number and
+            stale saves are rejected, prevents data loss, but then the client has to merge.
+            <strong>Three-way text merges</strong> like git's work for code, which is edited
+            slowly in big chunks. Here two people are typing in the same sentence many times a
+            second, and line-based merges produce conflicts that no user wants to resolve.</p>
+            <p>The real issue is the <strong>unit of change</strong>. Sending whole documents
+            throws away the information we need: <em>what</em> each person actually did. So the
+            next step is to stop shipping documents and start shipping <strong>operations</strong>.</p>`
+        }
+      },
+      {
+        // --- Slide 5: operations over a WebSocket ---
+        diagram: main({ add: ["e_client_server_ws"] }),
+        script: {
+          title: "Send operations, not documents",
+          html: `
+            <p>Instead of saving the document, the client sends <strong>operations</strong>:
+            <em>insert "big " at position 6</em>, <em>delete 4 characters at position 20</em>,
+            <em>apply bold to positions 30–42</em>. An op is tens of bytes, it describes exactly
+            what the user did, and the server can apply it to its copy of the model.</p>
+            <p>These go over a <strong>WebSocket</strong>, a long-lived two-way connection,
+            because traffic flows <em>both ways</em> continuously. The client streams its ops up,
+            and the server pushes everyone else's ops down the moment they happen. Polling can't
+            meet a 200 ms target without hammering the server. The initial load still uses plain
+            HTTPS. The socket is for the live session.</p>
+            <p>The client applies its own ops <strong>locally first</strong> and sends them in
+            the background. You never wait for the network to see your keystroke. That's what
+            makes the editor feel like a local app, and it's also what makes the problem hard. At
+            any moment, Alice's copy has edits the server hasn't seen, and the server has Bob's
+            edits that Alice hasn't seen. Their copies have <strong>diverged</strong>, and an op
+            like "insert at position 6" only means something relative to the exact document state
+            it was made against.</p>
+            <p>So we need a rule that turns concurrent, diverged ops into one consistent order
+            that everyone converges on. That rule is <strong>Operational Transformation</strong>,
+            and it's the heart of this system, so let's <strong>zoom into the server</strong> and
+            look at one editing session for one document.</p>`
+        }
+      },
+      {
+        // --- Slide 6: OT deep dive ① — the conflict and the sequencer ---
+        diagram: ot({ add: ["clientA", "clientB", "seq", "state", "d_a_seq", "d_b_seq", "d_seq_state"] }),
+        script: {
+          title: "OT deep dive ①: concurrent edits and a single sequencer",
+          html: `
+            <p>We're now inside the server, looking at <strong>one document's session</strong>.
+            Two clients, A and B, are connected, and the server holds the current <strong>doc
+            state</strong> in memory.</p>
+            <p>The first rule: each document has <strong>exactly one sequencer</strong>. Every op
+            for this doc passes through it, and it assigns each op the next <strong>revision
+            number</strong>: rev 41, rev 42, rev 43. That gives the document a single
+            <strong>total order</strong> of history that every participant will eventually agree
+            on. Different documents have different sequencers and never coordinate. That's why
+            this scales: we only need ordering within a doc.</p>
+            <p>Each op also carries its <strong>base revision</strong>, the revision of the
+            document the client was looking at when it made the edit. That's where the trouble
+            starts. Say the doc says <em>"Hello world"</em> at rev 10. Alice inserts
+            <em>"big "</em> at position 6, aiming for "Hello big world". At the same moment Bob
+            deletes the first 6 characters, "Hello ". Both ops have base revision 10.</p>
+            <p>The sequencer receives Bob's delete first, so it becomes rev 11, leaving "world".
+            Then Alice's op arrives. If we <strong>apply it as-is</strong> and insert at position 6
+            of a 5-character string, we either fail or produce "worldbig ". And Alice's
+            browser, which applied her own insert first and Bob's delete second, shows something
+            different again. The copies have <strong>diverged permanently</strong>. Ordering ops
+            isn't enough. Ops made against an older state have to be <strong>adjusted</strong> to
+            fit the newer state.</p>`
+        }
+      },
+      {
+        // --- Slide 7: OT deep dive ② — transform ---
+        diagram: ot({ add: ["tr", "hist", "d_seq_tr", "d_hist_tr", "d_tr_state"], remove: ["d_seq_state"] }),
+        script: {
+          title: "OT deep dive ②: transforming ops against history",
+          html: `
+            <p>The fix is <strong>transformation</strong>. The server keeps the <strong>recent
+            ops</strong> in memory. When an op arrives with base revision <em>k</em> and the doc is
+            at revision <em>N</em>, the server <strong>transforms</strong> it against every op from
+            k+1 to N, rewriting it as if the user had made it against the current state.</p>
+            <p>The transform rules are intuitive. If someone deleted text <em>before</em> your
+            insert position, shift your insert left by that many characters. If they inserted
+            before you, shift right. If two inserts land at the same position, break the tie
+            deterministically, for example by user ID, so everyone picks the same order. If two
+            deletes overlap, the second only deletes what's left. In our example, Alice's
+            <em>insert "big " at 6</em> is transformed against Bob's <em>delete 6 at 0</em>,
+            becoming <em>insert "big " at 0</em>. The result is "big world", which is what both
+            of them meant.</p>
+            <p>Why does this converge? With a <strong>central server</strong>, there's only one
+            canonical history, and each client only ever has to reconcile with the server, never
+            with other clients directly. The transform function only has to satisfy one property:
+            transforming A against B and B against A leads to the same document. This is the
+            <strong>Jupiter</strong> model behind Google Wave and Docs. Peer-to-peer OT also needs
+            a second, much harder property that many published algorithms got wrong. The central
+            server makes OT tractable.</p>
+            <p>The real engineering cost is <strong>breadth</strong>. A rich-text model has many
+            op types: insert, delete, format, table edits, list changes, image moves. Every pair
+            needs a transform rule, so the rule table grows with the square of the op types, and
+            each rule must be identical in the server and every client. That's why the clients and
+            the server share one OT library.</p>`
+        }
+      },
+      {
+        // --- Slide 8: OT deep dive ③ — durable append, ack, broadcast ---
+        diagram: ot({ add: ["log", "bc", "d_tr_log", "d_tr_bc", "d_bc_a", "d_bc_b"] }),
+        script: {
+          title: "OT deep dive ③: append durably, then ack and broadcast",
+          html: `
+            <p>Once an op is transformed and has its revision number, two things happen, in a
+            strict order.</p>
+            <p>First, it's <strong>appended to the op log</strong>, durable and replicated
+            storage, keyed by document and revision. Only after that write succeeds does anyone
+            hear about the op. This ordering is what gives us <strong>RPO ≈ 0</strong>. If the
+            server crashes before the append, the client never got an ack and will resend. If it
+            crashes after, the op is safely in the log and the next server picks up from there. The
+            append is also <strong>conditional</strong>: "write rev 43 only if rev 43 doesn't
+            exist yet." That will matter when we talk about failover.</p>
+            <p>Second, the <strong>broadcaster</strong> sends an <strong>ack</strong> to the
+            author ("your op is rev 43") and the <strong>transformed op</strong> to every other
+            client in the session. Those clients apply ops in revision order. If a client sees rev
+            45 after rev 43, it knows it missed 44 and asks for it, so gaps are always
+            detectable.</p>
+            <p>Two details make this robust to flaky networks. Every op carries a <strong>client
+            ID and a client sequence number</strong>, so if a client reconnects and resends an op
+            the server already logged, the server recognizes the duplicate and just re-acks it.
+            And a reconnecting client says "I'm at rev 40," and the server replays 41 onward from
+            memory or from the op log. As with every real-time system, the socket is a fast path,
+            and the <strong>log is the source of truth</strong>.</p>`
+        }
+      },
+      {
+        // --- Slide 9: OT deep dive ④ — the client side ---
+        diagram: ot({
+          add: ["pendA", "pendB", "d_a_pend", "d_pendA_seq", "d_b_pend", "d_pendB_seq"],
+          remove: ["d_a_seq", "d_b_seq"],
+        }),
+        script: {
+          title: "OT deep dive ④: the client keeps one op in flight",
+          html: `
+            <p>Now the client's half, which is just as important. Remember, the client applies
+            your edits <strong>immediately</strong>. Everything you've typed that the server
+            hasn't acknowledged yet sits in a small queue of <strong>pending ops</strong>.</p>
+            <p>The protocol keeps <strong>at most one op in flight</strong>. The client sends an
+            op and waits for its ack. Anything you type meanwhile goes into a
+            <strong>buffer</strong>, and consecutive keystrokes are <strong>composed</strong> into
+            a single op: typing "hello" becomes one insert of five characters, not five ops. When
+            the ack arrives, the whole buffer goes out as the next op. On a fast connection that
+            means an op every round trip. On a slow one, ops naturally get bigger and fewer. This
+            batching is how we got to roughly one op per second per typer in the estimates.</p>
+            <p>When a <strong>remote op</strong> arrives from the server, the client can't apply it
+            directly, because its own copy already includes the pending local edits that the remote
+            op knows nothing about. So the client <strong>transforms in the other
+            direction</strong>: the remote op is transformed against the in-flight op and the
+            buffer, and they in turn are transformed against the remote op. Your screen updates
+            with Bob's change in the right place, and your pending ops are now expressed against
+            the newer revision.</p>
+            <p>With one op in flight, each client only ever has a <strong>two-party
+            conversation</strong> with the server. The server never has to reason about what
+            clients have seen of <em>each other's</em> edits. That simplicity is what makes the
+            whole scheme provably convergent.</p>`
+        }
+      },
+      {
+        // --- Slide 10: OT deep dive ⑤ — presence and cursors ---
+        diagram: ot({ add: ["cur", "d_bc_cur", "d_tr_cur"] }),
+        script: {
+          title: "OT deep dive ⑤: presence and live cursors",
+          html: `
+            <p>Next, <strong>presence</strong>: the avatars at the top and everyone's colored
+            cursors and selections. The key observation is that a cursor is just a
+            <strong>position in the document</strong>, so it has the same problem ops have. If Bob's
+            cursor is at position 50 and Alice inserts ten characters at position 10, Bob's cursor
+            must move to 60, or it will jump to the wrong word.</p>
+            <p>So the session keeps a <strong>cursor map</strong>, user to selection range, and
+            runs every applied op through the same transform logic to <strong>shift the
+            positions</strong>. Clients send cursor updates with the revision they were made at,
+            so they get transformed exactly like ops.</p>
+            <p>But presence is treated very differently from content. It's
+            <strong>ephemeral</strong>: never written to the op log, never in history. If the
+            session server restarts, cursors reappear a second later when clients resend them.
+            Updates are <strong>throttled</strong> to a few per second and can be dropped under
+            load, because only the latest position matters. And presence is
+            <strong>coalesced</strong>: in a doc with hundreds of viewers, we don't stream every
+            viewer's cursor to everyone. We show live cursors for active editors and a summarized
+            "+87 viewers" for the rest. That's how the per-doc cost stays bounded no matter how
+            popular the doc gets.</p>`
+        }
+      },
+      {
+        // --- Slide 11: OT deep dive ⑥ — anchors for comments and suggestions ---
+        diagram: ot({ add: ["anch", "d_state_anch"] }),
+        script: {
+          title: "OT deep dive ⑥: comments and suggestions live in the model",
+          html: `
+            <p>The last piece of the session is how <strong>comments and suggestions</strong> stay
+            attached to text. A comment is attached to a range, say "the third sentence." If we
+            stored that as character offsets in a separate database, the first edit above it
+            would make it point at the wrong text.</p>
+            <p>So the <strong>anchor</strong> lives <strong>inside the document model</strong>
+            itself, as a pair of markers around the range, tagged with a comment ID. Because the
+            anchors are part of the model, every op is transformed past them, and they move with
+            the text automatically, for free. The comment's <em>conversation</em> (the thread,
+            replies, resolved state) is ordinary data that lives in a database keyed by that ID.
+            If someone deletes all the anchored text, the anchor collapses and the comment shows
+            "original content deleted."</p>
+            <p><strong>Suggestions</strong> use the same trick. In suggesting mode, your edits are
+            real ops, but they're tagged: inserted text is marked "suggested by Bob" and shown in
+            green, and deletions mark text as "suggested for removal" rather than removing it.
+            <strong>Accepting</strong> is just another op that clears the mark.
+            <strong>Rejecting</strong> is an op that removes the suggested text. Suggestions get
+            convergence, history and real-time display from the existing OT pipeline, with no
+            separate system.</p>
+            <p>That's the session. Ordering, transformation, durability, presence and anchors all
+            happen inside one stateful process per document. Now let's <strong>zoom back
+            out</strong> and work out how to run millions of these.</p>`
+        }
+      },
+      {
+        // --- Slide 12: split stateless API from stateful sessions ---
+        diagram: main({
+          add: ["lb", "docapi", "gw", "sessions",
+                "e_client_lb", "e_client_gw", "e_gw_sessions", "e_docapi_db", "e_sessions_db"],
+          remove: ["server"],
+        }),
+        script: {
+          title: "Split the stateless API from the stateful sessions",
+          html: `
+            <p>Back at the system level. One server can't host 10 million open documents and
+            their sockets, and the two kinds of work it does are very different. So I split it.</p>
+            <p>The <strong>Doc Service</strong> is a <strong>stateless</strong> fleet behind a
+            <strong>load balancer</strong>. It handles everything request/response: list my docs,
+            create a doc, rename, change sharing, and the initial <strong>open</strong>, which
+            returns the doc and a revision number. Any server can handle any request, and we scale
+            it and deploy it like any web tier.</p>
+            <p>The <strong>WebSocket gateways</strong> terminate the long-lived connections. A
+            gateway does nothing clever: authenticate the socket, and forward frames between the
+            client and the right session. Keeping it dumb means we can deploy session logic
+            without dropping millions of sockets.</p>
+            <p><strong>Collab sessions</strong> are the stateful tier: the per-document OT
+            sessions we just designed. The invariant that matters most is <strong>exactly one
+            live session per document</strong>, on one server, because that's where the
+            sequencer lives. Two sessions for the same doc would mean two histories, which is
+            exactly the divergence we worked so hard to prevent.</p>
+            <p>Sessions are <strong>created on demand</strong>. When the first person opens a
+            doc, some session server loads it and starts accepting ops. When the last person
+            leaves, it lingers briefly and then unloads. Cold docs cost nothing but storage, which
+            satisfies the cost requirement for 10 billion mostly idle documents. One session
+            server can host thousands of documents, since most of them see a few ops a second at
+            most.</p>`
+        }
+      },
+      {
+        // --- Slide 13: session directory, leases, fencing ---
+        diagram: main({ add: ["directory", "e_sessions_dir", "e_gw_dir"] }),
+        script: {
+          title: "Session directory: exactly one owner per doc",
+          html: `
+            <p>How does a gateway know which session server owns doc X? The tempting answer is
+            <strong>consistent hashing</strong> on the doc ID. That's a good way to
+            <em>place</em> docs, but on its own it's dangerous for <em>ownership</em>. During a
+            network partition or a membership change, two servers can briefly disagree about the
+            ring, and both believe they own the doc. That's two sequencers and a split history.</p>
+            <p>So ownership comes from a <strong>session directory</strong> backed by a
+            consensus store: Chubby or ZooKeeper style, or a sharding service like Google's
+            Slicer. A server holds a <strong>lease</strong> on each doc it serves, and must renew
+            it every few seconds. The gateway asks the directory, caches the answer, and forwards
+            ops to the owner. Hashing can still choose which server gets a new doc. The lease is
+            what makes it <em>the</em> owner.</p>
+            <p>Leases alone aren't quite enough, because a paused server may not realize its lease
+            expired. So each lease carries an increasing <strong>epoch</strong>, a fencing token,
+            and op-log appends are conditional on both the epoch and the next revision number. A
+            stale owner's writes are rejected by storage itself, so split-brain can't corrupt
+            history even if it briefly happens.</p>
+            <p><strong>Failover</strong> follows directly. If a session server dies, its leases
+            expire within seconds. The next client to reconnect causes the directory to assign the
+            doc to a healthy server, which loads the latest snapshot, replays the log tail, and
+            resumes. Clients resend their unacked ops, which dedupe by client sequence number.
+            Users see a short "reconnecting…" and lose nothing.</p>`
+        }
+      },
+      {
+        // --- Slide 14: split storage into metadata, op log and snapshots ---
+        diagram: main({
+          add: ["metadb", "oplog", "blob", "e_docapi_meta", "e_sessions_oplog", "e_sessions_blob"],
+          remove: ["db"],
+        }),
+        script: {
+          title: "Storage: metadata, an op log, and snapshots",
+          html: `
+            <p>Our single database is doing three jobs with completely different access patterns,
+            so I split it into three stores.</p>
+            <p>The <strong>metadata DB</strong> holds docs (ID, title, owner, folder,
+            timestamps), sharing, and later comments. That's relational data with cross-references
+            and a need for transactions: moving a doc to a folder, transferring ownership. Google
+            would use <strong>Spanner</strong>: strongly consistent SQL that scales horizontally
+            and replicates across regions. Writes here are low volume, because nobody renames docs
+            a million times a second.</p>
+            <p>The <strong>op log</strong> is the high-volume store: millions of tiny appends a
+            second. It's a wide-column store like <strong>Bigtable</strong>, with row key
+            <em>doc_id + revision</em>, so one doc's ops are contiguous and "everything after rev
+            k" is a single range scan. It only needs per-row conditional writes, which is exactly
+            what the fencing check uses. Because the key starts with the doc ID, load spreads
+            evenly across billions of docs.</p>
+            <p><strong>Snapshots</strong> go in a <strong>blob store</strong>. A snapshot is the
+            full serialized model at some revision R. To <strong>open</strong> a doc, the session
+            loads the latest snapshot and replays the ops after R. Without snapshots, opening a
+            five-year-old doc would mean replaying millions of ops. With a snapshot every few
+            hundred ops, opening is one blob read plus a short range scan, comfortably under a
+            second.</p>
+            <p>This is effectively <strong>event sourcing</strong>. The op log is the truth, and
+            snapshots are a cache of "the log applied up to here." Everything else we add, like
+            history, search and notifications, will also be a function of that log.</p>`
+        }
+      },
+      {
+        // --- Slide 15: permissions ---
+        diagram: main({ add: ["acl", "e_docapi_acl", "e_sessions_acl", "e_acl_meta"] }),
+        script: {
+          title: "Permissions: an ACL service on every path",
+          html: `
+            <p>Sharing is a central feature, and permission checks sit on <strong>every
+            path</strong>: listing and opening docs in the Doc Service, and joining a session on the
+            session servers. The session also enforces the <strong>role on every op</strong>. A
+            viewer's socket can't send ops at all. A commenter can only send comment and
+            suggestion ops. An editor can do anything.</p>
+            <p>I'd put this behind a dedicated <strong>ACL service</strong> modeled on Google's
+            <strong>Zanzibar</strong>. Permissions are stored as relation tuples like
+            <em>doc:123#editor@user:alice</em>, <em>doc:123#viewer@group:eng</em>, or
+            <em>doc:123#parent@folder:9</em>. A check walks those relations: Bob can view the doc
+            because he's in a group that can view the folder that contains it. Inheritance through
+            folders and groups is what makes a single "share this folder" click cover thousands of
+            docs.</p>
+            <p>Checks are frequent, so the ACL service caches aggressively. That raises the
+            <strong>"new enemy" problem</strong>: you remove Bob from a doc and then add a
+            sensitive paragraph, and a stale cache lets Bob read it. Zanzibar's answer is a
+            <strong>consistency token</strong>. The doc remembers the ACL version at its last
+            permission change, and checks must be evaluated at least that fresh.</p>
+            <p><strong>Revocation</strong> also has to reach live sessions. When an ACL changes,
+            the session server re-checks the connected users of that doc, and anyone who lost
+            access is disconnected or downgraded to read-only within seconds. Link sharing is
+            simply a tuple granting a role to "anyone with the link," and the link carries an
+            unguessable token.</p>`
+        }
+      },
+      {
+        // --- Slide 16: the change feed ---
+        diagram: main({ add: ["kafka", "e_oplog_kafka", "e_meta_kafka"] }),
+        script: {
+          title: "A change feed to keep the hot path lean",
+          html: `
+            <p>Several features still to come (snapshots, version history, search, notifications)
+            all need to react to changes. The worst thing we could do is bolt each of them onto
+            the session server. Its job is latency-critical and stateful. It should order,
+            transform, durably append, broadcast, and nothing else.</p>
+            <p>So I add a <strong>change feed</strong>, a log like <strong>Kafka</strong> or
+            Pub/Sub. Committed ops flow into it from the op log via change data capture, and
+            metadata changes such as new comments, shares and renames flow in from the metadata DB
+            the same way. Taking events from the <em>stores</em> rather than having services
+            publish them means we never have the dual-write bug where the database committed but
+            the event was lost, or vice versa.</p>
+            <p>The feed is <strong>partitioned by doc ID</strong>, so every consumer sees one
+            doc's changes in order, and consumers scale by adding partitions. Each consumer keeps
+            its own offset and can fall behind, catch up, or replay from scratch, for example to
+            rebuild the search index after a ranking change, without the session tier noticing.</p>
+            <p>This is where the consistency split from the requirements becomes concrete.
+            Everything <strong>left</strong> of the change feed is synchronous and strongly
+            consistent: the edit you see is the edit that's stored. Everything
+            <strong>right</strong> of it is asynchronous and eventually consistent, typically
+            seconds behind. That's fine for search results and email, and it means a slow
+            downstream system can never make typing slow.</p>`
+        }
+      },
+      {
+        // --- Slide 17: snapshots and version history ---
+        diagram: main({ add: ["compactor", "e_kafka_compactor", "e_compactor_blob"] }),
+        script: {
+          title: "Snapshots and version history",
+          html: `
+            <p>The first consumer is the <strong>snapshot worker</strong>. It follows each doc's
+            ops, and every few hundred ops, or when a doc goes idle, it applies them to the last
+            snapshot and writes a new one to the blob store. Doing this off the session server
+            keeps snapshot CPU and I/O away from the typing path, and bounds how many ops any open
+            has to replay.</p>
+            <p>The same worker builds <strong>version history</strong>. Keystroke-level history is
+            useless to a person, so the worker groups ops into <strong>revisions</strong>: a run
+            of edits by the same people within a few minutes becomes one entry, "Alice and Bob,
+            10:42 AM." Each revision records its revision range and authors, and points at a
+            nearby snapshot. <strong>Named versions</strong> ("Final draft v2") are just pinned
+            revisions.</p>
+            <p><strong>Viewing</strong> an old version loads the nearest snapshot and replays ops
+            up to that revision. <strong>Showing changes</strong> works because every op records
+            its author, so the viewer can color text by who wrote it. <strong>Restoring</strong>
+            never rewrites history. The session computes an op that turns today's document into the
+            old one, and applies it like any other edit. History stays append-only, collaborators
+            see the restore live, and you can undo a restore.</p>
+            <p>To keep storage bounded, older history is <strong>coarsened</strong>. After some
+            weeks, we keep the revision snapshots and drop the individual ops between them.
+            Recent history stays fine-grained, and ancient history keeps every revision a person
+            would want, without keeping every keystroke forever.</p>`
+        }
+      },
+      {
+        // --- Slide 18: comments ---
+        diagram: main({ add: ["comments", "e_comments_meta"] }),
+        script: {
+          title: "Comments: threads in the database, anchors in the doc",
+          html: `
+            <p>Comments split across the two halves of the system, exactly as we designed in the
+            deep dive. The <strong>anchor</strong> is part of the document model, so it moves with
+            the text through OT. The <strong>thread</strong> (the comment text, replies, @mentions,
+            assignments, resolved or reopened) belongs to a <strong>Comment Service</strong> on
+            the HTTP API, stored in the metadata DB keyed by doc and comment ID.</p>
+            <p>Why not put the whole comment in the document model? Comment threads change on a
+            human timescale: a reply every few minutes, not every hundred milliseconds. They also
+            have their own lifecycle and permissions, since a commenter can write them but not the
+            text. And they have to be queryable on their own, for example "all comments assigned to
+            me across every doc." That's a database query, not something you get by replaying op
+            logs.</p>
+            <p>Creating a comment is a <strong>two-step</strong> action: the client inserts the
+            anchor op through the session, and creates the thread through the Comment Service with
+            the same ID. If one half fails, the client retries, and an anchor without a thread, or
+            the reverse, is simply hidden until it's resolved.</p>
+            <p>Collaborators see new comments in real time because the Comment Service tells the
+            doc's session, which broadcasts a "comment changed" event over the existing sockets.
+            And because comment writes land in the metadata DB, they automatically show up on the
+            change feed. That's exactly what the next component needs.</p>`
+        }
+      },
+      {
+        // --- Slide 19: notifications ---
+        diagram: main({ add: ["notif", "email", "e_kafka_notif", "e_notif_email"] }),
+        script: {
+          title: "Notifications: mentions, replies and shares",
+          html: `
+            <p>When someone @mentions you, assigns you a comment, replies to your thread, or shares
+            a doc with you, you get an email or mobile push. <strong>Notification
+            workers</strong> consume the change feed and decide <strong>who to tell, and
+            when</strong>.</p>
+            <p>The logic matters more than the plumbing. For each event the worker resolves
+            recipients, checks <strong>permissions</strong> (you can @mention someone who can't
+            see the doc, in which case the <em>author</em> is prompted to share it rather than the
+            mentioned person getting a dead link), and applies the recipient's preferences.</p>
+            <p>Then it <strong>suppresses and batches</strong>. If you're <em>in</em> the doc right
+            now, which the worker can check against session presence, you've already seen the
+            comment, so no email. Five replies in a thread within ten minutes become one
+            digest-style email, not five. Delivery goes to email and push providers through a
+            queue with retries and <strong>idempotency keys</strong>, so a worker crash mid-batch
+            doesn't send duplicates.</p>
+            <p>Because this is all downstream of the change feed, a backlog at the email provider
+            just means notifications arrive a bit late. It never slows down anyone's typing.</p>`
+        }
+      },
+      {
+        // --- Slide 20: search ---
+        diagram: main({ add: ["search", "searchidx", "indexer", "e_kafka_indexer", "e_indexer_idx", "e_search_idx"] }),
+        script: {
+          title: "Search across the docs you can see",
+          html: `
+            <p>Search has a write side and a read side. On the write side, the <strong>search
+            indexer</strong> consumes the change feed. Indexing on every op would be absurd at
+            millions of ops a second, so it <strong>debounces per doc</strong>. It notes "doc 123
+            changed," waits until the doc has been quiet for 30 seconds or so (or a cap is hit), then
+            reads the latest snapshot plus tail and re-indexes the doc's title and text in one
+            go. A doc being actively edited is re-indexed every half-minute or so, not ten times a
+            second.</p>
+            <p>The <strong>index</strong> is an inverted index, sharded by doc. The hard part is
+            <strong>permissions</strong>: results must only include docs the searcher can see, and
+            a user can see millions of docs through groups and domain-wide sharing. Checking each
+            hit against the ACL service after the search (<strong>late binding</strong>) is
+            accurate, but it's slow when most hits get filtered out. Storing each doc's allowed
+            principals in the index and filtering at query time (<strong>early binding</strong>)
+            is fast, but it can be stale.</p>
+            <p>I'd do <strong>both</strong>. The index stores each doc's principals (users,
+            groups, domain), the query expands the searcher into their principals and filters on
+            them, and then the top results are re-verified against the ACL service before we
+            return them. A stale index can cost a result, but it can never leak one.</p>
+            <p>The <strong>Search Service</strong> sits behind the load balancer with the other
+            APIs. It handles prefix autocomplete on titles and full-text queries, and it ranks by
+            text match, recency, and your relationship to the doc (owned, recently opened, shared
+            with you directly).</p>`
+        }
+      },
+      {
+        // --- Slide 21: images and the CDN ---
+        diagram: main({ add: ["cdn", "e_client_cdn", "e_cdn_blob"] }),
+        script: {
+          title: "Images: references in the doc, bytes in a CDN",
+          html: `
+            <p>Documents embed images, and an image is megabytes, while our ops are bytes. So
+            image bytes <strong>never go through the OT pipeline</strong>. The document model
+            stores a <strong>reference</strong>, an image ID plus size and layout, and inserting
+            an image is a tiny op carrying that reference.</p>
+            <p>Uploading is out of band. The client asks the Doc Service for a <strong>signed
+            upload URL</strong>, uploads the bytes directly to the blob store, and then inserts the
+            reference op. Collaborators receive the op instantly and render a placeholder until
+            the image loads.</p>
+            <p>Images are served through a <strong>CDN</strong>. They're immutable, since editing
+            an image creates a new ID, so they cache forever and the CDN's hit rate is excellent.
+            The catch is that an image inherits its doc's permissions, so it can't be public. The
+            client gets <strong>short-lived signed URLs</strong> for the images in a doc when it
+            opens the doc, and the CDN validates the signature before serving or pulling from the
+            origin.</p>
+            <p>The same blob store already holds snapshots, and keeping both there means one
+            durable, replicated, cheap tier for anything large.</p>`
+        }
+      },
+      {
+        // --- Slide 22: offline editing, and OT vs CRDTs ---
+        diagram: main({ add: ["local", "e_client_local"] }),
+        script: {
+          title: "Offline editing, and why OT rather than CRDTs",
+          html: `
+            <p>For <strong>offline</strong> support, the client keeps a <strong>local
+            store</strong> in IndexedDB on the web, or a local database on mobile: a snapshot of each
+            doc you've made available offline, plus the pending ops queue. Losing the connection
+            just means the buffer keeps growing. Everything you type is persisted locally, so
+            closing the laptop loses nothing.</p>
+            <p>On reconnect, the client sends its pending ops with their old base revision, and
+            the server transforms them against everything that happened in the meantime. That's
+            the <em>same algorithm</em> as normal editing with a very long round trip. It
+            converges, but after hours apart the merge can be semantically surprising, such as
+            two people rewriting the same paragraph. That's what version history is for. The
+            server also re-checks permissions, so if you lost edit access while offline, your
+            edits are rejected and kept as a local copy instead.</p>
+            <p>This is where it's fair to ask about <strong>CRDTs</strong>, the main alternative
+            to OT, used by Yjs, Automerge and Figma-style systems. A CRDT gives every character a
+            unique ID and defines ops that <strong>commute</strong>, so replicas converge in any
+            order with <strong>no central server</strong>. That's great for peer-to-peer and
+            heavy offline use. The costs are per-character metadata and tombstones for deleted
+            text (modern CRDTs have shrunk these a lot), and rich-text semantics are harder to get
+            right, especially intent-preserving formatting.</p>
+            <p>For Google Docs, I'd still choose <strong>OT with a central server</strong>. OT's
+            main weakness is that it needs a central sequencer, but we have one anyway for
+            permissions, durability and history. OT keeps the document compact, and it's proven at
+            this scale. If the product were local-first or peer-to-peer, I'd choose a CRDT.</p>`
+        }
+      },
+      {
+        // --- Slide 23: multi-region ---
+        diagram: main({ add: ["regions", "e_blob_regions"] }),
+        script: {
+          title: "Going global: home regions and replication",
+          html: `
+            <p>Finally, the system runs in <strong>many regions</strong>, which raises the
+            question of where a doc's single sequencer lives. Each doc's session runs in one
+            <strong>home region</strong>, usually the one closest to its owner or most of its
+            editors. A collaborator on another continent connects to their <strong>nearest
+            gateway</strong>, which forwards ops over the private backbone to the home region.
+            They pay one cross-ocean round trip, around 100 to 150 ms, for remote edits.
+            Their own typing stays instant because it's local-first. If the editor mix shifts, the
+            directory can <strong>migrate</strong> a doc's home region at a quiet moment.</p>
+            <p><strong>Replication</strong> is what makes "never lose an acked edit" true even if
+            a whole region is lost. Spanner replicates metadata synchronously across regions with
+            Paxos. The op log write is acknowledged only once it's committed in more than one
+            failure domain. That adds some milliseconds to the ack, but the ack isn't on the typing
+            path. Snapshots and images replicate asynchronously, which is fine, because the log can
+            always rebuild a snapshot.</p>
+            <p>If the home region fails, its leases expire, the directory reassigns its docs to
+            the next region, sessions rebuild from the replicated log, and clients reconnect and
+            resend unacked ops. Users see seconds of "reconnecting," and no data is lost, which
+            meets the 99.99% target.</p>`
+        }
+      },
+      {
+        // --- Slide 24: the complete system ---
+        diagram: main(),
+        script: {
+          title: "The complete system: following one keystroke",
+          html: `
+            <p>To close, let me follow one edit through the finished system. Alice opens the
+            team's design doc. The <strong>Doc Service</strong> checks the <strong>ACL
+            service</strong>, reads metadata from <strong>Spanner</strong>, and returns signed URLs
+            for its images, which load from the <strong>CDN</strong>. Her client opens a
+            <strong>WebSocket</strong> to a nearby <strong>gateway</strong>, which asks the
+            <strong>session directory</strong> who owns the doc and forwards her to that
+            <strong>collab session</strong>, loaded from the latest <strong>snapshot</strong> plus
+            the op-log tail.</p>
+            <p>She types a sentence. It appears instantly on her screen, and goes up as one composed
+            op based on rev 812. Bob's concurrent edit already took rev 812 and 813, so the session
+            <strong>transforms</strong> her op past it, assigns rev 814, <strong>appends</strong>
+            it to the op log with a fenced conditional write, then acks Alice and pushes the op to
+            Bob, whose cursor shifts to stay in place. All of that takes well under 200 ms.</p>
+            <p>Downstream, the op reaches the <strong>change feed</strong>. The <strong>snapshot
+            worker</strong> folds it into the next snapshot and into a history entry, "Alice,
+            10:42." The <strong>search indexer</strong> re-indexes the doc once it goes quiet.
+            When Alice @mentions Carol in a comment, the <strong>notification workers</strong>
+            email her, unless she's already in the doc.</p>
+            <p>The themes I'd underline: <strong>ops, not documents</strong>, as the unit of
+            change; <strong>one sequencer per document</strong>, enforced with leases and fencing,
+            giving total order where it's needed and no coordination where it isn't;
+            <strong>OT</strong> for convergence, with anchors and cursors carried by the same
+            transforms; <strong>the op log as the source of truth</strong>, with snapshots and
+            history derived from it; and a <strong>change feed</strong> that keeps everything
+            nobody is waiting on off the hot path. With more time, I'd go deeper next on the rich-text
+            transform rules for tables and lists, very large documents, and the Sheets and Slides
+            models, which reuse this architecture with different ops.</p>`
+        }
+      }
+    ];
+
+
+    // ========================================================================
+    // Engine — shared by every deck. You should not need to edit below here.
+    // ========================================================================
+    let index = 0;
+
+    const el = {
+      topic: document.getElementById("topic"),
+      diagram: document.getElementById("diagram"),
+      num: document.getElementById("script-num"),
+      title: document.getElementById("script-title"),
+      body: document.getElementById("script-body"),
+      prev: document.getElementById("prev"),
+      next: document.getElementById("next"),
+      counter: document.getElementById("counter"),
+    };
+
+    function render() {
+      const slide = SLIDES[index];
+      el.topic.textContent = TOPIC;
+
+      // Replace the SVG (keep the #topic badge, which lives before it).
+      const existing = el.diagram.querySelector("svg");
+      if (existing) existing.remove();
+      el.diagram.insertAdjacentHTML("beforeend", slide.diagram);
+
+      el.num.textContent = `Slide ${index + 1} of ${SLIDES.length}`;
+      el.title.textContent = slide.script.title;
+      el.body.innerHTML = slide.script.html;
+
+      el.counter.textContent = `${index + 1} / ${SLIDES.length}`;
+      el.prev.disabled = index === 0;
+      el.next.disabled = index === SLIDES.length - 1;
+
+      el.script.scrollTop = 0;
+    }
+
+    function go(delta) {
+      const next = index + delta;
+      if (next < 0 || next >= SLIDES.length) return;
+      index = next;
+      render();
+    }
+
+    el.prev.addEventListener("click", () => go(-1));
+    el.next.addEventListener("click", () => go(1));
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowLeft") go(-1);
+      if (e.key === "ArrowRight") go(1);
+    });
+
+    // #script is referenced in render() for scroll reset.
+    el.script = document.getElementById("script");
+
+    render();
+  </script>
+</body>
+</html>
