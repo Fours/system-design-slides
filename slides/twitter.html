@@ -63,7 +63,7 @@
       flex-direction: column;
       height: 100vh;
       padding: 16px;
-      gap: 12px;
+      gap: 16px;
     }
 
     /* ---- Top: diagram ---- */
@@ -72,7 +72,6 @@
       min-height: 0;
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 12px;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -98,7 +97,6 @@
       min-height: 0;
       background: var(--panel-2);
       border: 1px solid var(--border);
-      border-radius: 12px;
       padding: 18px 22px;
       overflow-y: auto;
     }
@@ -263,7 +261,7 @@
     // ========================================================================
     // The system being designed.
     // ========================================================================
-    const TOPIC = "Design Twitter / X";
+    const TOPIC = "System Design: Twitter / X";
 
     // Shared <defs>: default arrowhead, a start-reversed variant for two-way
     // edges, and accent-colored variants for edges added on the current slide.
@@ -646,7 +644,7 @@
               ["Global", ["Users on every continent", "Serve from nearby regions"]],
               ["Bursty", ["Breaking news, sports finals", "10× spikes in minutes"]],
             ])}
-            ${estimatesPanel(832, 66, 338, 330, "Back of the envelope", [
+            ${estimatesPanel(832, 66, 338, 360, "Back of the envelope", [
               ["Tweet writes", ["500M / day ≈ 6K/s avg · ~20K/s peak"]],
               ["Timeline reads", ["250M × 20 loads ≈ 60K QPS · 200K peak"]],
               ["Fan-out", ["500M tweets × ~200 followers", "≈ 100B timeline inserts/day ≈ 1M/s"]],
