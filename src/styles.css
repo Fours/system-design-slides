@@ -197,14 +197,41 @@ html, body {
 /* Fade-in sequence: each new element waits --delay-ms plus --seq fades,
    then fades in. --delay-ms and --fade-ms are set per slide by the engine. */
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
-svg.animate .new {
+svg.animate .new, svg.animate .reveal {
   opacity: 0;
   animation: fade-in var(--fade-ms) ease-out forwards;
   animation-delay: calc(var(--delay-ms) + var(--seq, 0) * var(--fade-ms));
 }
 @media (prefers-reduced-motion: reduce) {
-  svg.animate .new { opacity: 1; animation: none; }
+  svg.animate .new, svg.animate .reveal { opacity: 1; animation: none; }
 }
+
+/* Spotlight on a scene slide with "focus": everything else fades back. */
+.box.dim, .edge.dim, .edge-label.dim { opacity: 0.18; }
+
+/* ---- Detail slides (sequence, entities, bullets, table) ---- */
+.b { font-weight: 700; fill: var(--ink); }
+tspan.dim { fill: var(--ink-dim); }
+.lifeline { stroke: var(--box-stroke); stroke-width: 1.5; stroke-dasharray: 4 6; fill: none; }
+.seq-label { fill: var(--ink); font-size: 13px; paint-order: stroke; stroke: var(--panel); stroke-width: 4px; stroke-linejoin: round; }
+.seq-num { fill: var(--accent); font-weight: 700; }
+.seq-note { fill: rgba(56, 189, 248, 0.08); stroke: var(--accent); stroke-width: 1; stroke-dasharray: 4 4; }
+.seq-note-text { fill: var(--ink-dim); font-size: 12.5px; text-anchor: middle; dominant-baseline: middle; }
+.entity .entity-rule { stroke: var(--box-stroke); stroke-width: 1.2; }
+.entity text.entity-field {
+  fill: var(--ink-dim);
+  font: 500 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-anchor: start;
+  dominant-baseline: middle;
+}
+.bullet-dot { fill: var(--accent); }
+.bullet-text { fill: var(--ink); font-size: 26px; }
+.bullet-detail { fill: var(--ink-dim); font-size: 17px; }
+.table-head { fill: var(--box-fill); stroke: var(--accent); stroke-width: 1.5; }
+.table-row { fill: transparent; stroke: var(--border); stroke-width: 1; }
+.table-pick .table-row { stroke: var(--accent); stroke-width: 2.5; filter: drop-shadow(0 0 6px var(--accent)); }
+.table-col { fill: var(--accent); font-size: 16px; font-weight: 700; dominant-baseline: middle; }
+.table-cell { fill: var(--ink); font-size: 16px; dominant-baseline: middle; }
 
 /* ---- Requirement slides ---- */
 .heading { fill: var(--accent); font-size: 24px; font-weight: 700; }

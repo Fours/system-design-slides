@@ -7,11 +7,13 @@ import type { EdgeDef, Point, SceneDef } from "../types";
 //   step({ add: ["client", "server", "e_client_server"] })  // -> SceneFrame
 //   step({ add: ["db", "e_server_db"] })                    // cumulative
 //   step({ add: [...], remove: ["server"] })                // replace a box
+//   step({ focus: ["client", "lb", "e_client_lb"] })        // dim the rest
 //
 // Visibility is cumulative, so call it in slide order (buildSlides does).
 // Elements added on a step are marked `isNew` and given a fade-in `seq`; an
 // edge is drawn only when it was added AND both endpoints are visible; the
-// viewBox auto-fits whatever is visible, with a minimum size.
+// viewBox auto-fits whatever is visible, with a minimum size. With `focus`,
+// every visible element that is neither focused nor new is marked "dim".
 // ============================================================================
 
 export interface FrameBox {
@@ -22,7 +24,7 @@ export interface FrameBox {
   h: number;
   label: string;
   sub?: string;
-  /** Class list: the box kind, plus "new" when added on this step. */
+  /** Class list: the box kind, plus "new" when added on this step, or "dim". */
   kind: string;
   seq?: number;
 }
@@ -30,7 +32,7 @@ export interface FrameBox {
 export interface FrameLine {
   key: string;
   d: string;
-  /** Class list: any of "new", "both", "async", "plain". */
+  /** Class list: any of "new", "both", "async", "plain", "dim". */
   cls: string;
   seq?: number;
 }
@@ -42,6 +44,7 @@ export interface FrameLabel {
   anchor: "start" | "middle";
   text: string;
   isNew: boolean;
+  dim: boolean;
   seq?: number;
 }
 
@@ -77,11 +80,15 @@ export function sceneBuilder(def: SceneDef) {
   const edges = new Map(def.edges.map((e) => [e.id, e]));
   const visible = new Set<string>();
 
-  return function step({ add = [], remove = [] }: { add?: string[]; remove?: string[] } = {}): SceneFrame {
+  return function step({ add = [], remove = [], focus = [] }: { add?: string[]; remove?: string[]; focus?: string[] } = {}): SceneFrame {
     remove.forEach((id) => visible.delete(id));
     add.forEach((id) => visible.add(id));
     const fresh = new Set(add);
     const isOn = (id: string) => visible.has(id);
+    const lit = new Set([...focus, ...add]);
+    // " dim" when focusing and any of `ids` (the element's own id, or for a
+    // bus line the boxes it joins) is not lit.
+    const dim = (...ids: string[]) => (focus.length && !ids.every((id) => lit.has(id)) ? " dim" : "");
 
     // Fade-in order (seq): the order of `add`, except that an edge
     // waits until any new box it connects has appeared.
@@ -112,7 +119,8 @@ export function sceneBuilder(def: SceneDef) {
       pts.push(...pathPts);
       if (label && lp) {
         const [x, y, anchor] = lp;
-        frame.labels.push({ key: k, x, y, anchor, text: label, isNew: cls.split(" ").includes("new"), seq: s });
+        const has = (c: string) => cls.split(" ").includes(c);
+        frame.labels.push({ key: k, x, y, anchor, text: label, isNew: has("new"), dim: has("dim"), seq: s });
       }
     };
 
@@ -121,7 +129,7 @@ export function sceneBuilder(def: SceneDef) {
       if (!isOn(b.id)) return;
       const box: FrameBox = {
         key: b.id, x: b.x, y: b.y, w: b.w, h: b.h, label: b.label, sub: b.sub,
-        kind: `${b.kind}${fresh.has(b.id) ? " new" : ""}`, seq: seq(b.id),
+        kind: `${b.kind}${fresh.has(b.id) ? " new" : ""}${dim(b.id)}`, seq: seq(b.id),
       };
       (b.kind.includes("tier") ? frame.back : frame.front).push(box);
       pts.push([b.x, b.y], [b.x + b.w, b.y + b.h]);
@@ -130,7 +138,7 @@ export function sceneBuilder(def: SceneDef) {
     // Explicit edges: shown when added AND both endpoints are visible.
     def.edges.forEach((e) => {
       if (!isOn(e.id) || !isOn(e.from) || !isOn(e.to)) return;
-      const cls = [fresh.has(e.id) ? "new" : "", e.both ? "both" : "", e.async ? "async" : ""].filter(Boolean).join(" ");
+      const cls = [fresh.has(e.id) ? "new" : "", e.both ? "both" : "", e.async ? "async" : "", dim(e.id).trim()].filter(Boolean).join(" ");
       drawEdge(e.id, e.pts, cls, e.label, e.label ? labelPos(e) : undefined, seq(e.id));
     });
 
@@ -143,12 +151,12 @@ export function sceneBuilder(def: SceneDef) {
         const hubNew = fresh.has(bus.hub);
         const ys = members.map((b) => b.y + b.h / 2).concat([bus.hubY]);
         const top = Math.min(...ys), bottom = Math.max(...ys);
-        const pn = hubNew ? "new plain" : "plain";
+        const pn = (hubNew ? "new plain" : "plain") + dim(bus.hub);
         drawEdge("bus:hub", [[bus.hubX, bus.hubY], [bus.x, bus.hubY]], pn, bus.label, bus.lp, seq(bus.hub));
         drawEdge("bus:spine", [[bus.x, top], [bus.x, bottom]], pn, undefined, undefined, seq(bus.hub));
         members.forEach((b) => {
           const y = b.y + b.h / 2;
-          drawEdge(`bus:${b.id}`, [[bus.x, y], [b.x, y]], hubNew || fresh.has(b.id) ? "new" : "",
+          drawEdge(`bus:${b.id}`, [[bus.x, y], [b.x, y]], (hubNew || fresh.has(b.id) ? "new" : "") + dim(bus.hub, b.id),
             undefined, undefined, seq(bus.hub, b.id));
         });
       }

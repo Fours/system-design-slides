@@ -6,7 +6,7 @@
 // Errors exit non-zero; warnings are style issues from CLAUDE.md.
 import fs from "node:fs";
 import path from "node:path";
-import type { Deck, DeckIndex, SceneDef } from "../src/types.ts";
+import type { ArchitectureSlide, Deck, DeckIndex, SceneDef } from "../src/types.ts";
 
 const DIR = path.join(import.meta.dirname, "..", "public", "decks");
 let errors = 0, warnings = 0;
@@ -26,6 +26,52 @@ function checkScript(where: string, script: unknown) {
     const doubles = p.split("**").length - 1;
     if (stars % 2 || doubles % 2) error(where, `paragraph ${i + 1} has an unclosed * or **`);
   });
+}
+
+const plain = (s: string) => s.replace(/\*/g, "");
+const KINDS = ["scene", "sequence", "entities", "bullets", "table"] as const;
+
+// A detail slide (anything but a scene step): checks its own data.
+function checkDetail(at: string, s: ArchitectureSlide) {
+  if ("sequence" in s) {
+    const { actors, steps } = s.sequence;
+    const ids = new Set(actors.map((a) => a.id));
+    if (ids.size !== actors.length) error(at, "duplicate actor id");
+    if (actors.length > 6) warn(at, `${actors.length} actors; more than 6 gets cramped`);
+    if (steps.length > 12) warn(at, `${steps.length} steps; more than 12 gets cramped, so split the slide`);
+    steps.forEach((st, i) => {
+      const refs = "note" in st ? st.over : [st.from, st.to];
+      refs.forEach((id) => { if (!ids.has(id)) error(at, `step ${i + 1} references unknown actor "${id}"`); });
+      checkScript(`${at} step ${i + 1}`, ["note" in st ? st.note : st.label]);
+    });
+  } else if ("entities" in s) {
+    const { items, relations = [] } = s.entities;
+    const ids = new Set(items.map((e) => e.id));
+    if (ids.size !== items.length) error(at, "duplicate entity id");
+    if (items.length > 5) warn(at, `${items.length} entities; more than 5 gets small`);
+    relations.forEach((r) => [r.from, r.to].forEach((id) => {
+      if (!ids.has(id)) error(at, `relation references unknown entity "${id}"`);
+    }));
+  } else if ("bullets" in s) {
+    const items = s.bullets.items.map((b) => (typeof b === "string" ? { text: b, detail: undefined } : b));
+    if (!items.length) error(at, "bullets has no items");
+    if (items.length > 6) warn(at, `${items.length} bullets; more than 6 gets cramped`);
+    items.forEach(({ text, detail }, i) => {
+      checkScript(`${at} bullet ${i + 1}`, detail ? [text, detail] : [text]);
+      if (plain(text).length > 64) warn(at, `bullet ${i + 1} is longer than 64 characters and may run off the slide`);
+      if (detail && plain(detail).length > 100) warn(at, `bullet ${i + 1} detail is longer than 100 characters`);
+    });
+  } else if ("table" in s) {
+    const { columns, rows, highlight } = s.table;
+    rows.forEach((r, i) => {
+      if (r.length !== columns.length) error(at, `table row ${i + 1} has ${r.length} cells; expected ${columns.length}`);
+      checkScript(`${at} table row ${i + 1}`, r);
+    });
+    if (rows.length > 8) warn(at, `${rows.length} table rows; more than 8 gets cramped`);
+    const chars = columns.reduce((n, c, j) => n + Math.max(plain(c).length, ...rows.map((r) => plain(r[j] ?? "").length)), 0);
+    if (chars > 120) warn(at, `table rows are ~${chars} characters wide and may overflow; shorten the cells`);
+    if (highlight !== undefined && !rows[highlight]) error(at, `highlight ${highlight} is not a row index`);
+  }
 }
 
 function checkScene(where: string, scene: SceneDef) {
@@ -78,6 +124,9 @@ function checkDeck(slug: string, deck: Deck) {
   deck.slides.forEach((s, i) => {
     const at = `${where} slide "${s.title}" (#${i + 1} of slides)`;
     checkScript(at, s.script);
+    const kinds = KINDS.filter((k) => k in s);
+    if (kinds.length !== 1) { error(at, `needs exactly one of ${KINDS.join(", ")}`); return; }
+    if (!("scene" in s)) { checkDetail(at, s); return; }
     const scene = deck.scenes[s.scene];
     if (!scene) { error(at, `unknown scene "${s.scene}"`); return; }
     const vis = visible.get(s.scene)!;
@@ -92,7 +141,12 @@ function checkDeck(slug: string, deck: Deck) {
       vis.add(id);
       shown.get(s.scene)!.add(id);
     }
-    if (!s.add?.length && i < deck.slides.length - 1) warn(at, "adds nothing; every slide should add at least one element");
+    for (const id of s.focus ?? []) {
+      if (!vis.has(id)) error(at, `focuses "${id}", which is not visible`);
+    }
+    if (!s.add?.length && !s.focus?.length && i < deck.slides.length - 1) {
+      warn(at, "adds nothing; every scene slide should add (or focus) at least one element");
+    }
     for (const e of scene.edges) {
       if (s.add?.includes(e.id) && !(vis.has(e.from) && vis.has(e.to))) {
         warn(at, `adds edge "${e.id}" before both of its boxes are visible`);

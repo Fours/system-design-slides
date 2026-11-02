@@ -49,7 +49,7 @@ not listed on the index page). **Start every new deck by copying it** to
 2. `requirements`: the `functional` and `nonFunctional` intro, cards, out-of-scope
    strip, estimates, and takeaway.
 3. `scenes`: every box and edge of the **final** system (usually just `main`).
-4. `slides`: one entry per architecture step.
+4. `slides`: one entry per architecture step, plus any detail slides between them.
 
 Then add the deck to `index.json` with a one-sentence description.
 
@@ -187,6 +187,27 @@ Layout guidance:
 For a deep dive into one subsystem (e.g. the `recs` scene in `spotify.json`), declare
 a second entry in `scenes` and point a run of slides at it with `"scene": "recs"`. Show the subsystem as a single box in the main scene first, zoom
 into it, then return to the main scene, whose state picks up where it left off.
+
+### Detail slides
+
+Between scene steps, a deck can show **detail slides** that explain the current step
+without changing any scene's state. Each is a `slides` entry with a `title`, a
+`script`, and one of these keys instead of `scene` (formats in `src/types.ts`; see
+them in `/#/example`):
+
+| key        | shows                                                              |
+|------------|--------------------------------------------------------------------|
+| `sequence` | actor lifelines and numbered messages (`reply` is dashed), plus notes |
+| `entities` | UML-style entities (name + fields) in a row, with labeled relations |
+| `bullets`  | a heading and bullet points, each with an optional dimmed detail line |
+| `table`    | a comparison table; `highlight` marks the chosen row               |
+
+A scene slide can also take `focus: [ids]` instead of (or with) `add`: everything
+else visible is dimmed, which is useful for tracing one request through the diagram.
+
+Detail slides lay themselves out, and their elements fade in one at a time. Use the
+`expand-slide` skill (`.claude/skills/expand-slide/`) to split a long slide into a
+scene step plus detail slides.
 
 ## Writing the script
 

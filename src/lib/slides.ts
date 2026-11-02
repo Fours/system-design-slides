@@ -1,4 +1,6 @@
-import type { Deck, Script } from "../types";
+import type { ArchitectureSlide, Deck, Script } from "../types";
+import { layoutBullets, layoutEntities, layoutSequence, layoutTable,
+  type BulletsFrame, type EntitiesFrame, type SequenceFrame, type TableFrame } from "./detail";
 import { sceneBuilder, type SceneFrame } from "./scene";
 
 // Turns a deck's JSON into the flat list of slides the engine shows.
@@ -7,12 +9,17 @@ import { sceneBuilder, type SceneFrame } from "./scene";
 // from `requirements`:
 //   - functional:     title-only, one per card, out-of-scope strip
 //   - non-functional: title-only, one per card, estimates, takeaway
-// The architecture slides follow, one per entry of `slides`.
+// The architecture slides follow, one per entry of `slides`: scene steps, and
+// the detail slides (sequence, entities, bullets, table) between them.
 
 export type Diagram =
   | { kind: "fr"; show: number; withStrip: boolean }
   | { kind: "nfr"; show: number; withEstimates: boolean; withTakeaway: boolean }
-  | { kind: "scene"; frame: SceneFrame };
+  | { kind: "scene"; frame: SceneFrame }
+  | { kind: "sequence"; frame: SequenceFrame }
+  | { kind: "entities"; frame: EntitiesFrame }
+  | { kind: "bullets"; frame: BulletsFrame }
+  | { kind: "table"; frame: TableFrame };
 
 export interface Slide {
   title: string;
@@ -47,13 +54,21 @@ export function buildSlides(deck: Deck): Slide[] {
   // One stateful builder per scene; each keeps its state while another scene
   // is on screen, so a deep dive returns to the main scene where it left off.
   const builders = new Map(Object.entries(deck.scenes).map(([name, def]) => [name, sceneBuilder(def)]));
-  deck.slides.forEach((s) => {
+  // Detail slides leave every scene's state alone.
+  const diagramOf = (s: ArchitectureSlide): Diagram => {
+    if ("sequence" in s) return { kind: "sequence", frame: layoutSequence(s.sequence) };
+    if ("entities" in s) return { kind: "entities", frame: layoutEntities(s.entities) };
+    if ("bullets" in s) return { kind: "bullets", frame: layoutBullets(s.bullets, s.title) };
+    if ("table" in s) return { kind: "table", frame: layoutTable(s.table, s.title) };
     const step = builders.get(s.scene);
     if (!step) throw new Error(`Unknown scene "${s.scene}" on slide "${s.title}"`);
+    return { kind: "scene", frame: step({ add: s.add, remove: s.remove, focus: s.focus }) };
+  };
+  deck.slides.forEach((s) => {
     slides.push({
       title: s.title,
       script: s.script,
-      diagram: { kind: "scene", frame: step({ add: s.add, remove: s.remove }) },
+      diagram: diagramOf(s),
       delayMs: s.delayMs ?? delayMs,
       fadeMs: s.fadeMs ?? fadeMs,
     });

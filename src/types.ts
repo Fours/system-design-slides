@@ -134,14 +134,70 @@ export interface SceneDef {
 
 // ---- Slides -----------------------------------------------------------------
 
-export interface ArchitectureSlide {
-  /** Which entry of `scenes` this slide draws. */
-  scene: string;
-  /** Box / edge ids this slide adds, in the order they should fade in. */
-  add?: string[];
-  remove?: string[];
+interface SlideBase {
   title: string;
   script: Script;
   delayMs?: number;
   fadeMs?: number;
 }
+
+/** A step of a scene: adds / removes elements, or spotlights some of them. */
+export interface SceneSlide extends SlideBase {
+  /** Which entry of `scenes` this slide draws. */
+  scene: string;
+  /** Box / edge ids this slide adds, in the order they should fade in. */
+  add?: string[];
+  remove?: string[];
+  /** Box / edge ids to spotlight: every other visible element is dimmed.
+   *  Leaves the scene's state alone, so it suits "trace this path" slides. */
+  focus?: string[];
+}
+
+/** A sequence diagram: actor lifelines, then numbered messages top to bottom. */
+export interface SequenceSlide extends SlideBase {
+  sequence: {
+    /** Lifelines, left to right. `kind` colors the header box like a scene box. */
+    actors: { id: string; label: string; kind: BoxKind; sub?: string }[];
+    /** Messages (`from` → `to`; `from === to` is a self-call; `reply` is dashed)
+     *  or notes spanning the `over` actors. Revealed one at a time. */
+    steps: SequenceStep[];
+  };
+}
+
+export type SequenceStep =
+  | { from: string; to: string; label: string; reply?: boolean }
+  | { note: string; over: string[] };
+
+/** UML-style entities in a row, with labeled relations between them. */
+export interface EntitiesSlide extends SlideBase {
+  entities: {
+    /** Each entity: a name and its fields ("id: uuid  PK"), shown left to right. */
+    items: { id: string; name: string; kind?: BoxKind; fields: string[] }[];
+    /** Associations, e.g. { from: "user", to: "order", label: "1 — *" }. */
+    relations?: { from: string; to: string; label?: string }[];
+  };
+}
+
+/** A heading and bullet points (markdown-lite), revealed one at a time. */
+export interface BulletsSlide extends SlideBase {
+  bullets: {
+    /** Defaults to the slide title. */
+    heading?: string;
+    /** A bullet, or a bullet with a dimmed detail line under it. */
+    items: (string | { text: string; detail?: string })[];
+  };
+}
+
+/** A comparison table (markdown-lite cells), rows revealed one at a time. */
+export interface TableSlide extends SlideBase {
+  table: {
+    /** Defaults to the slide title. */
+    heading?: string;
+    columns: string[];
+    rows: string[][];
+    /** Index of a row to highlight, e.g. the option we chose. */
+    highlight?: number;
+  };
+}
+
+export type ArchitectureSlide = SceneSlide | SequenceSlide | EntitiesSlide | BulletsSlide | TableSlide;

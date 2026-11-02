@@ -10,7 +10,7 @@ export function SceneDiagram({ frame }: { frame: SceneFrame }) {
       {frame.lines.map((l) => <path key={l.key} className={`edge ${l.cls}`} d={l.d} style={seqStyle(l.seq)} />)}
       {frame.front.map(({ key, ...b }) => <Box key={key} {...b} />)}
       {frame.labels.map((l) => (
-        <text key={l.key} className={`edge-label${l.isNew ? " new" : ""}`} x={l.x} y={l.y}
+        <text key={l.key} className={`edge-label${l.isNew ? " new" : ""}${l.dim ? " dim" : ""}`} x={l.x} y={l.y}
           style={{ textAnchor: l.anchor, ...seqStyle(l.seq) }}>
           {l.text}
         </text>

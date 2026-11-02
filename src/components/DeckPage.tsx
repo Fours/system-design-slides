@@ -5,6 +5,7 @@ import { Markdown } from "../lib/markdown";
 import { buildSlides, type Slide } from "../lib/slides";
 import { useFetch } from "../lib/useFetch";
 import type { Deck } from "../types";
+import { BulletsDiagram, EntitiesDiagram, SequenceDiagram, TableDiagram } from "./DetailDiagrams";
 import { FrDiagram, NfrDiagram, REQUIREMENTS_VIEWBOX } from "./RequirementDiagrams";
 import { SceneDiagram } from "./SceneDiagram";
 
@@ -91,7 +92,7 @@ function DeckView({ slug, deck }: { slug: string; deck: Deck }) {
   );
 }
 
-const viewBox = (slide: Slide) => (slide.diagram.kind === "scene" ? slide.diagram.frame.viewBox : REQUIREMENTS_VIEWBOX);
+const viewBox = ({ diagram: d }: Slide) => ("frame" in d ? d.frame.viewBox : REQUIREMENTS_VIEWBOX);
 
 function DiagramContent({ deck, slide }: { deck: Deck; slide: Slide }) {
   const d = slide.diagram;
@@ -103,5 +104,13 @@ function DiagramContent({ deck, slide }: { deck: Deck; slide: Slide }) {
         withEstimates={d.withEstimates} withTakeaway={d.withTakeaway} />;
     case "scene":
       return <SceneDiagram frame={d.frame} />;
+    case "sequence":
+      return <SequenceDiagram frame={d.frame} />;
+    case "entities":
+      return <EntitiesDiagram frame={d.frame} />;
+    case "bullets":
+      return <BulletsDiagram frame={d.frame} />;
+    case "table":
+      return <TableDiagram frame={d.frame} />;
   }
 }

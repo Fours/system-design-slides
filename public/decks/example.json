@@ -87,6 +87,25 @@
       ]
     },
     {
+      "title": "Follow one request",
+      "script": ["*(Filler text.) A **sequence** slide traces one request through the actors, one numbered message at a time. Replies are dashed, and a note spans the actors it sits over.*"],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client", "kind": "client" },
+          { "id": "server", "label": "Server", "kind": "service" },
+          { "id": "db", "label": "Database", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "client", "to": "server", "label": "POST /orders" },
+          { "from": "server", "to": "server", "label": "validate input" },
+          { "from": "server", "to": "db", "label": "INSERT order" },
+          { "from": "db", "to": "server", "label": "ok, id = 42", "reply": true },
+          { "note": "one database round trip per write", "over": ["server", "db"] },
+          { "from": "server", "to": "client", "label": "201 Created", "reply": true }
+        ]
+      }
+    },
+    {
       "scene": "main",
       "add": ["db", "e_server_db"],
       "title": "Add durable storage",
@@ -97,6 +116,35 @@
       ]
     },
     {
+      "title": "The data model",
+      "script": ["*(Filler text.) An **entities** slide shows the tables (or classes) behind a box, with labeled relations. Neighbors connect directly; others route over the top.*"],
+      "entities": {
+        "items": [
+          { "id": "user", "name": "User", "fields": ["id: uuid  PK", "email: text", "created_at: timestamp"] },
+          { "id": "order", "name": "Order", "fields": ["id: uuid  PK", "user_id: uuid  FK", "total_cents: int", "status: enum"] },
+          { "id": "item", "name": "OrderItem", "fields": ["order_id: uuid  FK", "sku: text", "qty: int"] }
+        ],
+        "relations": [
+          { "from": "user", "to": "order", "label": "1 — *" },
+          { "from": "order", "to": "item", "label": "1 — *" },
+          { "from": "user", "to": "item", "label": "via order" }
+        ]
+      }
+    },
+    {
+      "title": "Which database?",
+      "script": ["*(Filler text.) A **table** slide compares options row by row, and highlight marks the one we pick.*"],
+      "table": {
+        "columns": ["Option", "Strengths", "Weaknesses"],
+        "rows": [
+          ["**Postgres**", "transactions, ad-hoc SQL", "vertical scaling limits"],
+          ["**DynamoDB**", "scales out, fully managed", "rigid access patterns"],
+          ["**MongoDB**", "flexible documents", "weaker joins"]
+        ],
+        "highlight": 0
+      }
+    },
+    {
       "scene": "main",
       "add": ["lb", "app1", "app2", "e_client_lb", "e_app1_db", "e_app2_db"],
       "remove": ["server"],
@@ -104,6 +152,23 @@
       "script": [
         "*(Filler text.) This slide shows **remove**: the single server is replaced by a load balancer and two stateless app servers. Its edges disappear automatically because an endpoint is gone. The load balancer fans out along a **bus**.*"
       ]
+    },
+    {
+      "title": "Why the servers are stateless",
+      "script": ["*(Filler text.) A **bullets** slide lists the key points, one at a time. An item can carry a dimmed detail line.*"],
+      "bullets": {
+        "items": [
+          { "text": "Any server can handle **any request**", "detail": "so the load balancer can route freely" },
+          { "text": "Sessions live in a **shared store**, not in memory", "detail": "so a restart logs nobody out" },
+          "Scale out by **adding servers**, not bigger ones"
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "focus": ["client", "lb", "app2", "db", "e_client_lb", "e_app2_db"],
+      "title": "Trace a request on the diagram",
+      "script": ["*(Filler text.) A scene slide with **focus** dims everything else without changing the scene, to trace one path through the current system.*"]
     },
     {
       "scene": "main",
