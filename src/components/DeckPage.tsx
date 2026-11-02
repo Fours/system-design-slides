@@ -59,7 +59,7 @@ function DeckView({ slug, deck }: { slug: string; deck: Deck }) {
   return (
     <div id="deck">
       <section id="diagram" aria-label="System diagram">
-        <span id="topic"><Link to="/">All decks</Link> · {deck.topic}</span>
+        <span id="topic">{deck.topic}</span>
         {/* Keyed by slide, so a fresh <svg> restarts the fade-in sequence. */}
         <svg key={index} className="animate" viewBox={viewBox(slide)} xmlns="http://www.w3.org/2000/svg"
           style={{ "--delay-ms": `${slide.delayMs}ms`, "--fade-ms": `${slide.fadeMs}ms` } as CSSProperties}>
@@ -76,6 +76,13 @@ function DeckView({ slug, deck }: { slug: string; deck: Deck }) {
       </section>
 
       <div id="controls">
+        <Link className="nav" to="/" aria-label="All decks" title="All decks">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+            strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M3 11l9-8 9 8" />
+            <path d="M5 10v10h5v-6h4v6h5V10" />
+          </svg>
+        </Link>
         <button className="nav" aria-label="Previous slide" disabled={index === 0} onClick={() => go(-1)}>&#8592;</button>
         <span id="counter">{index + 1} / {slides.length}</span>
         <button className="nav" aria-label="Next slide" disabled={index === slides.length - 1} onClick={() => go(1)}>&#8594;</button>

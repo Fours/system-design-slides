@@ -67,7 +67,7 @@ html, body {
 
 /* ---- Bottom: script ---- */
 #script {
-  flex: 0 0 25%;
+  flex: 0 0 20%;
   min-height: 0;
   background: var(--panel-2);
   border: 1px solid var(--border);
@@ -126,6 +126,8 @@ html, body {
   align-items: center;
   justify-content: center;
   transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+  box-sizing: border-box;
+  text-decoration: none;
 }
 .nav:hover:not(:disabled) { background: var(--border); border-color: var(--accent); }
 .nav:disabled { opacity: 0.35; cursor: default; }
@@ -225,8 +227,6 @@ svg.animate .new {
 
 /* ---- App additions (not in the original standalone decks) ---- */
 #root { height: 100%; }
-#topic a { color: inherit; text-decoration: none; }
-#topic a:hover { color: var(--accent); }
 
 .status { padding: 24px; color: var(--ink-dim); }
 .status a { color: var(--accent); }

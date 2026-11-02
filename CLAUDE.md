@@ -71,7 +71,7 @@ JSON. Never special-case one deck in code.
 - A **back arrow** and a **forward arrow** on screen to move between slides.
 - **Left/Right arrow keys** also navigate between slides.
 - The slide number is in the URL (`/#/<slug>/<n>`), so links and refreshes keep it.
-- The topic badge links back to the index of all decks.
+- A round **home** button, left of the arrows, links back to the index of all decks.
 
 ### Progression
 
