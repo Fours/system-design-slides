@@ -439,9 +439,49 @@
       "remove": ["server"],
       "title": "Split the stateless API from the stateful connections",
       "script": [
-        "One server can't hold 30 million sockets. A well-tuned machine holds a few hundred thousand mostly idle WebSockets, so we need on the order of a hundred machines just for connections. And holding connections is a very different job from serving API requests.",
-        "So I split the server in two. The **webapp** is a **stateless** fleet that handles every HTTP API call: send a message, fetch history, create a channel, move a read cursor. It sits behind a **load balancer**, any request can go to any server, and we can deploy it many times a day. **Gateway servers** are the **stateful** tier. Each one holds a large number of open WebSockets and does very little else: authenticate the connection, remember which channels each socket cares about, and push events down.",
-        "The split matters for operations as much as for scale. Redeploying a stateless webapp is free. Restarting a gateway disconnects every client on it, so gateways are deployed slowly and drained gently, and we want their code to be **small and rarely changed**. Keeping business logic out of the gateway is what makes that possible.",
+        "One server can't hold 30 million sockets. A well-tuned machine holds a few hundred thousand mostly idle WebSockets, so we need on the order of a hundred machines just for connections. And holding connections is a very different job from serving API requests. So I split the server in two."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["client", "lb", "webapp", "db", "e_client_lb", "e_webapp_db"],
+      "title": "The webapp: stateless, behind a load balancer",
+      "script": [
+        "The **webapp** is a **stateless** fleet that handles every HTTP API call: send a message, fetch history, create a channel, move a read cursor. It sits behind a **load balancer**, any request can go to any server, and we can deploy it many times a day."
+      ]
+    },
+    {
+      "title": "Gateway servers: stateful, and do very little",
+      "script": [
+        "**Gateway servers** are the **stateful** tier. Each one holds a large number of open WebSockets and does very little else: authenticate the connection, remember which channels each socket cares about, and push events down."
+      ],
+      "bullets": {
+        "heading": "Gateway servers do very little",
+        "items": [
+          "**Authenticate** the connection",
+          "**Remember** which channels each socket cares about",
+          "**Push** events down"
+        ]
+      }
+    },
+    {
+      "title": "Deploy them differently",
+      "script": [
+        "The split matters for operations as much as for scale. Redeploying a stateless webapp is free. Restarting a gateway disconnects every client on it, so gateways are deployed slowly and drained gently, and we want their code to be **small and rarely changed**. Keeping business logic out of the gateway is what makes that possible."
+      ],
+      "table": {
+        "columns": ["Tier", "Holds", "Deploys", "Code"],
+        "rows": [
+          ["**Webapp**", "nothing", "many times a day, free", "all business logic"],
+          ["**Gateway**", "open sockets", "slowly, drained gently", "small, rarely changed"]
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "focus": ["webapp", "gw", "e_webapp_gw_direct"],
+      "title": "Which gateway holds Bob?",
+      "script": [
         "But it raises the question on the highlighted line. When Alice posts in #eng, the webapp that handled her request has to get the message to whichever gateways #eng's online members happen to be connected to. It doesn't know which those are, and it shouldn't have to track 30 million sockets to find out. We need something in the middle that knows who is listening to each channel."
       ]
     },
