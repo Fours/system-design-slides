@@ -222,6 +222,18 @@
     }
     .edge-label.new { fill: var(--accent); }
 
+    /* Fade-in sequence: each new element waits --delay-ms plus --seq fades,
+       then fades in. --delay-ms and --fade-ms are set per slide by the engine. */
+    @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+    svg.animate .new {
+      opacity: 0;
+      animation: fade-in var(--fade-ms) ease-out forwards;
+      animation-delay: calc(var(--delay-ms) + var(--seq, 0) * var(--fade-ms));
+    }
+    @media (prefers-reduced-motion: reduce) {
+      svg.animate .new { opacity: 1; animation: none; }
+    }
+
     /* ---- Requirement slides (slides 1–2) ---- */
     .heading { fill: var(--accent); font-size: 24px; font-weight: 700; }
     .subheading { fill: var(--ink-dim); font-size: 14px; }
@@ -267,6 +279,12 @@
     // ========================================================================
     const TOPIC = "System Design: Ticketmaster";
 
+    // Elements added on a slide fade in one after another, in the order they
+    // are listed in that slide's `add`. `delayMs` is the pause after arriving
+    // on a slide before the first fade; `fadeMs` is the length of each fade.
+    // A slide can override either with its own `delayMs` / `fadeMs`.
+    const ANIMATION = { delayMs: 1000, fadeMs: 1000 };
+
     // Shared <defs>: default arrowhead, a start-reversed variant for two-way
     // edges, and accent-colored variants for edges added on the current slide.
     const DEFS = `
@@ -294,14 +312,15 @@
     //   style: optionally plus "tier" (pass-through layer) or "ghost" (dashed)
     //   "new" is added automatically by the scene builder.
     // `sub` is an optional second line (e.g. a technology or role note).
-    function box(x, y, w, h, label, kind = "", sub = "") {
+    // `style` is inline CSS for the <g> (the builder uses it for --seq).
+    function box(x, y, w, h, label, kind = "", sub = "", style = "") {
       const cx = x + w / 2;
       const subText = sub
         ? `<text class="sub" x="${cx}" y="${y + h / 2 + 12}">${sub}</text>`
         : "";
       const labelY = sub ? y + h / 2 - 7 : y + h / 2;
       return `
-        <g class="box ${kind}">
+        <g class="box ${kind}" style="${style}">
           <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
           <text x="${cx}" y="${labelY}">${label}</text>
           ${subText}
@@ -393,6 +412,7 @@
 
     function sceneBuilder(def) {
       const boxes = Object.fromEntries(def.boxes.map((b) => [b.id, b]));
+      const edges = Object.fromEntries(def.edges.map((e) => [e.id, e]));
       const visible = new Set();
 
       return function step({ add = [], remove = [] } = {}) {
@@ -401,16 +421,34 @@
         const fresh = new Set(add);
         const isOn = (id) => visible.has(id);
 
+        // Fade-in order (--seq): the order of `add`, except that an edge
+        // waits until any new box it connects has appeared.
+        const pos = new Map(add.map((id, i) => [id, i]));
+        const drawn = (id) => isOn(id) && (boxes[id] ||
+          (edges[id] && isOn(edges[id].from) && isOn(edges[id].to)));
+        const key = (id) => {
+          const e = edges[id];
+          const ends = e ? [e.from, e.to].filter((b) => fresh.has(b)) : [];
+          return Math.max(pos.get(id), ...ends.map((b) => pos.get(b) + 0.5));
+        };
+        const order = add.filter(drawn).sort((a, b) => key(a) - key(b) || pos.get(a) - pos.get(b));
+        const seq = new Map(order.map((id, i) => [id, i]));
+        // Inline style for an element that appears with the last of `ids`.
+        const seqStyle = (...ids) => {
+          const s = ids.filter((id) => seq.has(id)).map((id) => seq.get(id));
+          return s.length ? `--seq:${Math.max(...s)}` : "";
+        };
+
         const lines = [], labels = [], back = [], front = [], pts = [];
 
-        const drawEdge = (pathPts, cls, label, lp) => {
+        const drawEdge = (pathPts, cls, label, lp, style = "") => {
           const d = pathPts.map((p, i) => `${i ? "L" : "M"}${p[0]},${p[1]}`).join(" ");
-          lines.push(`<path class="edge ${cls}" d="${d}"></path>`);
+          lines.push(`<path class="edge ${cls}" d="${d}" style="${style}"></path>`);
           pathPts.forEach((p) => pts.push(p));
           if (label) {
             const [lx, ly, anchor] = lp;
             const nw = cls.includes("new") ? "new" : "";
-            labels.push(`<text class="edge-label ${nw}" x="${lx}" y="${ly}" style="text-anchor:${anchor}">${label}</text>`);
+            labels.push(`<text class="edge-label ${nw}" x="${lx}" y="${ly}" style="text-anchor:${anchor};${style}">${label}</text>`);
           }
         };
 
@@ -418,7 +456,7 @@
         def.boxes.forEach((b) => {
           if (!isOn(b.id)) return;
           const kind = `${b.kind}${fresh.has(b.id) ? " new" : ""}`;
-          const svg = box(b.x, b.y, b.w, b.h, b.label, kind, b.sub || "");
+          const svg = box(b.x, b.y, b.w, b.h, b.label, kind, b.sub || "", seqStyle(b.id));
           (b.kind.includes("tier") ? back : front).push(svg);
           pts.push([b.x, b.y], [b.x + b.w, b.y + b.h]);
         });
@@ -431,7 +469,7 @@
             e.both ? "both" : "",
             e.async ? "async" : "",
           ].join(" ");
-          drawEdge(e.pts, cls, e.label, e.label ? labelPos(e) : null);
+          drawEdge(e.pts, cls, e.label, e.label ? labelPos(e) : null, seqStyle(e.id));
         });
 
         // Optional "bus": a hub (gateway / load balancer) fans out to member
@@ -444,11 +482,12 @@
             const ys = members.map((b) => b.y + b.h / 2).concat([bus.hubY]);
             const top = Math.min(...ys), bottom = Math.max(...ys);
             const pn = hubNew ? "new plain" : "plain";
-            drawEdge([[bus.hubX, bus.hubY], [bus.x, bus.hubY]], pn, bus.label, bus.lp);
-            drawEdge([[bus.x, top], [bus.x, bottom]], pn);
+            drawEdge([[bus.hubX, bus.hubY], [bus.x, bus.hubY]], pn, bus.label, bus.lp, seqStyle(bus.hub));
+            drawEdge([[bus.x, top], [bus.x, bottom]], pn, null, null, seqStyle(bus.hub));
             members.forEach((b) => {
               const y = b.y + b.h / 2;
-              drawEdge([[bus.x, y], [b.x, y]], hubNew || fresh.has(b.id) ? "new" : "");
+              drawEdge([[bus.x, y], [b.x, y]], hubNew || fresh.has(b.id) ? "new" : "",
+                null, null, seqStyle(bus.hub, b.id));
             });
           }
         }
@@ -1255,6 +1294,12 @@
       const existing = el.diagram.querySelector("svg");
       if (existing) existing.remove();
       el.diagram.insertAdjacentHTML("beforeend", slide.diagram);
+
+      // A fresh <svg> restarts the fade-in sequence for its new elements.
+      const svg = el.diagram.querySelector("svg");
+      svg.style.setProperty("--delay-ms", `${slide.delayMs ?? ANIMATION.delayMs}ms`);
+      svg.style.setProperty("--fade-ms", `${slide.fadeMs ?? ANIMATION.fadeMs}ms`);
+      svg.classList.add("animate");
 
       el.num.textContent = `Slide ${index + 1} of ${SLIDES.length}`;
       el.title.textContent = slide.script.title;

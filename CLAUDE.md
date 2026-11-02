@@ -105,6 +105,11 @@ What the builder does for you:
   accent outline. New edges and their labels turn the accent color. This is how the
   audience spots "the one new thing" on each slide, so every slide should add at least
   one element.
+- **Animates what's new.** On arriving at a slide, after a short pause, the new
+  elements fade in one at a time **in the order they are listed in `add`**, so list
+  ids in the order you'd draw them (an edge never appears before a new box it
+  connects to). Timing is set by `ANIMATION = { delayMs, fadeMs }`; a slide can
+  override either with its own `delayMs` / `fadeMs`.
 - **Hides dangling edges.** An edge is drawn only if it was added and both endpoints
   are visible.
 - **Auto-fits the camera.** The `viewBox` fits whatever is visible, with a minimum
