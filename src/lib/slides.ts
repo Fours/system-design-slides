@@ -5,8 +5,10 @@ import { sceneBuilder, type SceneFrame } from "./scene";
 
 // Turns a deck's JSON into the flat list of slides the engine shows.
 //
-// Requirement slides always follow the same sequence, so they are generated
-// from `requirements`:
+// The deck opens with a generated intro slide: the complete main scene (its
+// state after the last slide, with nothing highlighted as new) and a one-line
+// welcome. Requirement slides always follow the same sequence, so they are
+// generated from `requirements`:
 //   - functional:     title-only, one per card, out-of-scope strip
 //   - non-functional: title-only, one per card, estimates, takeaway
 // The architecture slides follow, one per entry of `slides`: scene steps, and
@@ -37,6 +39,16 @@ export function buildSlides(deck: Deck): Slide[] {
   const slides: Slide[] = [];
   const push = (title: string, script: Script, diagram: Diagram) =>
     slides.push({ title, script, diagram, delayMs, fadeMs });
+
+  // Intro: replay every step of the main scene (or the first scene) on a
+  // throwaway builder, then take one more step that adds nothing.
+  const introScene = "main" in deck.scenes ? "main" : Object.keys(deck.scenes)[0];
+  const finalStep = sceneBuilder(deck.scenes[introScene]);
+  deck.slides.forEach((s) => {
+    if ("scene" in s && s.scene === introScene) finalStep({ add: s.add, remove: s.remove });
+  });
+  const name = deck.title.replace(/^Design\s+/, "");
+  push(deck.title, [`Welcome to a system design walkthrough for ${name}.`], { kind: "scene", frame: finalStep() });
 
   const frD = (show: number, withStrip = false): Diagram => ({ kind: "fr", show, withStrip });
   push(fr.intro.title, fr.intro.script, frD(0));

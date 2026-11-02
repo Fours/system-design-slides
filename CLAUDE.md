@@ -12,9 +12,10 @@ Spotify.", "Design a chat bot.") the way a senior engineer would at a whiteboard
 - A **script** — what the engineer would say out loud to explain that diagram.
 
 A deck walks through the design **incrementally**: each slide adds exactly one more
-layer, entity, or concept to the diagram and explains it. The requirement slides
-come first; then the diagram starts from the simplest possible system and grows until
-the last slide shows the complete system.
+layer, entity, or concept to the diagram and explains it. A generated intro slide
+showing the complete system comes first, then the requirement slides; then the
+diagram starts from the simplest possible system and grows until the last slide
+shows the complete system.
 
 ## Project layout
 
@@ -75,8 +76,11 @@ JSON. Never special-case one deck in code.
 
 ### Progression
 
-The requirement slides are **generated** from `requirements`; don't list them in
-`slides`.
+The intro and requirement slides are **generated**; don't list them in `slides`.
+
+- **Intro (slide 1):** the complete `main` scene (its state after the last slide,
+  nothing highlighted as new), titled with the deck `title`, and the script
+  "Welcome to a system design walkthrough for X." (X is `title` minus "Design ").
 
 - **Functional requirements, built up one slide at a time:**
   - a title-only slide (`functional.intro`);
@@ -85,7 +89,7 @@ The requirement slides are **generated** from `requirements`; don't list them in
     requirement, and the slide is titled with the card title;
   - one slide adding the dashed strip listing what is out of scope
     (`functional.outOfScope`).
-  With 6 cards these are slides 1–8.
+  With 6 cards these are slides 2–9.
 - **Non-functional requirements, built up the same way:**
   - a title-only slide (`nonFunctional.intro`);
   - one slide per card (`nonFunctional.cards`: scale, latency, availability,
@@ -95,7 +99,7 @@ The requirement slides are **generated** from `requirements`; don't list them in
     need more or less room than the card grid);
   - one slide adding the takeaway panel, the numbers that shape the design
     (`nonFunctional.takeaway`; optional `heading`, default "Takeaway").
-  With 6 cards these are slides 9–17.
+  With 6 cards these are slides 10–18.
 - **Architecture slides** (`slides`) follow:
   - **First:** the simplest starting point for the diagram, e.g. one client and one
     server.

@@ -11,7 +11,7 @@ sentences, the diagram shows something new and useful**. The main scene's build-
 is never disturbed: new slides are inserted *between* its steps.
 
 Arguments: `<deck-slug> <slide-number>`, e.g. `spotify 30`. The number is the one in
-the URL (`/#/spotify/30`), which counts the generated requirement slides.
+the URL (`/#/spotify/30`), which counts the generated intro and requirement slides.
 
 **Phase 1 (read and propose) never edits files. Phase 2 starts only after the user
 approves the plan in chat.**
@@ -24,11 +24,11 @@ Read `public/decks/<slug>.json` (and skim `CLAUDE.md` for the deck conventions).
 Map the URL number to an entry of `slides`:
 
 ```
-requirementSlides = (functional.cards.length + 2) + (nonFunctional.cards.length + 3)
-index into slides = slideNumber - requirementSlides - 1
+generatedSlides = 1 + (functional.cards.length + 2) + (nonFunctional.cards.length + 3)
+index into slides = slideNumber - generatedSlides - 1
 ```
 
-If the number lands on a requirement slide, stop and say so: those are generated, one
+If the number lands on the intro or a requirement slide, stop and say so: those are generated, one
 card per slide, and are out of scope. If the target is already a detail slide (no
 `scene`), say so and ask whether to continue.
 
