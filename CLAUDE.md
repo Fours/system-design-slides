@@ -211,7 +211,9 @@ else visible is dimmed, which is useful for tracing one request through the diag
 
 Detail slides lay themselves out, and their elements fade in one at a time. Use the
 `expand-slide` skill (`.claude/skills/expand-slide/`) to split a long slide into a
-scene step plus detail slides.
+scene step plus detail slides, or the `expand-deck` skill to run it on every slide of a
+deck whose script is longer than 5 sentences (`node scripts/long-slides.ts <slug>`
+lists them).
 
 ## Writing the script
 
