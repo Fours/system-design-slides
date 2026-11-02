@@ -1,0 +1,123 @@
+{
+  "title": "Design Example",
+  "topic": "System Design: Example",
+  "requirements": {
+    "functional": {
+      "intro": {
+        "title": "Functional requirements",
+        "script": [
+          "Open by **agreeing on scope**: what users (and any other actors) can do with the system, and what we are deliberately leaving out.",
+          "*(Filler text for the example template. The next slides add one requirement card each, then the out-of-scope strip.)*"
+        ]
+      },
+      "cards": [
+        { "title": "Requirement one", "lines": ["Short description, line one", "Optional second line"], "script": ["Describe requirement 1 here."] },
+        { "title": "Requirement two", "lines": ["Short description, line one", "Optional second line"], "script": ["Describe requirement 2 here."] },
+        { "title": "Requirement three", "lines": ["Short description, line one", "Optional second line"], "script": ["Describe requirement 3 here."] },
+        { "title": "Requirement four", "lines": ["Short description, line one", "Optional second line"], "script": ["Describe requirement 4 here."] },
+        { "title": "Requirement five", "lines": ["Short description, line one", "Optional second line"], "script": ["Describe requirement 5 here."] },
+        { "title": "Requirement six", "lines": ["Short description, line one", "Optional second line"], "script": ["Describe requirement 6 here."] }
+      ],
+      "outOfScope": { "title": "Out of scope", "script": ["Describe what is out of scope here, and why."], "lines": ["Feature A  ·  Feature B  ·  Feature C"] }
+    },
+    "nonFunctional": {
+      "intro": {
+        "title": "Non-functional requirements",
+        "script": [
+          "Next, the **qualities** the system needs (scale, latency, availability, durability, consistency, cost) and a few **back-of-the-envelope numbers**.",
+          "*(Filler text for the example template. The next slides add one requirement card each, then the estimates, then the takeaway.)*"
+        ]
+      },
+      "cards": [
+        { "title": "Scale", "lines": ["Users, data size,", "requests per second"], "script": ["Describe the scale requirement here."] },
+        { "title": "Latency", "lines": ["p99 targets for the", "critical paths"], "script": ["Describe the latency requirement here."] },
+        { "title": "Availability", "lines": ["Which path must", "never go down"], "script": ["Describe the availability requirement here."] },
+        { "title": "Durability", "lines": ["What data can", "never be lost"], "script": ["Describe the durability requirement here."] },
+        { "title": "Consistency", "lines": ["Strong where needed,", "eventual elsewhere"], "script": ["Describe the consistency requirement here."] },
+        { "title": "Cost", "lines": ["The dominant cost", "driver"], "script": ["Describe the cost requirement here."] }
+      ],
+      "estimates": {
+        "title": "Back-of-the-envelope estimates",
+        "script": ["Walk through the back-of-the-envelope numbers here."],
+        "rows": [["Users", ["100M DAU × 10 requests ≈ 12K QPS"]], ["Storage", ["1B rows × 1 KB ≈ 1 TB"]], ["Bandwidth", ["12K QPS × 10 KB ≈ 120 MB/s"]]]
+      },
+      "takeaway": {
+        "title": "Takeaway",
+        "script": ["Describe the takeaway here: the numbers that shape the design.", "*(Filler text. The architecture diagram starts on the next slide.)*"],
+        "lines": ["The one or two numbers that shape the design, and what they imply."]
+      }
+    }
+  },
+  "scenes": {
+    "main": {
+      "boxes": [
+        { "id": "client", "x": 40, "y": 200, "w": 170, "h": 70, "label": "Client", "kind": "client", "sub": "1 user" },
+        { "id": "lb", "x": 290, "y": 200, "w": 160, "h": 70, "label": "Load Balancer", "kind": "infra", "sub": "L7 · health checks" },
+        { "id": "server", "x": 530, "y": 200, "w": 180, "h": 70, "label": "Server", "kind": "service", "sub": "App process" },
+        { "id": "app1", "x": 530, "y": 120, "w": 180, "h": 64, "label": "App Server 1", "kind": "service", "sub": "stateless" },
+        { "id": "app2", "x": 530, "y": 290, "w": 180, "h": 64, "label": "App Server 2", "kind": "service", "sub": "stateless" },
+        { "id": "cache", "x": 745, "y": 90, "w": 90, "h": 290, "label": "Cache", "kind": "data tier", "sub": "Redis" },
+        { "id": "db", "x": 860, "y": 200, "w": 170, "h": 70, "label": "Database", "kind": "data", "sub": "Persistent store" },
+        { "id": "queue", "x": 860, "y": 420, "w": 170, "h": 64, "label": "Job Queue", "kind": "stream", "sub": "async work" },
+        { "id": "worker", "x": 1100, "y": 420, "w": 170, "h": 64, "label": "Workers", "kind": "service", "sub": "background jobs" },
+        { "id": "email", "x": 1100, "y": 560, "w": 170, "h": 64, "label": "Email Provider", "kind": "ghost", "sub": "third party" }
+      ],
+      "edges": [
+        { "id": "e_client_server", "from": "client", "to": "server", "pts": [[210, 235], [530, 235]], "label": "HTTP", "both": true },
+        { "id": "e_server_db", "from": "server", "to": "db", "pts": [[710, 235], [860, 235]], "label": "read / write" },
+        { "id": "e_client_lb", "from": "client", "to": "lb", "pts": [[210, 235], [290, 235]], "label": "HTTPS", "both": true },
+        { "id": "e_app1_db", "from": "app1", "to": "db", "pts": [[710, 152], [860, 220]] },
+        { "id": "e_app2_db", "from": "app2", "to": "db", "pts": [[710, 322], [860, 250]] },
+        { "id": "e_app2_queue", "from": "app2", "to": "queue", "pts": [[620, 354], [620, 452], [860, 452]], "label": "enqueue", "async": true },
+        { "id": "e_queue_worker", "from": "queue", "to": "worker", "pts": [[1030, 452], [1100, 452]] },
+        { "id": "e_worker_email", "from": "worker", "to": "email", "pts": [[1185, 484], [1185, 560]], "label": "send" }
+      ],
+      "bus": { "hub": "lb", "hubX": 450, "hubY": 235, "x": 490, "members": ["app1", "app2"] }
+    }
+  },
+  "slides": [
+    {
+      "scene": "main",
+      "add": ["client", "server", "e_client_server"],
+      "title": "Start with the simplest thing that works",
+      "script": [
+        "Before we add anything, let's establish the **simplest version of the system**: a single user talking to a single server over HTTP. One client, one process, no scale, no redundancy.",
+        "I always start here because it forces us to agree on the **core request/response path** before we complicate it. Everything we add later — databases, caches, replicas, queues — exists to fix a specific problem this naive version has.",
+        "*(This is filler text for the example template. Replace it with the real opening of the walkthrough for your topic.)*"
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["db", "e_server_db"],
+      "title": "Add durable storage",
+      "script": [
+        "The server alone keeps everything in memory, so a restart loses all state. The first real problem to solve is **durability**, so we introduce a **database** behind the server.",
+        "The server now owns business logic and talks to the database for reads and writes. We'd choose the store based on the access pattern — a relational database for strong consistency and ad-hoc queries, or a key-value / document store if we mainly need fast lookups by id.",
+        "*(Filler text. Each subsequent slide should add exactly one more layer — a cache, a load balancer, replicas, a queue — and explain why.)*"
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["lb", "app1", "app2", "e_client_lb", "e_app1_db", "e_app2_db"],
+      "remove": ["server"],
+      "title": "Scale out behind a load balancer",
+      "script": [
+        "*(Filler text.) This slide shows **remove**: the single server is replaced by a load balancer and two stateless app servers. Its edges disappear automatically because an endpoint is gone. The load balancer fans out along a **bus**.*"
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["cache"],
+      "title": "Add a cache tier",
+      "script": ["*(Filler text.) A **tier** box is drawn behind the edges, so existing app → database lines visibly pass through it.*"]
+    },
+    {
+      "scene": "main",
+      "add": ["queue", "worker", "email", "e_app2_queue", "e_queue_worker", "e_worker_email"],
+      "title": "Move slow work off the request path",
+      "script": [
+        "*(Filler text.) Dashed **async** edges show background flows, and a dashed **ghost** box shows something that exists but isn't designed here (a third party, other regions). The last slide should show the complete system.*"
+      ]
+    }
+  ]
+}

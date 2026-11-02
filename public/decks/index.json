@@ -1,0 +1,34 @@
+{
+  "decks": [
+    {
+      "slug": "google-docs",
+      "title": "Design Google Docs",
+      "description": "Real-time collaborative editing: operational transformation, one session owner per document, an op log with snapshots, and offline edits."
+    },
+    {
+      "slug": "slack",
+      "title": "Design Slack",
+      "description": "Team messaging in real time: tens of millions of WebSockets, strict per-channel order and fan-out, and a database sharded by workspace."
+    },
+    {
+      "slug": "spotify",
+      "title": "Design Spotify",
+      "description": "Music streaming from a CDN, adaptive playback, royalties from play events, and a deep dive into the recommendation pipeline."
+    },
+    {
+      "slug": "ticketmaster",
+      "title": "Design Ticketmaster",
+      "description": "Selling a small, contested seat inventory to a huge crowd: seat holds without double-booking, exactly-once checkout, and a virtual waiting room."
+    },
+    {
+      "slug": "twitter",
+      "title": "Design Twitter / X",
+      "description": "Home timelines at scale: fan-out on read vs. write, the celebrity problem, real-time search, trends, and ranked For You feeds."
+    },
+    {
+      "slug": "uber",
+      "title": "Design Uber",
+      "description": "Ride hailing: a firehose of driver locations in a geo index, ETA-based batch matching, the trip state machine, surge pricing, and payments."
+    }
+  ]
+}

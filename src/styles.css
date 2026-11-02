@@ -1,0 +1,265 @@
+:root {
+  /* ---- Theme tokens (edit here, not inline) ---- */
+  --bg: #0f172a;            /* page background */
+  --panel: #1e293b;         /* diagram panel */
+  --panel-2: #172033;       /* script panel */
+  --ink: #e2e8f0;           /* primary text */
+  --ink-dim: #94a3b8;       /* secondary text */
+  --accent: #38bdf8;        /* highlights, arrows, titles, "new" glow */
+  --border: #334155;        /* panel + box borders */
+
+  /* ---- Diagram element colors (used inside the SVGs) ---- */
+  --box-fill: #0b1222;
+  --box-stroke: #475569;
+  --box-ink: #e2e8f0;
+  --line: #64748b;
+  --client: #38bdf8;        /* clients / users / external actors */
+  --service: #a78bfa;       /* app / services   */
+  --data: #34d399;          /* data stores      */
+  --infra: #facc15;         /* gateways, load balancers, CDN, DNS */
+  --stream: #f472b6;        /* queues, event streaming */
+  --ml: #fb923c;            /* ML / batch compute */
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+/* Deck fills the viewport; diagram on top (large), script on bottom (smaller). */
+#deck {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: 16px;
+  gap: 16px;
+}
+
+/* ---- Top: diagram ---- */
+#diagram {
+  flex: 1 1 62%;
+  min-height: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  position: relative;
+}
+#diagram svg { width: 100%; height: 100%; }
+
+/* Topic badge, top-left of the diagram panel */
+#topic {
+  position: absolute;
+  top: 12px;
+  left: 16px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+/* ---- Bottom: script ---- */
+#script {
+  flex: 0 0 25%;
+  min-height: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  padding: 18px 22px;
+  overflow-y: auto;
+}
+#script-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+#script-num {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--bg);
+  background: var(--accent);
+  border-radius: 999px;
+  padding: 3px 11px;
+  white-space: nowrap;
+}
+#script-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--accent);
+}
+#script-body {
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--ink);
+}
+#script-body p { margin: 0 0 10px; }
+#script-body strong { color: var(--ink); }
+#script-body em { color: var(--ink-dim); font-style: normal; }
+
+/* ---- Controls ---- */
+#controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  flex: 0 0 auto;
+}
+.nav {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 20px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+}
+.nav:hover:not(:disabled) { background: var(--border); border-color: var(--accent); }
+.nav:disabled { opacity: 0.35; cursor: default; }
+#counter {
+  font-size: 14px;
+  color: var(--ink-dim);
+  min-width: 70px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Reusable SVG diagram helpers ---- */
+.box rect {
+  fill: var(--box-fill);
+  stroke: var(--box-stroke);
+  stroke-width: 1.5;
+  rx: 10;
+}
+.box.client rect { stroke: var(--client); }
+.box.service rect { stroke: var(--service); }
+.box.data rect { stroke: var(--data); }
+.box.infra rect { stroke: var(--infra); }
+.box.stream rect { stroke: var(--stream); }
+.box.ml rect { stroke: var(--ml); }
+/* A layer that other edges pass through (e.g. a cache tier). Drawn behind edges. */
+.box.tier rect { fill: rgba(52, 211, 153, 0.06); stroke-dasharray: 5 5; }
+/* Something that exists but we are not drawing in detail (other regions, 3rd parties). */
+.box.ghost rect { fill: transparent; stroke-dasharray: 7 6; }
+/* Added on the current slide (set automatically by the scene builder). */
+.box.new rect { stroke-width: 3; filter: drop-shadow(0 0 7px var(--accent)); }
+.box text {
+  fill: var(--box-ink);
+  font-size: 15px;
+  font-weight: 600;
+  text-anchor: middle;
+  dominant-baseline: middle;
+}
+.box .sub {
+  fill: var(--ink-dim);
+  font-size: 11px;
+  font-weight: 500;
+}
+.edge {
+  stroke: var(--line);
+  stroke-width: 1.8;
+  fill: none;
+  marker-end: url(#arrow);
+}
+.edge.both { marker-start: url(#arrow-start); }      /* two-way */
+.edge.plain { marker-end: none; }                    /* no arrowhead */
+.edge.async { stroke-dasharray: 6 5; }               /* async / background flow */
+.edge.new { stroke: var(--accent); marker-end: url(#arrow-new); }
+.edge.new.both { marker-start: url(#arrow-start-new); }
+.edge.new.plain { marker-end: none; }
+.edge-label {
+  fill: var(--ink-dim);
+  font-size: 11px;
+  text-anchor: middle;
+  /* Halo in the panel color keeps labels readable where they cross lines. */
+  paint-order: stroke;
+  stroke: var(--panel);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+.edge-label.new { fill: var(--accent); }
+
+/* Fade-in sequence: each new element waits --delay-ms plus --seq fades,
+   then fades in. --delay-ms and --fade-ms are set per slide by the engine. */
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+svg.animate .new {
+  opacity: 0;
+  animation: fade-in var(--fade-ms) ease-out forwards;
+  animation-delay: calc(var(--delay-ms) + var(--seq, 0) * var(--fade-ms));
+}
+@media (prefers-reduced-motion: reduce) {
+  svg.animate .new { opacity: 1; animation: none; }
+}
+
+/* ---- Requirement slides ---- */
+.heading { fill: var(--accent); font-size: 24px; font-weight: 700; }
+.subheading { fill: var(--ink-dim); font-size: 14px; }
+.card rect { fill: var(--box-fill); stroke: var(--box-stroke); stroke-width: 1.5; }
+.card .badge { fill: var(--accent); }
+.card .badge-num { fill: var(--bg); font-size: 13px; font-weight: 700; text-anchor: middle; dominant-baseline: central; }
+.card .title { fill: var(--box-ink); font-size: 17px; font-weight: 700; }
+.card .line { fill: var(--ink-dim); font-size: 13.5px; }
+.card.new rect { stroke: var(--accent); stroke-width: 3; filter: drop-shadow(0 0 7px var(--accent)); }
+.panel-box { fill: var(--box-fill); stroke: var(--accent); stroke-width: 1.5; }
+.panel-title { fill: var(--accent); font-size: 17px; font-weight: 700; }
+.strip { fill: transparent; stroke: var(--box-stroke); stroke-width: 1.5; stroke-dasharray: 7 6; }
+.strip-title { fill: var(--ink); font-size: 15px; font-weight: 700; }
+.strip-text { fill: var(--ink-dim); font-size: 13.5px; }
+.est-box { fill: transparent; stroke: var(--box-stroke); stroke-width: 1.5; }
+.est-title { fill: var(--ink-dim); font-size: 17px; font-weight: 700; }
+.est-k { fill: var(--ink); font-size: 13.5px; font-weight: 700; }
+.est-v { fill: var(--ink); font-size: 13.5px; }
+
+/* ---- App additions (not in the original standalone decks) ---- */
+#root { height: 100%; }
+#topic a { color: inherit; text-decoration: none; }
+#topic a:hover { color: var(--accent); }
+
+.status { padding: 24px; color: var(--ink-dim); }
+.status a { color: var(--accent); }
+
+/* ---- Index page ---- */
+#index {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 56px 24px;
+}
+#index h1 { margin: 0 0 8px; font-size: 32px; color: var(--accent); }
+#index header p { margin: 0 0 32px; color: var(--ink-dim); font-size: 16px; }
+.deck-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+}
+.deck-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  padding: 18px 20px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--ink);
+  text-decoration: none;
+  transition: border-color 0.15s, background 0.15s;
+}
+.deck-card:hover, .deck-card:focus-visible { border-color: var(--accent); background: var(--panel-2); }
+.deck-title { font-size: 18px; font-weight: 700; }
+.deck-description { font-size: 14px; line-height: 1.5; color: var(--ink-dim); }

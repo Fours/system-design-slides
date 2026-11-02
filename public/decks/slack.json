@@ -1,0 +1,398 @@
+{
+  "title": "Design Slack",
+  "topic": "System Design: Slack",
+  "requirements": {
+    "functional": {
+      "intro": {
+        "title": "Functional requirements",
+        "script": [
+          "Before drawing anything I want to pin down **what Slack does** for the purposes of this design, because it has grown into a large platform. I'll focus on the core: real-time team messaging."
+        ]
+      },
+      "cards": [
+        {
+          "title": "Workspaces & channels",
+          "lines": ["Public and private channels", "Join, leave, invite members"],
+          "script": [
+            "The basic unit is a **workspace** (one company or team) containing **channels**, both public ones anyone in the workspace can join and private, invite-only ones."
+          ]
+        },
+        {
+          "title": "Send messages",
+          "lines": ["Real-time delivery to online members", "Same order on every screen"],
+          "script": [
+            "Inside a channel you **send messages**, and the defining property is that they appear **in real time** for everyone currently online, in the same order for everyone."
+          ]
+        },
+        {
+          "title": "DMs & group DMs",
+          "lines": ["1:1 and small-group conversations", "Modeled as tiny private channels"],
+          "script": ["**DMs and group DMs** are the same experience with a fixed set of people."]
+        },
+        {
+          "title": "Threads & reactions",
+          "lines": ["Threaded replies, emoji reactions", "Edit and delete your messages"],
+          "script": ["On top of that come the conversation features: **threads**, emoji **reactions**, and editing or deleting your own messages."]
+        },
+        {
+          "title": "History & sync",
+          "lines": ["Scroll back through all history", "Desktop, web, mobile stay in sync"],
+          "script": [
+            "Unlike a lot of chat apps, Slack is a **system of record**. You can scroll back through years of **history**, and every device you own (desktop, browser, phone) stays in sync."
+          ]
+        },
+        {
+          "title": "Unreads & mentions",
+          "lines": ["Read position per channel", "Badge counts and @mentions"],
+          "script": ["That includes **unread state**: the bold channel names, badge counts and @mentions all have to agree across devices."]
+        },
+        {
+          "title": "Presence & typing",
+          "lines": ["Online / away indicators", "“Alice is typing…”"],
+          "script": ["Around that core are **presence** (the green dot) and typing indicators."]
+        },
+        {
+          "title": "Notifications",
+          "lines": ["Mobile push or email when away", "Respects per-user preferences"],
+          "script": ["Then **notifications** by mobile push or email when you're away."]
+        },
+        {
+          "title": "Search & files",
+          "lines": ["Full-text, permission-aware search", "Upload and preview files"],
+          "script": ["And finally **search** across everything you're allowed to see, and **file** sharing."]
+        }
+      ],
+      "outOfScope": {
+        "title": "Out of scope",
+        "script": [
+          "I'm leaving out Huddles and calls, Slack Connect channels shared between companies, the apps, bots and workflow platform, enterprise compliance such as eDiscovery and legal holds, SSO and billing. Each is a real system that could be its own interview. Where the core design affects them, I'll say so."
+        ],
+        "lines": [
+          "Huddles & calls  ·  Slack Connect (cross-company channels)  ·  Apps, bots & workflows  ·  Compliance / eDiscovery  ·  SSO & auth  ·  Billing",
+          "Rich-text rendering and client UI: we design what the backend stores and delivers, not how the client draws it"
+        ]
+      }
+    },
+    "nonFunctional": {
+      "intro": { "title": "Non-functional requirements", "script": ["Now the qualities the system needs."] },
+      "cards": [
+        {
+          "title": "Scale",
+          "lines": ["50M DAU · ~1M workspaces", "Biggest orgs: 500K members"],
+          "script": [
+            "On **scale**, I'll assume around 50 million daily users across about a million workspaces. Most workspaces are small, but the biggest enterprises have half a million members, and that skew matters as much as the totals do."
+          ]
+        },
+        {
+          "title": "Real-time",
+          "lines": ["Delivery to online members", "< 500 ms p99"],
+          "script": ["The product has to feel instant, so a message should reach online members in under **500 milliseconds** at p99."]
+        },
+        {
+          "title": "Ordering",
+          "lines": ["One total order per channel", "No gaps, no duplicates"],
+          "script": ["Everyone must see a channel's messages in the **same order**, with no gaps or duplicates, even across reconnects."]
+        },
+        {
+          "title": "Durability",
+          "lines": ["An acked message is never lost", "History kept indefinitely"],
+          "script": ["Once the sender sees \"sent,\" the message is **durable**, and history is kept indefinitely on paid plans."]
+        },
+        {
+          "title": "99.99% available",
+          "lines": ["Disconnect → reconnect", "and catch up, never lose data"],
+          "script": [
+            "Companies run their day on Slack, so I'm targeting **99.99%** availability. The more precise requirement is that losing a connection means a quick reconnect and catch-up, never lost data."
+          ]
+        },
+        {
+          "title": "Multi-tenant",
+          "lines": ["Isolation between workspaces", "No noisy neighbors"],
+          "script": ["It's **multi-tenant**, so one giant customer mustn't slow everyone else down."]
+        },
+        {
+          "title": "Data residency",
+          "lines": ["A workspace's data can be", "pinned to a chosen region"],
+          "script": ["Some customers also require their data to stay in a particular region."]
+        },
+        {
+          "title": "Bursty",
+          "lines": ["Weekday working-hour peaks", "Reconnect storms after outages"],
+          "script": ["Traffic is **bursty**: it follows the working day in each time zone, and the worst moment is right after an outage, when everybody reconnects at once."]
+        },
+        {
+          "title": "Huge channels",
+          "lines": ["#general with 100K+ members", "Fan-out must stay bounded"],
+          "script": [
+            "Channel size is just as skewed: most channels have a handful of members, but #general at a big enterprise can have **over 100,000**, and the work to fan out a single message there has to stay bounded."
+          ]
+        }
+      ],
+      "estimates": {
+        "title": "Back-of-the-envelope estimates",
+        "script": [
+          "The numbers: 50 million people sending about 50 messages a day is roughly **2.5 billion messages a day**, around 30,000 a second on average and 100,000 at peak. Storage comes to about a petabyte a year. That's big, but it's a solved problem. The numbers that actually shape the design are about **30 million open WebSockets** at any moment, and roughly a **million socket deliveries a second** once each message fans out to its online members."
+        ],
+        "rows": [
+          ["Messages", ["50M × ~50/day ≈ 2.5B/day", "≈ 30K/s avg · ~100K/s peak"]],
+          ["Live connections", ["~30M concurrent WebSockets", "(several devices per user)"]],
+          ["Fan-out", ["~20 online members per message", "≈ 1M socket deliveries/s"]],
+          ["Storage", ["~1 KB with indexes × 2.5B/day", "≈ 2.5 TB/day ≈ 1 PB/yr"]]
+        ]
+      },
+      "takeaway": {
+        "title": "Takeaway: connections and fan-out",
+        "script": [
+          "So the takeaway is that the hard part is **connections and fan-out**, not storage. That points to a separate tier that holds sockets, something that owns each channel's order and fan-out, a database sharded by tenant, and push notifications for whoever is offline. Let's build up to that."
+        ],
+        "heading": "Takeaway: the problem is connections and fan-out, not storage",
+        "lines": [
+          "Tens of millions of long-lived sockets + strict per-channel order → separate the stateful connection tier from the stateless API",
+          "Gateways hold sockets  ·  one owner per channel for order & fan-out  ·  DB sharded by tenant / channel  ·  offline users → push"
+        ]
+      }
+    }
+  },
+  "scenes": {
+    "main": {
+      "boxes": [
+        { "id": "client", "x": 40, "y": 90, "w": 170, "h": 370, "label": "Slack Clients", "kind": "client", "sub": "desktop · web · mobile" },
+        { "id": "cdn", "x": 280, "y": 20, "w": 170, "h": 54, "label": "CDN", "kind": "infra", "sub": "file downloads" },
+        { "id": "flannel", "x": 280, "y": 90, "w": 170, "h": 54, "label": "Edge Cache", "kind": "infra", "sub": "Flannel · boot data" },
+        { "id": "lb", "x": 280, "y": 230, "w": 170, "h": 54, "label": "Load Balancer", "kind": "infra", "sub": "HTTPS API" },
+        { "id": "gw", "x": 280, "y": 370, "w": 170, "h": 124, "label": "Gateway Servers", "kind": "infra", "sub": "WebSockets · stateful" },
+        { "id": "server", "x": 530, "y": 160, "w": 190, "h": 124, "label": "Chat Server", "kind": "service", "sub": "one process does it all" },
+        { "id": "file", "x": 530, "y": 20, "w": 190, "h": 54, "label": "File Service", "kind": "service", "sub": "upload · signed URLs" },
+        { "id": "search", "x": 530, "y": 90, "w": 190, "h": 54, "label": "Search Service", "kind": "service", "sub": "permission-aware" },
+        { "id": "webapp", "x": 530, "y": 160, "w": 190, "h": 124, "label": "Webapp (API)", "kind": "service", "sub": "stateless · any request" },
+        { "id": "cs", "x": 530, "y": 370, "w": 190, "h": 124, "label": "Channel Servers", "kind": "service", "sub": "pub/sub · hashed by channel" },
+        { "id": "presence", "x": 530, "y": 510, "w": 190, "h": 54, "label": "Presence Service", "kind": "service", "sub": "in-memory · by user" },
+        { "id": "blob", "x": 800, "y": 20, "w": 180, "h": 54, "label": "Blob Store", "kind": "data", "sub": "files · thumbnails" },
+        { "id": "searchidx", "x": 800, "y": 90, "w": 180, "h": 54, "label": "Search Index", "kind": "data", "sub": "per workspace" },
+        { "id": "db", "x": 800, "y": 160, "w": 180, "h": 124, "label": "Database", "kind": "data", "sub": "MySQL · one primary" },
+        { "id": "vitess", "x": 800, "y": 160, "w": 180, "h": 124, "label": "Vitess (MySQL)", "kind": "data", "sub": "by channel · workspace" },
+        { "id": "queue", "x": 800, "y": 300, "w": 180, "h": 54, "label": "Job Queue", "kind": "stream", "sub": "Kafka + Redis" },
+        { "id": "indexer", "x": 1050, "y": 90, "w": 190, "h": 54, "label": "Search Indexer", "kind": "service", "sub": "async · seconds" },
+        { "id": "regions", "x": 1050, "y": 160, "w": 190, "h": 54, "label": "Other Regions ×N", "kind": "ghost", "sub": "edge PoPs · standbys" },
+        { "id": "notif", "x": 1050, "y": 300, "w": 190, "h": 54, "label": "Notification Workers", "kind": "service", "sub": "who · when · dedupe" },
+        { "id": "push", "x": 1050, "y": 440, "w": 190, "h": 54, "label": "APNs / FCM · Email", "kind": "ghost", "sub": "third parties" }
+      ],
+      "edges": [
+        { "id": "e_client_server", "from": "client", "to": "server", "pts": [[210, 222], [530, 222]], "label": "HTTPS", "both": true },
+        { "id": "e_server_db", "from": "server", "to": "db", "pts": [[720, 222], [800, 222]], "label": "SQL", "both": true },
+        { "id": "e_client_server_ws", "from": "client", "to": "server", "pts": [[210, 262], [530, 262]], "label": "WebSocket (push)", "both": true },
+        { "id": "e_client_lb", "from": "client", "to": "lb", "pts": [[210, 257], [280, 257]], "label": "HTTPS", "both": true },
+        { "id": "e_client_gw", "from": "client", "to": "gw", "pts": [[210, 420], [280, 420]], "label": "WebSocket", "both": true },
+        { "id": "e_webapp_db", "from": "webapp", "to": "db", "pts": [[720, 222], [800, 222]], "label": "SQL", "both": true },
+        {
+          "id": "e_webapp_gw_direct",
+          "from": "webapp",
+          "to": "gw",
+          "pts": [[600, 284], [600, 432], [450, 432]],
+          "label": "which gateway holds Bob?",
+          "lp": [608, 340, "start"]
+        },
+        { "id": "e_webapp_cs", "from": "webapp", "to": "cs", "pts": [[625, 284], [625, 370]], "label": "publish" },
+        { "id": "e_gw_cs", "from": "gw", "to": "cs", "pts": [[450, 432], [530, 432]], "label": "events", "both": true },
+        { "id": "e_webapp_vitess", "from": "webapp", "to": "vitess", "pts": [[720, 222], [800, 222]], "label": "SQL", "both": true },
+        { "id": "e_client_flannel", "from": "client", "to": "flannel", "pts": [[210, 117], [280, 117]], "label": "boot", "both": true },
+        { "id": "e_flannel_lb", "from": "flannel", "to": "lb", "pts": [[365, 144], [365, 230]], "label": "miss" },
+        {
+          "id": "e_gw_presence",
+          "from": "gw",
+          "to": "presence",
+          "pts": [[365, 494], [365, 537], [530, 537]],
+          "label": "presence",
+          "lp": [447, 530, "middle"],
+          "both": true
+        },
+        {
+          "id": "e_webapp_queue",
+          "from": "webapp",
+          "to": "queue",
+          "pts": [[720, 272], [760, 272], [760, 327], [800, 327]],
+          "label": "jobs",
+          "lp": [766, 304, "start"],
+          "async": true
+        },
+        { "id": "e_queue_notif", "from": "queue", "to": "notif", "pts": [[980, 327], [1050, 327]] },
+        { "id": "e_notif_push", "from": "notif", "to": "push", "pts": [[1145, 354], [1145, 440]], "label": "push · email" },
+        { "id": "e_queue_indexer", "from": "queue", "to": "indexer", "pts": [[980, 312], [1015, 312], [1015, 130], [1050, 130]] },
+        { "id": "e_indexer_idx", "from": "indexer", "to": "searchidx", "pts": [[1050, 104], [980, 104]] },
+        { "id": "e_search_idx", "from": "search", "to": "searchidx", "pts": [[720, 117], [800, 117]] },
+        { "id": "e_file_blob", "from": "file", "to": "blob", "pts": [[720, 47], [800, 47]], "label": "upload" },
+        { "id": "e_cdn_client", "from": "cdn", "to": "client", "pts": [[280, 47], [125, 47], [125, 90]], "label": "files", "lp": [205, 40, "middle"] },
+        {
+          "id": "e_cdn_blob",
+          "from": "cdn",
+          "to": "blob",
+          "pts": [[365, 20], [365, -15], [890, -15], [890, 20]],
+          "label": "origin pull · signed URLs",
+          "lp": [628, -22, "middle"]
+        },
+        { "id": "e_vitess_regions", "from": "vitess", "to": "regions", "pts": [[980, 187], [1050, 187]], "both": true, "async": true }
+      ],
+      "bus": { "hub": "lb", "hubX": 450, "hubY": 257, "x": 490, "members": ["file", "search", "webapp"] }
+    }
+  },
+  "slides": [
+    {
+      "scene": "main",
+      "add": ["client", "server", "e_client_server"],
+      "title": "Start simple: one client, one chat server",
+      "script": [
+        "I'll start with the simplest thing that could work: a **Slack client** (desktop, web or mobile) talking to a single **chat server** over HTTPS. To send, the client POSTs the text and a channel ID. To receive, it asks the server \"anything new in this channel since the last message I saw?\"",
+        "Even this toy version forces two decisions that last all the way to the final diagram. First, **everything is a channel**. Public channels, private channels, DMs and group DMs are the same object with different membership rules. A DM is a private channel with exactly two members. That gives us one code path for sending, storing, ordering and fan-out instead of four.",
+        "Second, the client and server talk in terms of **a channel ID plus a position in that channel**. \"Give me everything after position X\" is how the client will catch up after a reconnect, how a second device syncs, and how unread counts are computed. I'll make that position concrete when we get to storage.",
+        "The obvious problems: this server keeps everything in memory, so a restart loses all history. And asking the server whether there's anything new is **polling**, which is either slow or wasteful. Let's fix those one at a time, starting with durability."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["db", "e_server_db"],
+      "title": "Persist every message in a database",
+      "script": [
+        "Messages are the product's core asset. People search back years to find a decision, so **losing an acknowledged message is unacceptable**. The server writes every message to a **relational database**, MySQL here, before it acknowledges the send to the client.",
+        "The central table is simple: *messages(channel_id, ts, user_id, text, thread_ts, …)*. The interesting column is **ts**, a timestamp-like ID that is unique and strictly increasing within a channel and also serves as the message's identity. The primary key is **(channel_id, ts)**, so the most common query, \"the latest 50 messages in this channel\" or \"everything after ts X,\" is a single range scan on a single index.",
+        "The rest of the model hangs off that. A **thread reply** is a message whose *thread_ts* points at its parent. **Reactions** are a small table keyed by message. **Edits and deletes** update the row and are also emitted as events, so clients can patch what they're already showing. For unreads, each user has a **read cursor** per channel, *last_read_ts*. The unread count is \"messages in this channel with ts greater than my cursor,\" and a mention badge is the same query restricted to messages that mention me.",
+        "Why relational, rather than a wide-column store like Cassandra, which many chat systems use? Slack's data is **very relational**: workspaces, channels, memberships, permissions and messages all reference each other, and nearly every lookup is scoped to one workspace. A transactional store with secondary indexes makes those queries easy. That only holds up at scale if we shard it, which we'll get to shortly."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["e_client_server_ws"],
+      "title": "Real-time delivery: push over a WebSocket",
+      "script": [
+        "Polling is the next problem. If 30 million clients poll every channel every few seconds, nearly every request comes back empty. If they poll slowly, messages feel laggy. Neither meets the **500 ms** target.",
+        "So the client opens a **WebSocket**, a long-lived, bidirectional connection, and the server pushes events down it as they happen: new message, edit, reaction, member joined, someone is typing. It's one socket *per device*, not per channel, so a user in 200 channels still holds one connection.",
+        "I'm deliberately keeping **sends on plain HTTPS**, not on the socket. A POST has a clear success or failure, goes through the same auth, rate limiting and validation as every other API call, and carries a **client-generated message ID**, so a retry after a timeout can never create a duplicate. The socket is for the **server-to-client** direction, where push is the whole point.",
+        "This introduces the most important idea in the design: the socket is a **fast path, not the source of truth**. Sockets drop constantly. Laptops sleep, phones switch networks, deploys restart servers. When a client reconnects, it doesn't assume it saw everything. It asks the API for each channel's messages after the last ts it has. Because the database is authoritative and every message has an ordered position, a dropped socket costs a bit of latency and never costs data."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["webapp", "lb", "gw", "e_client_lb", "e_client_gw", "e_webapp_db", "e_webapp_gw_direct"],
+      "remove": ["server"],
+      "title": "Split the stateless API from the stateful connections",
+      "script": [
+        "One server can't hold 30 million sockets. A well-tuned machine holds a few hundred thousand mostly idle WebSockets, so we need on the order of a hundred machines just for connections. And holding connections is a very different job from serving API requests.",
+        "So I split the server in two. The **webapp** is a **stateless** fleet that handles every HTTP API call: send a message, fetch history, create a channel, move a read cursor. It sits behind a **load balancer**, any request can go to any server, and we can deploy it many times a day. **Gateway servers** are the **stateful** tier. Each one holds a large number of open WebSockets and does very little else: authenticate the connection, remember which channels each socket cares about, and push events down.",
+        "The split matters for operations as much as for scale. Redeploying a stateless webapp is free. Restarting a gateway disconnects every client on it, so gateways are deployed slowly and drained gently, and we want their code to be **small and rarely changed**. Keeping business logic out of the gateway is what makes that possible.",
+        "But it raises the question on the highlighted line. When Alice posts in #eng, the webapp that handled her request has to get the message to whichever gateways #eng's online members happen to be connected to. It doesn't know which those are, and it shouldn't have to track 30 million sockets to find out. We need something in the middle that knows who is listening to each channel."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["cs", "e_webapp_cs", "e_gw_cs"],
+      "remove": ["e_webapp_gw_direct"],
+      "title": "Channel servers: one owner per channel for order and fan-out",
+      "script": [
+        "That something is a tier of **channel servers**, an in-memory publish/subscribe layer. Every channel is assigned to exactly one channel server by **consistent hashing** on its channel ID. A small coordination service holds the hash ring, so every webapp and gateway agrees on who owns what.",
+        "Here's the flow. When a client connects, its gateway **subscribes** to the channel servers that own that user's channels, once per gateway per channel, however many local users share it. When Alice posts, the webapp writes to the database and then **publishes** to the channel server that owns #eng. That server sends the event to each subscribed gateway, and each gateway writes it to its local sockets. A message to 1,000 online members becomes one publish, a few dozen gateway hops, and 1,000 cheap local writes.",
+        "**Single ownership** also gives us **ordering**. All of a channel's events pass through one process, so every subscriber sees them in the same order. The ts from the database lets a client spot a gap and fill it with one API call.",
+        "Channel servers hold **no durable state**, only subscriptions and a short buffer of recent events. If one dies, its channels re-hash to its neighbors, gateways re-subscribe, and clients catch up from the database. With consistent hashing, only the failed server's share of channels moves.",
+        "And the giant *#general* with 100,000 members? Fan-out happens per gateway, not per user, so its cost is bounded by the number of gateways. That's what this layering buys us. For the very largest channels we can also restrict who can post and coalesce noisy events like reactions."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["vitess", "e_webapp_vitess"],
+      "remove": ["db"],
+      "title": "Shard the database by workspace, then by channel",
+      "script": [
+        "Now the database. At 2.5 billion messages and roughly 2.5 TB a day, a single MySQL primary is out of the question, so we have to **shard**. The question is the shard key.",
+        "The natural first choice, and what Slack originally did, is to shard by **workspace**. Almost every query is scoped to one workspace, so it lands on one shard with real joins and transactions. Tenant isolation comes for free: a customer's data lives together and can be moved, backed up or pinned to a region as a unit.",
+        "The weakness is **skew**. A 500,000-person enterprise lands on one shard and turns it into a hot spot, and a channel shared between two companies doesn't belong to either workspace. So the mature design puts **Vitess**, a sharding layer for MySQL, in front of the databases. That lets each table pick its own key: messages by **channel ID**, workspace metadata by workspace, users by user ID. Vitess routes each query to the right shard, so the webapp never hard-codes the topology, and hot shards can be split online.",
+        "Each shard is a primary with replicas. Writes go to the primary and are **semi-synchronously replicated** before we acknowledge the send, which is how \"acked means durable\" survives a machine dying. History reads can go to replicas, because a slightly stale page of history is fine when the client merges in live events on top. The one place we need read-your-writes is right after a send, and the sender's client already has that message locally."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["flannel", "e_client_flannel", "e_flannel_lb"],
+      "title": "Fast startup and reconnects: the edge cache",
+      "script": [
+        "A surprisingly hard problem for Slack is **startup**. When a client launches it needs the channel list, channel members, user profiles, custom emoji and unread counts. Originally that was one giant \"boot\" API call. For a 500,000-person enterprise it returned tens of megabytes, hammered the database, and ran every time anyone opened a laptop.",
+        "The fix is an **edge cache** (Slack calls theirs Flannel). It's an application-aware cache that sits close to users and holds per-workspace metadata: users, channels, emoji. Two ideas make it work. First, **lazy loading**: the client boots with a minimal payload (its own channels and unread counts) and fetches profiles and channel details only when it needs to render them. Second, the cache **stays warm by listening to the same event stream** as the gateways, so a renamed channel or a new avatar updates it in place instead of expiring it. On a miss it falls through to the API.",
+        "It also defends against the scariest traffic on the requirements slide: the **reconnect storm**. After an outage, or at 9 a.m. on a Monday, millions of clients connect at once. Three things keep that from becoming a second outage. Clients reconnect with **jittered exponential backoff**. Boot is served from the edge cache, not the database. And catch-up is **incremental**, \"events since ts X for my channels,\" rather than a full reload.",
+        "Multi-device sync falls out of the same mechanism. Each device is just another client with its own socket and its own catch-up. What they share is your **read cursor**: reading a channel on your laptop moves it through the API, the change fans out as an event, and your phone's badge clears."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["presence", "e_gw_presence"],
+      "title": "Presence and typing: ephemeral, high-volume, never stored",
+      "script": [
+        "Next, the green dot. **Presence** looks trivial, but it's the highest-volume data in the system, and its properties are the opposite of messages: it's **ephemeral**, it changes constantly, and losing an update is harmless.",
+        "So it gets its own **presence service**, entirely in memory and sharded by user ID. The gateways are the source of truth for \"is this user connected\": they report when a user's first socket opens or last socket closes. Clients also report active or idle based on input. Presence never touches the database.",
+        "The trick is to **not broadcast it**. If every status change went to every member of every channel the user belongs to, a 100,000-person workspace would melt every morning. Instead, clients **subscribe to presence only for the users currently on screen**, such as the DM list or the members of the channel you're viewing. Gateways pass those subscriptions to the presence service, which pushes changes only to interested gateways. We also **debounce** flapping connections, so a phone hopping from Wi-Fi to cellular doesn't blink offline and back.",
+        "**Typing indicators** are even more ephemeral. The client sends \"typing in #eng\" up its socket, the gateway relays it to that channel's server, and it fans out like a message but is never stored, never retried, and dropped first under load. If one is lost, nobody notices. That's the right trade-off, and it's why typing skips the webapp and the database entirely."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["queue", "e_webapp_queue"],
+      "title": "Take slow work off the send path: the job queue",
+      "script": [
+        "Look at what happens synchronously on a send today: write to the database, then publish to the channel server. Both are needed before the sender sees \"sent\" and online members see the message. But a message also triggers plenty of work that **nobody is waiting for**: push notifications, email digests, search indexing, link previews, bot and webhook integrations, analytics.",
+        "Doing that inline would make sending slow and fragile. A slow link-preview fetch shouldn't delay delivery. So the webapp **enqueues jobs** on a durable **job queue** and returns. Slack's version puts **Kafka** in front as a durable buffer, with **Redis** scheduling execution, and a fleet of workers pulls from it.",
+        "Three properties matter. It's **durable**, so a crashed worker doesn't lose a job. It's **at-least-once**, so every worker has to be idempotent, keyed by message ID, or a retry sends two notifications. And it's **partitioned and rate-limited per tenant**, so one workspace doing a huge import can't starve everyone else's notifications. That's the multi-tenant requirement showing up in the async path.",
+        "The queue also **absorbs bursts**. If traffic triples at 9 a.m., the queue gets longer for a few minutes, while real-time delivery, which never touches the queue, stays fast. That's the general shape of the design: keep the latency-critical path as short as possible and make everything else asynchronous."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["notif", "push", "e_queue_notif", "e_notif_push"],
+      "title": "Notifications: deciding who to bother, and when",
+      "script": [
+        "The first consumer of the queue is **notifications**. For every new message, the notification workers decide whether and how to notify each member. A lot of product complexity lives here, so it's worth walking through the decision.",
+        "You're notified if the message is a DM, mentions you, mentions a group you're in (@here, @channel, a user group), matches one of your keywords, or is in a channel you follow closely. It's suppressed if you've muted the channel, turned on Do Not Disturb, are outside your notification schedule, or **already saw it**. That last one matters most: if you're active in the desktop app, your phone shouldn't buzz. So the workers check **presence** and your **read cursor**, and they usually wait a short delay before a mobile push in case another device reads the message first.",
+        "Delivery goes to **APNs and FCM** for mobile push and to an email provider for digests. They're third parties, so they're drawn as ghosts. The workers **dedupe** by message and device, retry with backoff, and prune dead device tokens.",
+        "Notice the big-channel problem coming back. An *@channel* in a 100,000-person channel is 100,000 decisions. Because it's an async job, it can be split into batches across many workers. The last phone might buzz a few seconds later, which is fine for push. Real-time delivery to everyone online already happened through the channel servers."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["search", "searchidx", "indexer", "e_search_idx", "e_queue_indexer", "e_indexer_idx"],
+      "title": "Search that respects permissions",
+      "script": [
+        "Search comes next, and Slack's has a twist most search systems don't: **results must respect permissions**. You must never see a hit from a private channel you're not in, not even a snippet or a count.",
+        "The pipeline: the **search indexer** consumes message jobs (new messages, edits, deletes) from the queue, tokenizes them, and writes them to a **search index**, an inverted index on Solr or Elasticsearch. The index is **partitioned by workspace**, so a query only touches its own tenant's shards, and the biggest enterprises can get dedicated ones. Indexing is asynchronous, so a brand-new message may take a few seconds to become searchable, which users accept.",
+        "The **search service** answers queries. Each indexed message carries its *channel_id*, and every query is filtered to the channels the user can read. Enforcing access at query time, rather than storing an access list per user per document, means nothing in the index changes when someone joins or leaves a channel. For people in thousands of channels, we cache their channel set and filter efficiently.",
+        "Ranking goes beyond text match: recency, whether you're in the channel, whether the author is someone you work with, and engagement like replies and reactions. The other piece to get right is **deletion**. When a message is deleted or a retention policy expires it, the delete has to reach the index promptly. A deleted message still showing up in search is a trust problem, not just a bug."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["file", "blob", "cdn", "e_file_blob", "e_cdn_client", "e_cdn_blob"],
+      "title": "Files: blob storage, signed URLs and a CDN",
+      "script": [
+        "Files get shared constantly: screenshots, PDFs, logs. They're **large, immutable and read many times**, which is exactly what a relational database is bad at, so they never go in MySQL.",
+        "The **file service** owns metadata and permissions. To upload, the client asks for an upload slot and gets back a **pre-signed URL**, then sends the bytes directly to the **blob store** (S3-style object storage), so big uploads don't tie up webapp servers. When the upload finishes, the file service records the metadata (owner, channel, size, type) and posts a message that references the file. Async workers then generate **thumbnails and previews** and scan for malware.",
+        "Downloads go through the **CDN**. The subtlety is that these files are **private**: a public CDN link to a confidential PDF is a data leak. So the file service hands out **short-lived signed URLs**, and only after checking that the requester can see the channel the file was shared in. The CDN caches the bytes, and the signature limits who can fetch them and for how long.",
+        "Files are also by far the biggest storage cost, far more than message text. Lifecycle rules move older files to cheaper storage tiers, and workspace retention settings can delete them entirely. A delete has to cascade to thumbnails, CDN caches and the search index."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["regions", "e_vitess_regions"],
+      "title": "Going global: edge regions and home regions",
+      "script": [
+        "Last, geography. Two different requirements push us to multiple regions, and they want slightly different things.",
+        "**Latency** wants the connection tier near users. A WebSocket from Sydney to Virginia adds a couple of hundred milliseconds to every event. So we deploy **gateway servers and the edge cache in edge regions** around the world. Clients connect to the nearest one, and the long hop back to the workspace's region runs over our own backbone on connections that are already warm.",
+        "**Data residency** wants data in a specific place: a European customer may require that its messages are stored only in the EU. So every workspace has a **home region** where its shards, files and search index live. This is easy precisely because we shard by tenant and channel. Placement is a property of the workspace, not of individual rows.",
+        "For availability, each home region replicates to a standby in another region (the dashed line), so we can fail a region over, and within a region every tier is spread across availability zones. What we're **not** doing is active-active writes to the same channel in two regions. That would break the single-owner ordering the channel servers give us, and chat users notice out-of-order messages far more than an extra 100 ms.",
+        "The hard edge case is a channel shared by two companies with different home regions. That's Slack Connect, which we put out of scope at the start."
+      ]
+    },
+    {
+      "scene": "main",
+      "title": "The complete system: following one message end to end",
+      "script": [
+        "To close, let me follow one message through the finished system. Alice, in London, types \"deploy is green\" in #eng and hits enter.",
+        "Her client **POSTs** through the load balancer to a **webapp** server, with a client-generated ID so a retry can't duplicate it. The webapp checks that she's a member, writes the message to the **Vitess** shard for #eng (replicated before it acks), and **publishes** it to the **channel server** that owns #eng. That server fans it out to every **gateway** with a subscriber, and the gateways push it down the **WebSockets** of members who are online, in channel order, in well under half a second. Meanwhile the webapp has **enqueued a job**: the **indexer** makes the message searchable within seconds, and the **notification workers** find the members who are offline or mentioned and haven't read it, and push to their phones.",
+        "Bob's laptop was asleep. It reconnects through the nearest **edge**, boots from the **edge cache**, and asks for everything in his channels after his last ts. No message is lost and nothing is reloaded from scratch. His unread badge comes from his read cursor, and clearing it on one device clears it on all of them.",
+        "The themes I'd underline: a **stateless API kept separate from a stateful connection tier**; **one owner per channel**, which gives ordering and a fan-out cost that scales with gateways, not members; the **database as the source of truth**, with sockets as a best-effort fast path backed by ts-based catch-up; **sharding by tenant and channel** for isolation, residency and scale; and an **async job queue** for everything nobody is waiting on. With more time, I'd go deeper next on Slack Connect across organizations, enterprise retention and compliance, and the platform for bots and workflows."
+      ]
+    }
+  ]
+}

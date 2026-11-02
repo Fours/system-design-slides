@@ -1,0 +1,497 @@
+{
+  "title": "Design Google Docs",
+  "topic": "System Design: Google Docs",
+  "requirements": {
+    "functional": {
+      "intro": {
+        "title": "Functional requirements",
+        "script": [
+          "Before drawing anything I want to agree on **what Google Docs does** for this design. On the surface it's a word processor in the browser. The reason it's an interesting systems question is that it's a **shared** word processor: several people edit the same document at the same moment and all of them see the same result."
+        ]
+      },
+      "cards": [
+        {
+          "title": "Create & open docs",
+          "lines": ["New doc in one click; list of recent docs", "Opens and is editable in under a second"],
+          "script": [
+            "The basics are **creating and opening documents**, quickly. A doc should be editable within about a second of clicking it, even if it's years old and has a long edit history."
+          ]
+        },
+        {
+          "title": "Real-time co-editing",
+          "lines": ["Many people type in the same doc at once", "Everyone converges to the same text"],
+          "script": [
+            "The core is **real-time collaborative editing**. Several people type, delete and format in the same doc at once, everyone sees everyone else's changes within a fraction of a second, and, crucially, **everyone ends up with exactly the same document**."
+          ]
+        },
+        {
+          "title": "Presence",
+          "lines": ["Live cursors and selections", "Avatars of who is in the doc right now"],
+          "script": ["Around that core: **presence**, meaning the colored cursors and avatars that show who's here and where they're working."]
+        },
+        {
+          "title": "Comments & suggestions",
+          "lines": ["Anchored to a range of text", "Stay attached as the text around them changes"],
+          "script": ["**Comments and suggestions** are anchored to a range of text, and they have to stay attached to that text as people edit around it."]
+        },
+        {
+          "title": "Version history",
+          "lines": ["Browse past revisions by time and author", "Name a version; restore any of them"],
+          "script": ["**Version history** lets you see who changed what, name a version, and restore an old one."]
+        },
+        {
+          "title": "Sharing & permissions",
+          "lines": ["Owner · editor · commenter · viewer", "Per person, per group, or by link"],
+          "script": ["**Sharing** uses the familiar roles (owner, editor, commenter, viewer), granted to people, groups, or anyone with the link."]
+        },
+        {
+          "title": "Offline editing",
+          "lines": ["Keep typing with no connection", "Merge cleanly when you reconnect"],
+          "script": ["**Offline editing** lets you keep working on a plane and merge when you land."]
+        },
+        {
+          "title": "Search",
+          "lines": ["Find docs by title and content", "Only docs you're allowed to see"],
+          "script": ["And **search** finds documents by title and content, among the ones you're allowed to see."]
+        }
+      ],
+      "outOfScope": {
+        "title": "Out of scope",
+        "script": [
+          "I'm leaving out Sheets and Slides, spell check, calls, import and export conversion, add-ons and billing. I'm also not designing how the editor *renders* pages. I'm designing how edits get from one person's keyboard to everyone else's screen, and how they're stored."
+        ],
+        "lines": [
+          "Sheets & Slides  ·  Spell check & grammar  ·  Voice / video  ·  Import / export conversion  ·  Add-ons  ·  Billing",
+          "Rendering and page layout: we design how edits are synchronized and stored, not how the editor draws pages"
+        ]
+      }
+    },
+    "nonFunctional": {
+      "intro": { "title": "Non-functional requirements", "script": ["Now the qualities."] },
+      "cards": [
+        {
+          "title": "Scale",
+          "lines": ["~1B users · 100M DAU", "~10B documents in total"],
+          "script": ["On **scale** I'll assume around a billion users, 100 million daily actives, and roughly **10 billion documents**."]
+        },
+        {
+          "title": "Collab latency",
+          "lines": ["Remote edits visible", "< 200 ms p99"],
+          "script": [
+            "The latency target that defines the product is **collaboration latency**. When you type, a co-editor should see it within about **200 milliseconds**. Your *own* typing must feel instant, so the client can never wait for the server before showing a keystroke."
+          ]
+        },
+        {
+          "title": "Fast open",
+          "lines": ["Doc interactive in < 1 s,", "even with a long history"],
+          "script": ["Opening a doc should take **under a second** no matter how long its history is."]
+        },
+        {
+          "title": "Durability",
+          "lines": ["An acked edit is", "never lost (RPO ≈ 0)"],
+          "script": [
+            "For correctness there are two requirements. **Durability**: once the server has acknowledged an edit, it's never lost, even if a machine dies a millisecond later."
+          ]
+        },
+        {
+          "title": "Convergence",
+          "lines": ["Every copy of a doc reaches", "the same state, intent kept"],
+          "script": [
+            "And **convergence**: every copy of a document, whether on the server or in each editor's browser, must end up in the *same* state, and that state should respect what each person intended. If I bold a word while you fix its spelling, the result should be the correctly spelled word in bold."
+          ]
+        },
+        { "title": "99.99% available", "lines": ["Editing survives server", "and region failures"], "script": ["I'm targeting **99.99%** availability for editing."] },
+        {
+          "title": "Collab size",
+          "lines": ["Usually 1–5 editors", "Cap ~100 editors + viewers"],
+          "script": ["Collaboration groups are small, typically one to five editors, and I'll cap a doc at about a hundred concurrent editors with more people viewing."]
+        },
+        {
+          "title": "Eventual elsewhere",
+          "lines": ["Search, doc lists, counts", "may lag by seconds"],
+          "script": ["Search, the doc list and notifications can be **eventually consistent**."]
+        },
+        {
+          "title": "Cost",
+          "lines": ["Most docs are cold", "Idle docs must be cheap"],
+          "script": [
+            "The vast majority of those documents are cold: written once and rarely opened. So an idle doc should cost us only cheap storage, with no servers or memory tied up until someone opens it."
+          ]
+        }
+      ],
+      "estimates": {
+        "title": "Back-of-the-envelope estimates",
+        "script": [
+          "The numbers: about 10 million docs open at once, maybe 5 million with someone typing. Clients batch keystrokes into roughly one operation a second per typer, which gives **2 to 5 million ops a second** at peak. Each op is tiny, tens of bytes. Storage is around half a petabyte of snapshots plus the logs and history. Big, but not the hard part."
+        ],
+        "rows": [
+          ["Open docs", ["~10M docs open at any moment", "~5M with someone actively typing"]],
+          ["Edit ops", ["~1 op/s per typer (keystrokes batched)", "≈ 2–5M ops/s at peak"]],
+          ["Storage", ["10B docs × ~50 KB ≈ 0.5 PB snapshots", "+ op logs & history ≈ 1–1.5 PB"]],
+          ["Fan-out", ["~2 other people per open doc", "≈ 10M socket pushes/s"]]
+        ]
+      },
+      "takeaway": {
+        "title": "Takeaway: one order per document",
+        "script": [
+          "The takeaway: this is a **coordination problem**, not a storage or bandwidth problem. Each op must be ordered relative to the other ops *in the same document*, but ops in different documents are completely independent. That points to **one sequencer per document**, sharded across machines, with everything else moved off that hot path."
+        ],
+        "heading": "Takeaway: tiny, frequent edits that need one order per document",
+        "lines": [
+          "Millions of small ops per second, each needing a total order within its doc but none across docs → one sequencer per document",
+          "Stateful session per doc (OT)  ·  durable op log + periodic snapshots  ·  search, notifications and history off the hot path"
+        ]
+      }
+    }
+  },
+  "scenes": {
+    "main": {
+      "boxes": [
+        { "id": "client", "x": 40, "y": 160, "w": 170, "h": 324, "label": "Docs Clients", "kind": "client", "sub": "web · mobile · desktop" },
+        { "id": "local", "x": 40, "y": 510, "w": 170, "h": 54, "label": "Local Store", "kind": "data", "sub": "IndexedDB · pending ops" },
+        { "id": "lb", "x": 280, "y": 183, "w": 180, "h": 54, "label": "Load Balancer", "kind": "infra", "sub": "HTTPS API" },
+        { "id": "gw", "x": 280, "y": 360, "w": 180, "h": 124, "label": "WS Gateways", "kind": "infra", "sub": "WebSockets · stateful" },
+        { "id": "cdn", "x": 280, "y": 510, "w": 180, "h": 54, "label": "CDN", "kind": "infra", "sub": "images · signed URLs" },
+        { "id": "server", "x": 540, "y": 160, "w": 200, "h": 100, "label": "Docs Server", "kind": "service", "sub": "one process does it all" },
+        { "id": "search", "x": 540, "y": 20, "w": 200, "h": 54, "label": "Search Service", "kind": "service", "sub": "permission-aware" },
+        { "id": "comments", "x": 540, "y": 90, "w": 200, "h": 54, "label": "Comment Service", "kind": "service", "sub": "threads · @mentions" },
+        { "id": "docapi", "x": 540, "y": 160, "w": 200, "h": 100, "label": "Doc Service", "kind": "service", "sub": "stateless · open · list · share" },
+        { "id": "acl", "x": 540, "y": 280, "w": 200, "h": 54, "label": "ACL Service", "kind": "service", "sub": "Zanzibar-style tuples" },
+        { "id": "sessions", "x": 540, "y": 360, "w": 200, "h": 124, "label": "Collab Sessions", "kind": "service", "sub": "OT · one owner per doc" },
+        { "id": "directory", "x": 540, "y": 510, "w": 200, "h": 54, "label": "Session Directory", "kind": "infra", "sub": "doc → server leases" },
+        { "id": "searchidx", "x": 820, "y": 20, "w": 190, "h": 54, "label": "Search Index", "kind": "data", "sub": "inverted · + ACL principals" },
+        { "id": "db", "x": 820, "y": 160, "w": 190, "h": 100, "label": "Database", "kind": "data", "sub": "whole doc per row" },
+        { "id": "metadb", "x": 820, "y": 90, "w": 190, "h": 244, "label": "Metadata DB", "kind": "data", "sub": "Spanner · docs · ACLs" },
+        { "id": "oplog", "x": 820, "y": 360, "w": 190, "h": 54, "label": "Op Log", "kind": "data", "sub": "Bigtable · doc_id + rev" },
+        { "id": "blob", "x": 820, "y": 430, "w": 190, "h": 54, "label": "Blob Store", "kind": "data", "sub": "snapshots · images" },
+        { "id": "regions", "x": 820, "y": 510, "w": 190, "h": 54, "label": "Other Regions ×N", "kind": "ghost", "sub": "replicas · failover" },
+        { "id": "indexer", "x": 1090, "y": 20, "w": 200, "h": 54, "label": "Search Indexer", "kind": "service", "sub": "debounced per doc" },
+        { "id": "kafka", "x": 1090, "y": 160, "w": 200, "h": 254, "label": "Change Feed", "kind": "stream", "sub": "Kafka · keyed by doc_id" },
+        { "id": "compactor", "x": 1090, "y": 430, "w": 200, "h": 54, "label": "Snapshot Worker", "kind": "service", "sub": "snapshots · revisions" },
+        { "id": "email", "x": 1360, "y": 20, "w": 190, "h": 54, "label": "Email · Push", "kind": "ghost", "sub": "third parties" },
+        { "id": "notif", "x": 1360, "y": 160, "w": 190, "h": 54, "label": "Notification Workers", "kind": "service", "sub": "who · when · dedupe" }
+      ],
+      "edges": [
+        { "id": "e_client_server", "from": "client", "to": "server", "pts": [[210, 190], [540, 190]], "label": "HTTPS: load · save whole doc", "both": true },
+        { "id": "e_server_db", "from": "server", "to": "db", "pts": [[740, 210], [820, 210]], "label": "SQL", "both": true },
+        { "id": "e_client_server_ws", "from": "client", "to": "server", "pts": [[210, 235], [540, 235]], "label": "ops over WebSocket", "both": true },
+        { "id": "e_client_lb", "from": "client", "to": "lb", "pts": [[210, 210], [280, 210]], "label": "HTTPS", "both": true },
+        { "id": "e_client_gw", "from": "client", "to": "gw", "pts": [[210, 422], [280, 422]], "label": "WebSocket", "both": true },
+        { "id": "e_gw_sessions", "from": "gw", "to": "sessions", "pts": [[460, 422], [540, 422]], "label": "ops · cursors", "both": true },
+        { "id": "e_docapi_db", "from": "docapi", "to": "db", "pts": [[740, 210], [820, 210]], "label": "SQL", "both": true },
+        { "id": "e_sessions_db", "from": "sessions", "to": "db", "pts": [[740, 422], [780, 422], [780, 245], [820, 245]], "label": "save", "lp": [786, 330, "start"] },
+        { "id": "e_sessions_dir", "from": "sessions", "to": "directory", "pts": [[640, 484], [640, 510]], "label": "lease", "both": true },
+        { "id": "e_gw_dir", "from": "gw", "to": "directory", "pts": [[460, 470], [540, 530]], "label": "owner?", "lp": [510, 480, "middle"] },
+        { "id": "e_docapi_meta", "from": "docapi", "to": "metadb", "pts": [[740, 210], [820, 210]], "label": "SQL", "both": true },
+        { "id": "e_sessions_oplog", "from": "sessions", "to": "oplog", "pts": [[740, 387], [820, 387]], "label": "append" },
+        { "id": "e_sessions_blob", "from": "sessions", "to": "blob", "pts": [[820, 457], [740, 457]], "label": "load" },
+        { "id": "e_docapi_acl", "from": "docapi", "to": "acl", "pts": [[640, 260], [640, 280]] },
+        { "id": "e_sessions_acl", "from": "sessions", "to": "acl", "pts": [[640, 360], [640, 334]], "label": "check on join" },
+        { "id": "e_acl_meta", "from": "acl", "to": "metadb", "pts": [[740, 307], [820, 307]], "label": "tuples" },
+        { "id": "e_oplog_kafka", "from": "oplog", "to": "kafka", "pts": [[1010, 387], [1090, 387]], "label": "ops" },
+        { "id": "e_meta_kafka", "from": "metadb", "to": "kafka", "pts": [[1010, 230], [1090, 230]], "label": "CDC" },
+        { "id": "e_kafka_compactor", "from": "kafka", "to": "compactor", "pts": [[1190, 414], [1190, 430]] },
+        { "id": "e_compactor_blob", "from": "compactor", "to": "blob", "pts": [[1090, 457], [1010, 457]], "label": "every N ops" },
+        { "id": "e_comments_meta", "from": "comments", "to": "metadb", "pts": [[740, 117], [820, 117]], "label": "threads" },
+        { "id": "e_kafka_notif", "from": "kafka", "to": "notif", "pts": [[1290, 187], [1360, 187]] },
+        { "id": "e_notif_email", "from": "notif", "to": "email", "pts": [[1455, 160], [1455, 74]], "label": "send" },
+        { "id": "e_kafka_indexer", "from": "kafka", "to": "indexer", "pts": [[1190, 160], [1190, 74]], "label": "doc changed" },
+        { "id": "e_indexer_idx", "from": "indexer", "to": "searchidx", "pts": [[1090, 47], [1010, 47]] },
+        { "id": "e_search_idx", "from": "search", "to": "searchidx", "pts": [[740, 47], [820, 47]], "label": "query" },
+        { "id": "e_client_cdn", "from": "client", "to": "cdn", "pts": [[210, 470], [245, 470], [245, 537], [280, 537]] },
+        {
+          "id": "e_cdn_blob",
+          "from": "cdn",
+          "to": "blob",
+          "pts": [[370, 564], [370, 600], [790, 600], [790, 475], [820, 475]],
+          "label": "origin pull · signed URLs",
+          "lp": [580, 593, "middle"]
+        },
+        { "id": "e_client_local", "from": "client", "to": "local", "pts": [[125, 484], [125, 510]], "label": "offline", "both": true },
+        { "id": "e_blob_regions", "from": "blob", "to": "regions", "pts": [[915, 484], [915, 510]], "label": "all stores replicate", "both": true, "async": true }
+      ],
+      "bus": { "hub": "lb", "hubX": 460, "hubY": 210, "x": 500, "members": ["search", "comments", "docapi"] }
+    },
+    "ot": {
+      "boxes": [
+        { "id": "clientA", "x": 40, "y": 30, "w": 200, "h": 60, "label": "Client A", "kind": "client", "sub": "applies own edits instantly" },
+        { "id": "pendA", "x": 40, "y": 120, "w": 200, "h": 54, "label": "Pending Ops (A)", "kind": "data", "sub": "1 in flight · rest buffered" },
+        { "id": "clientB", "x": 40, "y": 330, "w": 200, "h": 60, "label": "Client B", "kind": "client", "sub": "applies own edits instantly" },
+        { "id": "pendB", "x": 40, "y": 420, "w": 200, "h": 54, "label": "Pending Ops (B)", "kind": "data", "sub": "1 in flight · rest buffered" },
+        { "id": "seq", "x": 330, "y": 140, "w": 200, "h": 70, "label": "Sequencer", "kind": "service", "sub": "one per doc · rev N → N+1" },
+        { "id": "bc", "x": 330, "y": 330, "w": 200, "h": 70, "label": "Broadcaster", "kind": "service", "sub": "ack sender · ops to others" },
+        { "id": "hist", "x": 620, "y": 30, "w": 210, "h": 60, "label": "Recent Ops", "kind": "data", "sub": "revisions k…N, in memory" },
+        { "id": "tr", "x": 620, "y": 140, "w": 210, "h": 70, "label": "OT Transform", "kind": "service", "sub": "rebase op onto rev N" },
+        { "id": "cur", "x": 620, "y": 330, "w": 210, "h": 70, "label": "Cursor Map", "kind": "data", "sub": "selections · ephemeral" },
+        { "id": "log", "x": 920, "y": 30, "w": 210, "h": 60, "label": "Op Log", "kind": "data", "sub": "durable append before ack" },
+        { "id": "state", "x": 920, "y": 140, "w": 210, "h": 70, "label": "Doc State", "kind": "data", "sub": "in memory · at rev N" },
+        { "id": "anch", "x": 920, "y": 330, "w": 210, "h": 70, "label": "Anchors in Model", "kind": "data", "sub": "comments · suggestions" }
+      ],
+      "edges": [
+        { "id": "d_a_seq", "from": "clientA", "to": "seq", "pts": [[240, 75], [285, 75], [285, 165], [330, 165]], "label": "op @ rev k", "lp": [248, 68, "start"] },
+        { "id": "d_b_seq", "from": "clientB", "to": "seq", "pts": [[240, 350], [285, 350], [285, 190], [330, 190]], "label": "op @ rev k′", "lp": [248, 343, "start"] },
+        { "id": "d_seq_state", "from": "seq", "to": "state", "pts": [[530, 175], [920, 175]], "label": "apply as-is ✗" },
+        { "id": "d_seq_tr", "from": "seq", "to": "tr", "pts": [[530, 175], [620, 175]] },
+        { "id": "d_hist_tr", "from": "hist", "to": "tr", "pts": [[725, 90], [725, 140]], "label": "ops k+1…N", "both": true },
+        { "id": "d_tr_state", "from": "tr", "to": "state", "pts": [[830, 175], [920, 175]], "label": "apply" },
+        { "id": "d_tr_log", "from": "tr", "to": "log", "pts": [[830, 155], [875, 155], [875, 60], [920, 60]], "label": "append", "lp": [882, 118, "start"] },
+        { "id": "d_tr_bc", "from": "tr", "to": "bc", "pts": [[680, 210], [680, 270], [430, 270], [430, 330]], "label": "after append", "lp": [555, 263, "middle"] },
+        { "id": "d_bc_a", "from": "bc", "to": "clientA", "pts": [[330, 345], [305, 345], [305, 50], [240, 50]], "label": "ack · remote ops", "lp": [248, 43, "start"] },
+        { "id": "d_bc_b", "from": "bc", "to": "clientB", "pts": [[330, 370], [240, 370]] },
+        { "id": "d_a_pend", "from": "clientA", "to": "pendA", "pts": [[140, 90], [140, 120]] },
+        { "id": "d_pendA_seq", "from": "pendA", "to": "seq", "pts": [[240, 147], [330, 165]] },
+        { "id": "d_b_pend", "from": "clientB", "to": "pendB", "pts": [[140, 390], [140, 420]] },
+        { "id": "d_pendB_seq", "from": "pendB", "to": "seq", "pts": [[240, 447], [285, 447], [285, 190], [330, 190]] },
+        { "id": "d_bc_cur", "from": "bc", "to": "cur", "pts": [[530, 365], [620, 365]], "label": "cursors", "both": true },
+        { "id": "d_tr_cur", "from": "tr", "to": "cur", "pts": [[760, 210], [760, 330]], "label": "shift positions" },
+        { "id": "d_state_anch", "from": "state", "to": "anch", "pts": [[1025, 210], [1025, 330]], "label": "ranges move with text" }
+      ]
+    }
+  },
+  "slides": [
+    {
+      "scene": "main",
+      "add": ["client", "server", "e_client_server"],
+      "title": "Start simple: one client, one server",
+      "script": [
+        "Let's start with the simplest thing that could work: a **Docs client**, which is the editor running in a browser or app, talking to a single **Docs server** over HTTPS. Opening a doc fetches it, and the client **autosaves** by sending the whole document back every few seconds.",
+        "The first decision that lasts through the final design is **what a document is**. It isn't a file of bytes. It's a **structured model**: a sequence of characters, plus formatting ranges (bold, heading, link) and embedded objects like images and tables, each at a position in that sequence. The server and every client hold this same model. Thinking of it as \"a long string with annotations\" is what lets us describe changes as small edits at positions, which we'll need very soon.",
+        "For one person this works fine. The obvious problems: everything lives in the server's memory, so a restart loses every document. And it isn't collaborative at all. Let's add storage first, and then see what goes wrong as soon as a second person opens the same document."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["db", "e_server_db"],
+      "title": "Add a database, and discover lost updates",
+      "script": [
+        "The server stores each document as a **row in a database**: the doc ID, its owner and title, and the serialized document body. Every autosave overwrites the body. Now nothing is lost when the server restarts.",
+        "Now Alice and Bob open the same doc. Alice fixes a typo in paragraph one. Bob rewrites paragraph five. Alice's autosave lands, then Bob's autosave lands, carrying *his* copy of the whole document, which still has the typo. Alice's fix silently disappears. This is the classic **lost update**, and with whole-document saves every few seconds it would happen constantly.",
+        "The textbook fixes don't fit a collaborative editor. **Pessimistic locking**, check out the doc and nobody else can edit, is how shared Word files used to work, and it's exactly the experience we're replacing. **Optimistic concurrency**, where each save carries a version number and stale saves are rejected, prevents data loss, but then the client has to merge. **Three-way text merges** like git's work for code, which is edited slowly in big chunks. Here two people are typing in the same sentence many times a second, and line-based merges produce conflicts that no user wants to resolve.",
+        "The real issue is the **unit of change**. Sending whole documents throws away the information we need: *what* each person actually did. So the next step is to stop shipping documents and start shipping **operations**."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["e_client_server_ws"],
+      "title": "Send operations, not documents",
+      "script": [
+        "Instead of saving the document, the client sends **operations**: *insert \"big \" at position 6*, *delete 4 characters at position 20*, *apply bold to positions 30–42*. An op is tens of bytes, it describes exactly what the user did, and the server can apply it to its copy of the model.",
+        "These go over a **WebSocket**, a long-lived two-way connection, because traffic flows *both ways* continuously. The client streams its ops up, and the server pushes everyone else's ops down the moment they happen. Polling can't meet a 200 ms target without hammering the server. The initial load still uses plain HTTPS. The socket is for the live session.",
+        "The client applies its own ops **locally first** and sends them in the background. You never wait for the network to see your keystroke. That's what makes the editor feel like a local app, and it's also what makes the problem hard. At any moment, Alice's copy has edits the server hasn't seen, and the server has Bob's edits that Alice hasn't seen. Their copies have **diverged**, and an op like \"insert at position 6\" only means something relative to the exact document state it was made against.",
+        "So we need a rule that turns concurrent, diverged ops into one consistent order that everyone converges on. That rule is **Operational Transformation**, and it's the heart of this system, so let's **zoom into the server** and look at one editing session for one document."
+      ]
+    },
+    {
+      "scene": "ot",
+      "add": ["clientA", "clientB", "seq", "state", "d_a_seq", "d_b_seq", "d_seq_state"],
+      "title": "OT deep dive ①: concurrent edits and a single sequencer",
+      "script": [
+        "We're now inside the server, looking at **one document's session**. Two clients, A and B, are connected, and the server holds the current **doc state** in memory.",
+        "The first rule: each document has **exactly one sequencer**. Every op for this doc passes through it, and it assigns each op the next **revision number**: rev 41, rev 42, rev 43. That gives the document a single **total order** of history that every participant will eventually agree on. Different documents have different sequencers and never coordinate. That's why this scales: we only need ordering within a doc.",
+        "Each op also carries its **base revision**, the revision of the document the client was looking at when it made the edit. That's where the trouble starts. Say the doc says *\"Hello world\"* at rev 10. Alice inserts *\"big \"* at position 6, aiming for \"Hello big world\". At the same moment Bob deletes the first 6 characters, \"Hello \". Both ops have base revision 10.",
+        "The sequencer receives Bob's delete first, so it becomes rev 11, leaving \"world\". Then Alice's op arrives. If we **apply it as-is** and insert at position 6 of a 5-character string, we either fail or produce \"worldbig \". And Alice's browser, which applied her own insert first and Bob's delete second, shows something different again. The copies have **diverged permanently**. Ordering ops isn't enough. Ops made against an older state have to be **adjusted** to fit the newer state."
+      ]
+    },
+    {
+      "scene": "ot",
+      "add": ["tr", "hist", "d_seq_tr", "d_hist_tr", "d_tr_state"],
+      "remove": ["d_seq_state"],
+      "title": "OT deep dive ②: transforming ops against history",
+      "script": [
+        "The fix is **transformation**. The server keeps the **recent ops** in memory. When an op arrives with base revision *k* and the doc is at revision *N*, the server **transforms** it against every op from k+1 to N, rewriting it as if the user had made it against the current state.",
+        "The transform rules are intuitive. If someone deleted text *before* your insert position, shift your insert left by that many characters. If they inserted before you, shift right. If two inserts land at the same position, break the tie deterministically, for example by user ID, so everyone picks the same order. If two deletes overlap, the second only deletes what's left. In our example, Alice's *insert \"big \" at 6* is transformed against Bob's *delete 6 at 0*, becoming *insert \"big \" at 0*. The result is \"big world\", which is what both of them meant.",
+        "Why does this converge? With a **central server**, there's only one canonical history, and each client only ever has to reconcile with the server, never with other clients directly. The transform function only has to satisfy one property: transforming A against B and B against A leads to the same document. This is the **Jupiter** model behind Google Wave and Docs. Peer-to-peer OT also needs a second, much harder property that many published algorithms got wrong. The central server makes OT tractable.",
+        "The real engineering cost is **breadth**. A rich-text model has many op types: insert, delete, format, table edits, list changes, image moves. Every pair needs a transform rule, so the rule table grows with the square of the op types, and each rule must be identical in the server and every client. That's why the clients and the server share one OT library."
+      ]
+    },
+    {
+      "scene": "ot",
+      "add": ["log", "bc", "d_tr_log", "d_tr_bc", "d_bc_a", "d_bc_b"],
+      "title": "OT deep dive ③: append durably, then ack and broadcast",
+      "script": [
+        "Once an op is transformed and has its revision number, two things happen, in a strict order.",
+        "First, it's **appended to the op log**, durable and replicated storage, keyed by document and revision. Only after that write succeeds does anyone hear about the op. This ordering is what gives us **RPO ≈ 0**. If the server crashes before the append, the client never got an ack and will resend. If it crashes after, the op is safely in the log and the next server picks up from there. The append is also **conditional**: \"write rev 43 only if rev 43 doesn't exist yet.\" That will matter when we talk about failover.",
+        "Second, the **broadcaster** sends an **ack** to the author (\"your op is rev 43\") and the **transformed op** to every other client in the session. Those clients apply ops in revision order. If a client sees rev 45 after rev 43, it knows it missed 44 and asks for it, so gaps are always detectable.",
+        "Two details make this robust to flaky networks. Every op carries a **client ID and a client sequence number**, so if a client reconnects and resends an op the server already logged, the server recognizes the duplicate and just re-acks it. And a reconnecting client says \"I'm at rev 40,\" and the server replays 41 onward from memory or from the op log. As with every real-time system, the socket is a fast path, and the **log is the source of truth**."
+      ]
+    },
+    {
+      "scene": "ot",
+      "add": ["pendA", "pendB", "d_a_pend", "d_pendA_seq", "d_b_pend", "d_pendB_seq"],
+      "remove": ["d_a_seq", "d_b_seq"],
+      "title": "OT deep dive ④: the client keeps one op in flight",
+      "script": [
+        "Now the client's half, which is just as important. Remember, the client applies your edits **immediately**. Everything you've typed that the server hasn't acknowledged yet sits in a small queue of **pending ops**.",
+        "The protocol keeps **at most one op in flight**. The client sends an op and waits for its ack. Anything you type meanwhile goes into a **buffer**, and consecutive keystrokes are **composed** into a single op: typing \"hello\" becomes one insert of five characters, not five ops. When the ack arrives, the whole buffer goes out as the next op. On a fast connection that means an op every round trip. On a slow one, ops naturally get bigger and fewer. This batching is how we got to roughly one op per second per typer in the estimates.",
+        "When a **remote op** arrives from the server, the client can't apply it directly, because its own copy already includes the pending local edits that the remote op knows nothing about. So the client **transforms in the other direction**: the remote op is transformed against the in-flight op and the buffer, and they in turn are transformed against the remote op. Your screen updates with Bob's change in the right place, and your pending ops are now expressed against the newer revision.",
+        "With one op in flight, each client only ever has a **two-party conversation** with the server. The server never has to reason about what clients have seen of *each other's* edits. That simplicity is what makes the whole scheme provably convergent."
+      ]
+    },
+    {
+      "scene": "ot",
+      "add": ["cur", "d_bc_cur", "d_tr_cur"],
+      "title": "OT deep dive ⑤: presence and live cursors",
+      "script": [
+        "Next, **presence**: the avatars at the top and everyone's colored cursors and selections. The key observation is that a cursor is just a **position in the document**, so it has the same problem ops have. If Bob's cursor is at position 50 and Alice inserts ten characters at position 10, Bob's cursor must move to 60, or it will jump to the wrong word.",
+        "So the session keeps a **cursor map**, user to selection range, and runs every applied op through the same transform logic to **shift the positions**. Clients send cursor updates with the revision they were made at, so they get transformed exactly like ops.",
+        "But presence is treated very differently from content. It's **ephemeral**: never written to the op log, never in history. If the session server restarts, cursors reappear a second later when clients resend them. Updates are **throttled** to a few per second and can be dropped under load, because only the latest position matters. And presence is **coalesced**: in a doc with hundreds of viewers, we don't stream every viewer's cursor to everyone. We show live cursors for active editors and a summarized \"+87 viewers\" for the rest. That's how the per-doc cost stays bounded no matter how popular the doc gets."
+      ]
+    },
+    {
+      "scene": "ot",
+      "add": ["anch", "d_state_anch"],
+      "title": "OT deep dive ⑥: comments and suggestions live in the model",
+      "script": [
+        "The last piece of the session is how **comments and suggestions** stay attached to text. A comment is attached to a range, say \"the third sentence.\" If we stored that as character offsets in a separate database, the first edit above it would make it point at the wrong text.",
+        "So the **anchor** lives **inside the document model** itself, as a pair of markers around the range, tagged with a comment ID. Because the anchors are part of the model, every op is transformed past them, and they move with the text automatically, for free. The comment's *conversation* (the thread, replies, resolved state) is ordinary data that lives in a database keyed by that ID. If someone deletes all the anchored text, the anchor collapses and the comment shows \"original content deleted.\"",
+        "**Suggestions** use the same trick. In suggesting mode, your edits are real ops, but they're tagged: inserted text is marked \"suggested by Bob\" and shown in green, and deletions mark text as \"suggested for removal\" rather than removing it. **Accepting** is just another op that clears the mark. **Rejecting** is an op that removes the suggested text. Suggestions get convergence, history and real-time display from the existing OT pipeline, with no separate system.",
+        "That's the session. Ordering, transformation, durability, presence and anchors all happen inside one stateful process per document. Now let's **zoom back out** and work out how to run millions of these."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["lb", "docapi", "gw", "sessions", "e_client_lb", "e_client_gw", "e_gw_sessions", "e_docapi_db", "e_sessions_db"],
+      "remove": ["server"],
+      "title": "Split the stateless API from the stateful sessions",
+      "script": [
+        "Back at the system level. One server can't host 10 million open documents and their sockets, and the two kinds of work it does are very different. So I split it.",
+        "The **Doc Service** is a **stateless** fleet behind a **load balancer**. It handles everything request/response: list my docs, create a doc, rename, change sharing, and the initial **open**, which returns the doc and a revision number. Any server can handle any request, and we scale it and deploy it like any web tier.",
+        "The **WebSocket gateways** terminate the long-lived connections. A gateway does nothing clever: authenticate the socket, and forward frames between the client and the right session. Keeping it dumb means we can deploy session logic without dropping millions of sockets.",
+        "**Collab sessions** are the stateful tier: the per-document OT sessions we just designed. The invariant that matters most is **exactly one live session per document**, on one server, because that's where the sequencer lives. Two sessions for the same doc would mean two histories, which is exactly the divergence we worked so hard to prevent.",
+        "Sessions are **created on demand**. When the first person opens a doc, some session server loads it and starts accepting ops. When the last person leaves, it lingers briefly and then unloads. Cold docs cost nothing but storage, which satisfies the cost requirement for 10 billion mostly idle documents. One session server can host thousands of documents, since most of them see a few ops a second at most."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["directory", "e_sessions_dir", "e_gw_dir"],
+      "title": "Session directory: exactly one owner per doc",
+      "script": [
+        "How does a gateway know which session server owns doc X? The tempting answer is **consistent hashing** on the doc ID. That's a good way to *place* docs, but on its own it's dangerous for *ownership*. During a network partition or a membership change, two servers can briefly disagree about the ring, and both believe they own the doc. That's two sequencers and a split history.",
+        "So ownership comes from a **session directory** backed by a consensus store: Chubby or ZooKeeper style, or a sharding service like Google's Slicer. A server holds a **lease** on each doc it serves, and must renew it every few seconds. The gateway asks the directory, caches the answer, and forwards ops to the owner. Hashing can still choose which server gets a new doc. The lease is what makes it *the* owner.",
+        "Leases alone aren't quite enough, because a paused server may not realize its lease expired. So each lease carries an increasing **epoch**, a fencing token, and op-log appends are conditional on both the epoch and the next revision number. A stale owner's writes are rejected by storage itself, so split-brain can't corrupt history even if it briefly happens.",
+        "**Failover** follows directly. If a session server dies, its leases expire within seconds. The next client to reconnect causes the directory to assign the doc to a healthy server, which loads the latest snapshot, replays the log tail, and resumes. Clients resend their unacked ops, which dedupe by client sequence number. Users see a short \"reconnecting…\" and lose nothing."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["metadb", "oplog", "blob", "e_docapi_meta", "e_sessions_oplog", "e_sessions_blob"],
+      "remove": ["db"],
+      "title": "Storage: metadata, an op log, and snapshots",
+      "script": [
+        "Our single database is doing three jobs with completely different access patterns, so I split it into three stores.",
+        "The **metadata DB** holds docs (ID, title, owner, folder, timestamps), sharing, and later comments. That's relational data with cross-references and a need for transactions: moving a doc to a folder, transferring ownership. Google would use **Spanner**: strongly consistent SQL that scales horizontally and replicates across regions. Writes here are low volume, because nobody renames docs a million times a second.",
+        "The **op log** is the high-volume store: millions of tiny appends a second. It's a wide-column store like **Bigtable**, with row key *doc_id + revision*, so one doc's ops are contiguous and \"everything after rev k\" is a single range scan. It only needs per-row conditional writes, which is exactly what the fencing check uses. Because the key starts with the doc ID, load spreads evenly across billions of docs.",
+        "**Snapshots** go in a **blob store**. A snapshot is the full serialized model at some revision R. To **open** a doc, the session loads the latest snapshot and replays the ops after R. Without snapshots, opening a five-year-old doc would mean replaying millions of ops. With a snapshot every few hundred ops, opening is one blob read plus a short range scan, comfortably under a second.",
+        "This is effectively **event sourcing**. The op log is the truth, and snapshots are a cache of \"the log applied up to here.\" Everything else we add, like history, search and notifications, will also be a function of that log."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["acl", "e_docapi_acl", "e_sessions_acl", "e_acl_meta"],
+      "title": "Permissions: an ACL service on every path",
+      "script": [
+        "Sharing is a central feature, and permission checks sit on **every path**: listing and opening docs in the Doc Service, and joining a session on the session servers. The session also enforces the **role on every op**. A viewer's socket can't send ops at all. A commenter can only send comment and suggestion ops. An editor can do anything.",
+        "I'd put this behind a dedicated **ACL service** modeled on Google's **Zanzibar**. Permissions are stored as relation tuples like *doc:123#editor@user:alice*, *doc:123#viewer@group:eng*, or *doc:123#parent@folder:9*. A check walks those relations: Bob can view the doc because he's in a group that can view the folder that contains it. Inheritance through folders and groups is what makes a single \"share this folder\" click cover thousands of docs.",
+        "Checks are frequent, so the ACL service caches aggressively. That raises the **\"new enemy\" problem**: you remove Bob from a doc and then add a sensitive paragraph, and a stale cache lets Bob read it. Zanzibar's answer is a **consistency token**. The doc remembers the ACL version at its last permission change, and checks must be evaluated at least that fresh.",
+        "**Revocation** also has to reach live sessions. When an ACL changes, the session server re-checks the connected users of that doc, and anyone who lost access is disconnected or downgraded to read-only within seconds. Link sharing is simply a tuple granting a role to \"anyone with the link,\" and the link carries an unguessable token."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["kafka", "e_oplog_kafka", "e_meta_kafka"],
+      "title": "A change feed to keep the hot path lean",
+      "script": [
+        "Several features still to come (snapshots, version history, search, notifications) all need to react to changes. The worst thing we could do is bolt each of them onto the session server. Its job is latency-critical and stateful. It should order, transform, durably append, broadcast, and nothing else.",
+        "So I add a **change feed**, a log like **Kafka** or Pub/Sub. Committed ops flow into it from the op log via change data capture, and metadata changes such as new comments, shares and renames flow in from the metadata DB the same way. Taking events from the *stores* rather than having services publish them means we never have the dual-write bug where the database committed but the event was lost, or vice versa.",
+        "The feed is **partitioned by doc ID**, so every consumer sees one doc's changes in order, and consumers scale by adding partitions. Each consumer keeps its own offset and can fall behind, catch up, or replay from scratch, for example to rebuild the search index after a ranking change, without the session tier noticing.",
+        "This is where the consistency split from the requirements becomes concrete. Everything **left** of the change feed is synchronous and strongly consistent: the edit you see is the edit that's stored. Everything **right** of it is asynchronous and eventually consistent, typically seconds behind. That's fine for search results and email, and it means a slow downstream system can never make typing slow."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["compactor", "e_kafka_compactor", "e_compactor_blob"],
+      "title": "Snapshots and version history",
+      "script": [
+        "The first consumer is the **snapshot worker**. It follows each doc's ops, and every few hundred ops, or when a doc goes idle, it applies them to the last snapshot and writes a new one to the blob store. Doing this off the session server keeps snapshot CPU and I/O away from the typing path, and bounds how many ops any open has to replay.",
+        "The same worker builds **version history**. Keystroke-level history is useless to a person, so the worker groups ops into **revisions**: a run of edits by the same people within a few minutes becomes one entry, \"Alice and Bob, 10:42 AM.\" Each revision records its revision range and authors, and points at a nearby snapshot. **Named versions** (\"Final draft v2\") are just pinned revisions.",
+        "**Viewing** an old version loads the nearest snapshot and replays ops up to that revision. **Showing changes** works because every op records its author, so the viewer can color text by who wrote it. **Restoring** never rewrites history. The session computes an op that turns today's document into the old one, and applies it like any other edit. History stays append-only, collaborators see the restore live, and you can undo a restore.",
+        "To keep storage bounded, older history is **coarsened**. After some weeks, we keep the revision snapshots and drop the individual ops between them. Recent history stays fine-grained, and ancient history keeps every revision a person would want, without keeping every keystroke forever."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["comments", "e_comments_meta"],
+      "title": "Comments: threads in the database, anchors in the doc",
+      "script": [
+        "Comments split across the two halves of the system, exactly as we designed in the deep dive. The **anchor** is part of the document model, so it moves with the text through OT. The **thread** (the comment text, replies, @mentions, assignments, resolved or reopened) belongs to a **Comment Service** on the HTTP API, stored in the metadata DB keyed by doc and comment ID.",
+        "Why not put the whole comment in the document model? Comment threads change on a human timescale: a reply every few minutes, not every hundred milliseconds. They also have their own lifecycle and permissions, since a commenter can write them but not the text. And they have to be queryable on their own, for example \"all comments assigned to me across every doc.\" That's a database query, not something you get by replaying op logs.",
+        "Creating a comment is a **two-step** action: the client inserts the anchor op through the session, and creates the thread through the Comment Service with the same ID. If one half fails, the client retries, and an anchor without a thread, or the reverse, is simply hidden until it's resolved.",
+        "Collaborators see new comments in real time because the Comment Service tells the doc's session, which broadcasts a \"comment changed\" event over the existing sockets. And because comment writes land in the metadata DB, they automatically show up on the change feed. That's exactly what the next component needs."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["notif", "email", "e_kafka_notif", "e_notif_email"],
+      "title": "Notifications: mentions, replies and shares",
+      "script": [
+        "When someone @mentions you, assigns you a comment, replies to your thread, or shares a doc with you, you get an email or mobile push. **Notification workers** consume the change feed and decide **who to tell, and when**.",
+        "The logic matters more than the plumbing. For each event the worker resolves recipients, checks **permissions** (you can @mention someone who can't see the doc, in which case the *author* is prompted to share it rather than the mentioned person getting a dead link), and applies the recipient's preferences.",
+        "Then it **suppresses and batches**. If you're *in* the doc right now, which the worker can check against session presence, you've already seen the comment, so no email. Five replies in a thread within ten minutes become one digest-style email, not five. Delivery goes to email and push providers through a queue with retries and **idempotency keys**, so a worker crash mid-batch doesn't send duplicates.",
+        "Because this is all downstream of the change feed, a backlog at the email provider just means notifications arrive a bit late. It never slows down anyone's typing."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["search", "searchidx", "indexer", "e_kafka_indexer", "e_indexer_idx", "e_search_idx"],
+      "title": "Search across the docs you can see",
+      "script": [
+        "Search has a write side and a read side. On the write side, the **search indexer** consumes the change feed. Indexing on every op would be absurd at millions of ops a second, so it **debounces per doc**. It notes \"doc 123 changed,\" waits until the doc has been quiet for 30 seconds or so (or a cap is hit), then reads the latest snapshot plus tail and re-indexes the doc's title and text in one go. A doc being actively edited is re-indexed every half-minute or so, not ten times a second.",
+        "The **index** is an inverted index, sharded by doc. The hard part is **permissions**: results must only include docs the searcher can see, and a user can see millions of docs through groups and domain-wide sharing. Checking each hit against the ACL service after the search (**late binding**) is accurate, but it's slow when most hits get filtered out. Storing each doc's allowed principals in the index and filtering at query time (**early binding**) is fast, but it can be stale.",
+        "I'd do **both**. The index stores each doc's principals (users, groups, domain), the query expands the searcher into their principals and filters on them, and then the top results are re-verified against the ACL service before we return them. A stale index can cost a result, but it can never leak one.",
+        "The **Search Service** sits behind the load balancer with the other APIs. It handles prefix autocomplete on titles and full-text queries, and it ranks by text match, recency, and your relationship to the doc (owned, recently opened, shared with you directly)."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["cdn", "e_client_cdn", "e_cdn_blob"],
+      "title": "Images: references in the doc, bytes in a CDN",
+      "script": [
+        "Documents embed images, and an image is megabytes, while our ops are bytes. So image bytes **never go through the OT pipeline**. The document model stores a **reference**, an image ID plus size and layout, and inserting an image is a tiny op carrying that reference.",
+        "Uploading is out of band. The client asks the Doc Service for a **signed upload URL**, uploads the bytes directly to the blob store, and then inserts the reference op. Collaborators receive the op instantly and render a placeholder until the image loads.",
+        "Images are served through a **CDN**. They're immutable, since editing an image creates a new ID, so they cache forever and the CDN's hit rate is excellent. The catch is that an image inherits its doc's permissions, so it can't be public. The client gets **short-lived signed URLs** for the images in a doc when it opens the doc, and the CDN validates the signature before serving or pulling from the origin.",
+        "The same blob store already holds snapshots, and keeping both there means one durable, replicated, cheap tier for anything large."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["local", "e_client_local"],
+      "title": "Offline editing, and why OT rather than CRDTs",
+      "script": [
+        "For **offline** support, the client keeps a **local store** in IndexedDB on the web, or a local database on mobile: a snapshot of each doc you've made available offline, plus the pending ops queue. Losing the connection just means the buffer keeps growing. Everything you type is persisted locally, so closing the laptop loses nothing.",
+        "On reconnect, the client sends its pending ops with their old base revision, and the server transforms them against everything that happened in the meantime. That's the *same algorithm* as normal editing with a very long round trip. It converges, but after hours apart the merge can be semantically surprising, such as two people rewriting the same paragraph. That's what version history is for. The server also re-checks permissions, so if you lost edit access while offline, your edits are rejected and kept as a local copy instead.",
+        "This is where it's fair to ask about **CRDTs**, the main alternative to OT, used by Yjs, Automerge and Figma-style systems. A CRDT gives every character a unique ID and defines ops that **commute**, so replicas converge in any order with **no central server**. That's great for peer-to-peer and heavy offline use. The costs are per-character metadata and tombstones for deleted text (modern CRDTs have shrunk these a lot), and rich-text semantics are harder to get right, especially intent-preserving formatting.",
+        "For Google Docs, I'd still choose **OT with a central server**. OT's main weakness is that it needs a central sequencer, but we have one anyway for permissions, durability and history. OT keeps the document compact, and it's proven at this scale. If the product were local-first or peer-to-peer, I'd choose a CRDT."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["regions", "e_blob_regions"],
+      "title": "Going global: home regions and replication",
+      "script": [
+        "Finally, the system runs in **many regions**, which raises the question of where a doc's single sequencer lives. Each doc's session runs in one **home region**, usually the one closest to its owner or most of its editors. A collaborator on another continent connects to their **nearest gateway**, which forwards ops over the private backbone to the home region. They pay one cross-ocean round trip, around 100 to 150 ms, for remote edits. Their own typing stays instant because it's local-first. If the editor mix shifts, the directory can **migrate** a doc's home region at a quiet moment.",
+        "**Replication** is what makes \"never lose an acked edit\" true even if a whole region is lost. Spanner replicates metadata synchronously across regions with Paxos. The op log write is acknowledged only once it's committed in more than one failure domain. That adds some milliseconds to the ack, but the ack isn't on the typing path. Snapshots and images replicate asynchronously, which is fine, because the log can always rebuild a snapshot.",
+        "If the home region fails, its leases expire, the directory reassigns its docs to the next region, sessions rebuild from the replicated log, and clients reconnect and resend unacked ops. Users see seconds of \"reconnecting,\" and no data is lost, which meets the 99.99% target."
+      ]
+    },
+    {
+      "scene": "main",
+      "title": "The complete system: following one keystroke",
+      "script": [
+        "To close, let me follow one edit through the finished system. Alice opens the team's design doc. The **Doc Service** checks the **ACL service**, reads metadata from **Spanner**, and returns signed URLs for its images, which load from the **CDN**. Her client opens a **WebSocket** to a nearby **gateway**, which asks the **session directory** who owns the doc and forwards her to that **collab session**, loaded from the latest **snapshot** plus the op-log tail.",
+        "She types a sentence. It appears instantly on her screen, and goes up as one composed op based on rev 812. Bob's concurrent edit already took rev 812 and 813, so the session **transforms** her op past it, assigns rev 814, **appends** it to the op log with a fenced conditional write, then acks Alice and pushes the op to Bob, whose cursor shifts to stay in place. All of that takes well under 200 ms.",
+        "Downstream, the op reaches the **change feed**. The **snapshot worker** folds it into the next snapshot and into a history entry, \"Alice, 10:42.\" The **search indexer** re-indexes the doc once it goes quiet. When Alice @mentions Carol in a comment, the **notification workers** email her, unless she's already in the doc.",
+        "The themes I'd underline: **ops, not documents**, as the unit of change; **one sequencer per document**, enforced with leases and fencing, giving total order where it's needed and no coordination where it isn't; **OT** for convergence, with anchors and cursors carried by the same transforms; **the op log as the source of truth**, with snapshots and history derived from it; and a **change feed** that keeps everything nobody is waiting on off the hot path. With more time, I'd go deeper next on the rich-text transform rules for tables and lists, very large documents, and the Sheets and Slides models, which reuse this architecture with different ops."
+      ]
+    }
+  ]
+}
