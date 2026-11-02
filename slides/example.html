@@ -652,12 +652,10 @@
     // One functional-requirements diagram: the heading, the first `show` cards
     // (the last of them highlighted), and optionally the out-of-scope strip.
     function frDiagram({ show = 0, withStrip = false } = {}) {
-      const sub = show ? `<text class="subheading" x="330" y="42">what a user can do</text>` : "";
       const fresh = withStrip ? -1 : show - 1;
       return `
         <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
           <text class="heading" x="30" y="42">Functional requirements</text>
-          ${sub}
           ${cardGrid(30, 66, 370, 128, 15, 3, FR_CARDS, { show, fresh })}
           ${withStrip ? strip(30, 512 - 143, 1140, 100, "Out of scope (mentioned, not designed)",
             FR_OUT_OF_SCOPE, true) : ""}
@@ -694,14 +692,12 @@
     // cards, and optionally the estimates and takeaway panels. The last thing
     // added is the one highlighted as new.
     function nfrDiagram({ show = 0, withEstimates = false, withTakeaway = false } = {}) {
-      const sub = show ? `<text class="subheading" x="372" y="42">how well it has to do it</text>` : "";
       const fresh = withEstimates ? -1 : show - 1;
       return `
         <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
           <text class="heading" x="30" y="42">Non-functional requirements</text>
-          ${sub}
           ${cardGrid(30, 66, 255, 128, 13, 3, NFR_CARDS, { show, fresh })}
-          ${withEstimates ? estimatesPanel(832, 66, 338, 270, "Back of the envelope",
+          ${withEstimates ? estimatesPanel(836, 66, 334, 270, "Back of the envelope",
             NFR_ESTIMATES, !withTakeaway) : ""}
           ${withTakeaway ? panel(30, 369, 1140, 100, "Takeaway", NFR_TAKEAWAY, true) : ""}
         </svg>`;
