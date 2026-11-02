@@ -37,7 +37,8 @@ the shared CSS, the requirement-slide helpers, the scene builder, and the naviga
 engine, plus comments explaining each. Then replace:
 
 1. `<title>` and the `TOPIC` constant.
-2. The requirement cards on slides 1–2.
+2. The requirements: `FR_CARDS` / `FR_OUT_OF_SCOPE` and
+   `NFR_CARDS` / `NFR_ESTIMATES` / `NFR_TAKEAWAY`.
 3. `SCENE`: every box and edge of the **final** system.
 4. The `SLIDES` array: one entry per step.
 
@@ -61,12 +62,22 @@ add it to the template first and then use it in the deck.
 
 ### Progression
 
-- **Slide 1: functional requirements.** A grid of numbered cards (`cardGrid`), one per
-  capability, plus a dashed `strip` listing what is out of scope.
-- **Slide 2: non-functional requirements.** A card grid (scale, latency, availability,
-  durability, consistency, cost, ...), an `estimatesPanel` with back-of-the-envelope
-  numbers, and a `strip` with the takeaway (the numbers that shape the design).
-- **Slide 3:** the simplest starting point for the diagram, e.g. one client and one
+- **Functional requirements, built up one slide at a time** (via `frDiagram`):
+  - a title-only slide ("Functional requirements");
+  - one slide per numbered card (`FR_CARDS`, one per capability), each adding the
+    next card, highlighted as new; its script describes just that requirement;
+  - one slide adding the dashed `strip` listing what is out of scope.
+  With 6 cards these are slides 1–8.
+- **Non-functional requirements, built up the same way** (via `nfrDiagram`):
+  - a title-only slide ("Non-functional requirements");
+  - one slide per card (`NFR_CARDS`: scale, latency, availability, durability,
+    consistency, cost, ...), each adding the next card;
+  - one slide adding the `estimatesPanel` with back-of-the-envelope numbers
+    (`NFR_ESTIMATES`);
+  - one slide adding the `panel` with the takeaway, the numbers that shape the
+    design (`NFR_TAKEAWAY`).
+  With 6 cards these are slides 9–17.
+- **Next:** the simplest starting point for the diagram, e.g. one client and one
   server.
 - **Each subsequent slide:** adds one more layer/entity/concept to the diagram and
   explains it in the script.
@@ -76,7 +87,7 @@ add it to the template first and then use it in the deck.
 
 1. **Agree on requirements first.** Before building, propose broad functional and
    non-functional requirements, with rough scale numbers and what is out of scope, and
-   check them with the user. The agreed list becomes slides 1–2.
+   check them with the user. The agreed list becomes the requirement slides.
 2. Sketch the **final** architecture and the order in which pieces get added. A large
    subsystem can get its own sub-arc (see "Multiple scenes" below).
 3. Copy the template, lay out `SCENE`, and write `SLIDES`.

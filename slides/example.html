@@ -8,16 +8,25 @@
   slides/<topic>.html (kebab-cased topic name) and replace:
 
     1. <title> and the TOPIC constant below  -> the system being designed
-    2. The requirement cards on slides 1–2   -> the agreed requirements
+    2. FR_CARDS / FR_OUT_OF_SCOPE and         -> the agreed requirements
+       NFR_CARDS / NFR_ESTIMATES / NFR_TAKEAWAY
     3. SCENE (boxes, edges, bus)             -> every component of the FINAL
                                                 system, at its final position
     4. The SLIDES array                      -> one entry per step of the design
 
   Deck structure:
-    - Slide 1: functional requirements (card grid + out-of-scope strip).
-    - Slide 2: non-functional requirements (card grid + back-of-the-envelope
-               panel + takeaway strip).
-    - Slide 3: the simplest possible starting point (e.g. one client, one
+    - Functional requirements, built up one slide at a time:
+        - a title-only slide ("Functional requirements"),
+        - one slide per requirement card (each adds the next card),
+        - one slide adding the dashed out-of-scope strip.
+      With 6 cards that is slides 1–8.
+    - Non-functional requirements, built up the same way:
+        - a title-only slide ("Non-functional requirements"),
+        - one slide per requirement card (each adds the next card),
+        - one slide adding the back-of-the-envelope estimates panel,
+        - one slide adding the takeaway panel.
+      With 6 cards that is slides 9–17.
+    - Next slide: the simplest possible starting point (e.g. one client, one
                server). Each later slide adds ONE more layer/entity/concept.
     - Last slide: the complete system.
 
@@ -34,7 +43,8 @@
   THE SCENE BUILDER (how architecture diagrams are made)
     - Declare every box and edge ONCE, at its position in the final diagram.
     - Each slide calls the builder with the ids it adds (and, rarely, removes).
-      Visibility is cumulative, so slide N shows everything from slides 3..N.
+      Visibility is cumulative, so each slide shows everything
+      added on the architecture slides before it.
     - Elements added on the current slide are highlighted: boxes glow, edges
       and their labels turn the accent color. This is how the audience sees
       "the one new thing" on each slide.
@@ -265,7 +275,7 @@
       svg.animate .new { opacity: 1; animation: none; }
     }
 
-    /* ---- Requirement slides (slides 1–2) ---- */
+    /* ---- Requirement slides ---- */
     .heading { fill: var(--accent); font-size: 24px; font-weight: 700; }
     .subheading { fill: var(--ink-dim); font-size: 14px; }
     .card rect { fill: var(--box-fill); stroke: var(--box-stroke); stroke-width: 1.5; }
@@ -273,12 +283,15 @@
     .card .badge-num { fill: var(--bg); font-size: 13px; font-weight: 700; text-anchor: middle; dominant-baseline: central; }
     .card .title { fill: var(--box-ink); font-size: 17px; font-weight: 700; }
     .card .line { fill: var(--ink-dim); font-size: 13.5px; }
+    .card.new rect { stroke: var(--accent); stroke-width: 3; filter: drop-shadow(0 0 7px var(--accent)); }
     .panel-box { fill: var(--box-fill); stroke: var(--accent); stroke-width: 1.5; }
     .panel-title { fill: var(--accent); font-size: 17px; font-weight: 700; }
     .strip { fill: transparent; stroke: var(--box-stroke); stroke-width: 1.5; stroke-dasharray: 7 6; }
     .strip-title { fill: var(--ink); font-size: 15px; font-weight: 700; }
     .strip-text { fill: var(--ink-dim); font-size: 13.5px; }
-    .est-k { fill: var(--accent); font-size: 13.5px; font-weight: 700; }
+    .est-box { fill: transparent; stroke: var(--box-stroke); stroke-width: 1.5; }
+    .est-title { fill: var(--ink-dim); font-size: 17px; font-weight: 700; }
+    .est-k { fill: var(--ink); font-size: 13.5px; font-weight: 700; }
     .est-v { fill: var(--ink); font-size: 13.5px; }
   </style>
 </head>
@@ -359,16 +372,17 @@
     }
 
     // ========================================================================
-    // Requirement-slide helpers (slides 1–2). Use viewBox 0 0 1200 640.
+    // Requirement-slide helpers. Use viewBox 0 0 1200 640.
     // ========================================================================
 
     // One numbered requirement card: a title plus 1–3 short lines.
-    function card(x, y, w, h, num, title, lines) {
+    // `isNew` highlights it and fades it in (for build-up slides).
+    function card(x, y, w, h, num, title, lines, isNew = false) {
       const body = lines
         .map((l, i) => `<text class="line" x="${x + 18}" y="${y + 66 + i * 21}">${l}</text>`)
         .join("");
       return `
-        <g class="card">
+        <g class="card${isNew ? " new" : ""}">
           <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
           <circle class="badge" cx="${x + 30}" cy="${y + 30}" r="13"></circle>
           <text class="badge-num" x="${x + 30}" y="${y + 30}">${num}</text>
@@ -378,29 +392,50 @@
     }
 
     // A grid of cards, numbered 1..N. items = [[title, [line, line]], ...]
-    function cardGrid(x0, y0, w, h, gap, cols, items) {
+    // For a build-up, `show` draws only the first N cards and `fresh` is the
+    // index of the card to highlight as new (-1 for none).
+    function cardGrid(x0, y0, w, h, gap, cols, items, { show = items.length, fresh = -1 } = {}) {
       return items
+        .slice(0, show)
         .map((it, i) => {
           const c = i % cols, r = Math.floor(i / cols);
-          return card(x0 + c * (w + gap), y0 + r * (h + gap), w, h, i + 1, it[0], it[1]);
+          return card(x0 + c * (w + gap), y0 + r * (h + gap), w, h, i + 1, it[0], it[1], i === fresh);
         })
         .join("");
     }
 
-    // Dashed strip with a title and lines (out-of-scope list, key takeaway).
-    function strip(x, y, w, h, title, lines) {
+    // Dashed strip with a title and lines (out-of-scope list).
+    // `isNew` fades it in (for build-up slides); the border stays gray.
+    function strip(x, y, w, h, title, lines, isNew = false) {
       const body = lines
         .map((l, i) => `<text class="strip-text" x="${x + 24}" y="${y + 64 + i * 22}">${l}</text>`)
         .join("");
       return `
-        <rect class="strip" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
-        <text class="strip-title" x="${x + 24}" y="${y + 34}">${title}</text>
-        ${body}`;
+        <g class="${isNew ? "new" : ""}">
+          <rect class="strip" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <text class="strip-title" x="${x + 24}" y="${y + 34}">${title}</text>
+          ${body}
+        </g>`;
     }
 
-    // Accent-bordered panel of back-of-the-envelope estimates.
+    // Accent-bordered, filled panel with a title and lines (key takeaway).
+    // `isNew` fades it in (for build-up slides).
+    function panel(x, y, w, h, title, lines, isNew = false) {
+      const body = lines
+        .map((l, i) => `<text class="strip-text" x="${x + 24}" y="${y + 64 + i * 22}">${l}</text>`)
+        .join("");
+      return `
+        <g class="${isNew ? "new" : ""}">
+          <rect class="panel-box" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <text class="panel-title" x="${x + 24}" y="${y + 34}">${title}</text>
+          ${body}
+        </g>`;
+    }
+
+    // Gray-bordered, unfilled panel of back-of-the-envelope estimates.
     // rows = [[heading, [value, value]], ...]
-    function estimatesPanel(x, y, w, h, title, rows) {
+    // `isNew` fades it in (for build-up slides); the border stays gray.
+    function estimatesPanel(x, y, w, h, title, rows, isNew = false) {
       let cy = y + 66;
       const body = rows
         .map(([k, vs]) => {
@@ -411,9 +446,11 @@
         })
         .join("");
       return `
-        <rect class="panel-box" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
-        <text class="panel-title" x="${x + 20}" y="${y + 32}">${title}</text>
-        ${body}`;
+        <g class="${isNew ? "new" : ""}">
+          <rect class="est-box" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <text class="est-title" x="${x + 20}" y="${y + 32}">${title}</text>
+          ${body}
+        </g>`;
     }
 
     // ========================================================================
@@ -592,72 +629,151 @@
     const scene = sceneBuilder(SCENE);
 
     // ========================================================================
+    // EDIT THIS: functional requirements, built up one card per slide.
+    // ========================================================================
+    // Each card is [title, [line, line], script html]. The script describes
+    // just the requirement that card adds. Up to 9 cards fit in the 3×3 grid.
+    const FR_CARDS = [
+      ["Requirement one", ["Short description, line one", "Optional second line"],
+        `<p>Describe requirement 1 here.</p>`],
+      ["Requirement two", ["Short description, line one", "Optional second line"],
+        `<p>Describe requirement 2 here.</p>`],
+      ["Requirement three", ["Short description, line one", "Optional second line"],
+        `<p>Describe requirement 3 here.</p>`],
+      ["Requirement four", ["Short description, line one", "Optional second line"],
+        `<p>Describe requirement 4 here.</p>`],
+      ["Requirement five", ["Short description, line one", "Optional second line"],
+        `<p>Describe requirement 5 here.</p>`],
+      ["Requirement six", ["Short description, line one", "Optional second line"],
+        `<p>Describe requirement 6 here.</p>`],
+    ];
+    const FR_OUT_OF_SCOPE = ["Feature A  ·  Feature B  ·  Feature C"];
+
+    // One functional-requirements diagram: the heading, the first `show` cards
+    // (the last of them highlighted), and optionally the out-of-scope strip.
+    function frDiagram({ show = 0, withStrip = false } = {}) {
+      const sub = show ? `<text class="subheading" x="330" y="42">what a user can do</text>` : "";
+      const fresh = withStrip ? -1 : show - 1;
+      return `
+        <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
+          <text class="heading" x="30" y="42">Functional requirements</text>
+          ${sub}
+          ${cardGrid(30, 66, 370, 128, 15, 3, FR_CARDS, { show, fresh })}
+          ${withStrip ? strip(30, 512 - 143, 1140, 100, "Out of scope (mentioned, not designed)",
+            FR_OUT_OF_SCOPE, true) : ""}
+        </svg>`;
+    }
+
+    // ========================================================================
+    // EDIT THIS: non-functional requirements, built up one card per slide,
+    // then the estimates panel, then the takeaway panel.
+    // ========================================================================
+    // Each card is [title, [line, line], script html], as for FR_CARDS.
+    const NFR_CARDS = [
+      ["Scale", ["Users, data size,", "requests per second"],
+        `<p>Describe the scale requirement here.</p>`],
+      ["Latency", ["p99 targets for the", "critical paths"],
+        `<p>Describe the latency requirement here.</p>`],
+      ["Availability", ["Which path must", "never go down"],
+        `<p>Describe the availability requirement here.</p>`],
+      ["Durability", ["What data can", "never be lost"],
+        `<p>Describe the durability requirement here.</p>`],
+      ["Consistency", ["Strong where needed,", "eventual elsewhere"],
+        `<p>Describe the consistency requirement here.</p>`],
+      ["Cost", ["The dominant cost", "driver"],
+        `<p>Describe the cost requirement here.</p>`],
+    ];
+    const NFR_ESTIMATES = [
+      ["Users", ["100M DAU × 10 requests ≈ 12K QPS"]],
+      ["Storage", ["1B rows × 1 KB ≈ 1 TB"]],
+      ["Bandwidth", ["12K QPS × 10 KB ≈ 120 MB/s"]],
+    ];
+    const NFR_TAKEAWAY = ["The one or two numbers that shape the design, and what they imply."];
+
+    // One non-functional-requirements diagram: the heading, the first `show`
+    // cards, and optionally the estimates and takeaway panels. The last thing
+    // added is the one highlighted as new.
+    function nfrDiagram({ show = 0, withEstimates = false, withTakeaway = false } = {}) {
+      const sub = show ? `<text class="subheading" x="372" y="42">how well it has to do it</text>` : "";
+      const fresh = withEstimates ? -1 : show - 1;
+      return `
+        <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
+          <text class="heading" x="30" y="42">Non-functional requirements</text>
+          ${sub}
+          ${cardGrid(30, 66, 255, 128, 13, 3, NFR_CARDS, { show, fresh })}
+          ${withEstimates ? estimatesPanel(832, 66, 338, 270, "Back of the envelope",
+            NFR_ESTIMATES, !withTakeaway) : ""}
+          ${withTakeaway ? panel(30, 369, 1140, 100, "Takeaway", NFR_TAKEAWAY, true) : ""}
+        </svg>`;
+    }
+
+    // ========================================================================
     // EDIT THIS: one entry per step of the design.
     // ========================================================================
     const SLIDES = [
       {
-        // --- Slide 1: functional requirements ---
-        diagram: `
-          <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
-            <text class="heading" x="30" y="42">Functional requirements</text>
-            <text class="subheading" x="330" y="42">what a user can do</text>
-            ${cardGrid(30, 66, 370, 128, 15, 3, [
-              ["Requirement one", ["Short description, line one", "Optional second line"]],
-              ["Requirement two", ["Short description, line one", "Optional second line"]],
-              ["Requirement three", ["Short description, line one", "Optional second line"]],
-              ["Requirement four", ["Short description, line one", "Optional second line"]],
-              ["Requirement five", ["Short description, line one", "Optional second line"]],
-              ["Requirement six", ["Short description, line one", "Optional second line"]],
-            ])}
-            ${strip(30, 512 - 143, 1140, 100, "Out of scope (mentioned, not designed)", [
-              "Feature A  ·  Feature B  ·  Feature C",
-            ])}
-          </svg>`,
+        // --- Functional requirements: title only ---
+        diagram: frDiagram(),
         script: {
           title: "Functional requirements",
           html: `
             <p>Open by <strong>agreeing on scope</strong>: what users (and any other
-            actors) can do with the system, and what we are deliberately leaving out.
-            Each card is one capability; the strip lists what's out of scope and why.</p>
-            <p><em>(Filler text for the example template. Use up to 9 cards in a 3×3
-            grid; the out-of-scope strip sits below the last row.)</em></p>`
+            actors) can do with the system, and what we are deliberately leaving out.</p>
+            <p><em>(Filler text for the example template. The next slides add one
+            requirement card each, then the out-of-scope strip.)</em></p>`
+        }
+      },
+      // --- Functional requirements: one slide per card ---
+      ...FR_CARDS.map(([title, , html], i) => ({
+        diagram: frDiagram({ show: i + 1 }),
+        script: { title, html },
+      })),
+      {
+        // --- Functional requirements: out of scope ---
+        diagram: frDiagram({ show: FR_CARDS.length, withStrip: true }),
+        script: {
+          title: "Out of scope",
+          html: `<p>Describe what is out of scope here, and why.</p>`
         }
       },
       {
-        // --- Slide 2: non-functional requirements + estimates ---
-        diagram: `
-          <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
-            <text class="heading" x="30" y="42">Non-functional requirements</text>
-            <text class="subheading" x="372" y="42">how well it has to do it</text>
-            ${cardGrid(30, 66, 255, 128, 13, 3, [
-              ["Scale", ["Users, data size,", "requests per second"]],
-              ["Latency", ["p99 targets for the", "critical paths"]],
-              ["Availability", ["Which path must", "never go down"]],
-              ["Durability", ["What data can", "never be lost"]],
-              ["Consistency", ["Strong where needed,", "eventual elsewhere"]],
-              ["Cost", ["The dominant cost", "driver"]],
-            ])}
-            ${estimatesPanel(832, 66, 338, 270, "Back of the envelope", [
-              ["Users", ["100M DAU × 10 requests ≈ 12K QPS"]],
-              ["Storage", ["1B rows × 1 KB ≈ 1 TB"]],
-              ["Bandwidth", ["12K QPS × 10 KB ≈ 120 MB/s"]],
-            ])}
-            ${strip(30, 369, 1140, 100, "Takeaway", [
-              "The one or two numbers that shape the design, and what they imply.",
-            ])}
-          </svg>`,
+        // --- Non-functional requirements: title only ---
+        diagram: nfrDiagram(),
         script: {
-          title: "Non-functional requirements and estimates",
+          title: "Non-functional requirements",
           html: `
             <p>Next, the <strong>qualities</strong> the system needs (scale, latency,
             availability, durability, consistency, cost) and a few
-            <strong>back-of-the-envelope numbers</strong>. Finish by naming which numbers
-            actually drive the design.</p>
-            <p><em>(Filler text. The diagram starts on the next slide.)</em></p>`
+            <strong>back-of-the-envelope numbers</strong>.</p>
+            <p><em>(Filler text for the example template. The next slides add one
+            requirement card each, then the estimates, then the takeaway.)</em></p>`
+        }
+      },
+      // --- Non-functional requirements: one slide per card ---
+      ...NFR_CARDS.map(([title, , html], i) => ({
+        diagram: nfrDiagram({ show: i + 1 }),
+        script: { title, html },
+      })),
+      {
+        // --- Non-functional requirements: estimates ---
+        diagram: nfrDiagram({ show: NFR_CARDS.length, withEstimates: true }),
+        script: {
+          title: "Back-of-the-envelope estimates",
+          html: `<p>Walk through the back-of-the-envelope numbers here.</p>`
         }
       },
       {
-        // --- Slide 3: the simplest possible starting point ---
+        // --- Non-functional requirements: takeaway ---
+        diagram: nfrDiagram({ show: NFR_CARDS.length, withEstimates: true, withTakeaway: true }),
+        script: {
+          title: "Takeaway",
+          html: `
+            <p>Describe the takeaway here: the numbers that shape the design.</p>
+            <p><em>(Filler text. The architecture diagram starts on the next slide.)</em></p>`
+        }
+      },
+      {
+        // --- Architecture: the simplest possible starting point ---
         diagram: scene({ add: ["client", "server", "e_client_server"] }),
         script: {
           title: "Start with the simplest thing that works",
@@ -674,7 +790,7 @@
         }
       },
       {
-        // --- Slide 4: add ONE new thing (persistence). New items glow. ---
+        // --- Add ONE new thing (persistence). New items glow. ---
         diagram: scene({ add: ["db", "e_server_db"] }),
         script: {
           title: "Add durable storage",
@@ -691,7 +807,7 @@
         }
       },
       {
-        // --- Slide 5: replace the single server (remove + add, bus fan-out) ---
+        // --- Replace the single server (remove + add, bus fan-out) ---
         diagram: scene({
           add: ["lb", "app1", "app2", "e_client_lb", "e_app1_db", "e_app2_db"],
           remove: ["server"],
@@ -706,7 +822,7 @@
         }
       },
       {
-        // --- Slide 6: a pass-through "tier" box ---
+        // --- A pass-through "tier" box ---
         diagram: scene({ add: ["cache"] }),
         script: {
           title: "Add a cache tier",
@@ -716,7 +832,7 @@
         }
       },
       {
-        // --- Slide 7: async work + a ghost (external) box. Final slide. ---
+        // --- Async work + a ghost (external) box. Final slide. ---
         diagram: scene({ add: ["queue", "worker", "email", "e_app2_queue", "e_queue_worker", "e_worker_email"] }),
         script: {
           title: "Move slow work off the request path",
