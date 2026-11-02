@@ -6,11 +6,14 @@
 
   Built from slides/example.html. Same layout, theme, navigation and engine.
 
-    - Slides 1–2: functional / non-functional requirements (card grids).
-    - Slides 3–18: one scene (SCENE) that grows from a single server to the
+    - Slides 1–11: functional requirements, built up one card per slide
+      (title, nine cards, out-of-scope strip).
+    - Slides 12–23: non-functional requirements, built up the same way
+      (title, nine cards, estimates panel, takeaway panel).
+    - Slides 24–39: one scene (SCENE) that grows from a single server to the
       full system. The central arc is the home timeline: fan-out on read
-      (slide 7) → event bus (8) → fan-out on write (9) → hybrid with a
-      celebrity pull path (10).
+      (slide 28) → event bus (29) → fan-out on write (30) → hybrid with a
+      celebrity pull path (31).
 
   Navigation (shared by every deck): on-screen back/forward arrows, plus the
   Left/Right arrow keys.
@@ -230,12 +233,13 @@
       svg.animate .new { opacity: 1; animation: none; }
     }
 
-    /* ---- Requirement slides (slides 1–2) ---- */
+    /* ---- Requirement slides (slides 1–23) ---- */
     .heading { fill: var(--accent); font-size: 24px; font-weight: 700; }
     .subheading { fill: var(--ink-dim); font-size: 14px; }
     .card rect { fill: var(--box-fill); stroke: var(--box-stroke); stroke-width: 1.5; }
     .card .badge { fill: var(--accent); }
     .card .badge-num { fill: var(--bg); font-size: 13px; font-weight: 700; text-anchor: middle; dominant-baseline: central; }
+    .card.new rect { stroke: var(--accent); stroke-width: 3; filter: drop-shadow(0 0 7px var(--accent)); }
     .card .title { fill: var(--box-ink); font-size: 17px; font-weight: 700; }
     .card .line { fill: var(--ink-dim); font-size: 13.5px; }
     .panel-box { fill: var(--box-fill); stroke: var(--accent); stroke-width: 1.5; }
@@ -243,7 +247,9 @@
     .strip { fill: transparent; stroke: var(--box-stroke); stroke-width: 1.5; stroke-dasharray: 7 6; }
     .strip-title { fill: var(--ink); font-size: 15px; font-weight: 700; }
     .strip-text { fill: var(--ink-dim); font-size: 13.5px; }
-    .est-k { fill: var(--accent); font-size: 13.5px; font-weight: 700; }
+    .est-box { fill: transparent; stroke: var(--box-stroke); stroke-width: 1.5; }
+    .est-title { fill: var(--ink-dim); font-size: 17px; font-weight: 700; }
+    .est-k { fill: var(--ink); font-size: 13.5px; font-weight: 700; }
     .est-v { fill: var(--ink); font-size: 13.5px; }
   </style>
 </head>
@@ -324,16 +330,17 @@
     }
 
     // ========================================================================
-    // Requirement-slide helpers (slides 1–2). Use viewBox 0 0 1200 640.
+    // Requirement-slide helpers (slides 1–23). Use viewBox 0 0 1200 640.
     // ========================================================================
 
     // One numbered requirement card: a title plus 1–3 short lines.
-    function card(x, y, w, h, num, title, lines) {
+    // `isNew` highlights it and fades it in (for build-up slides).
+    function card(x, y, w, h, num, title, lines, isNew = false) {
       const body = lines
         .map((l, i) => `<text class="line" x="${x + 18}" y="${y + 66 + i * 21}">${l}</text>`)
         .join("");
       return `
-        <g class="card">
+        <g class="card${isNew ? " new" : ""}">
           <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
           <circle class="badge" cx="${x + 30}" cy="${y + 30}" r="13"></circle>
           <text class="badge-num" x="${x + 30}" y="${y + 30}">${num}</text>
@@ -343,29 +350,50 @@
     }
 
     // A grid of cards, numbered 1..N. items = [[title, [line, line]], ...]
-    function cardGrid(x0, y0, w, h, gap, cols, items) {
+    // For a build-up, `show` draws only the first N cards and `fresh` is the
+    // index of the card to highlight as new (-1 for none).
+    function cardGrid(x0, y0, w, h, gap, cols, items, { show = items.length, fresh = -1 } = {}) {
       return items
+        .slice(0, show)
         .map((it, i) => {
           const c = i % cols, r = Math.floor(i / cols);
-          return card(x0 + c * (w + gap), y0 + r * (h + gap), w, h, i + 1, it[0], it[1]);
+          return card(x0 + c * (w + gap), y0 + r * (h + gap), w, h, i + 1, it[0], it[1], i === fresh);
         })
         .join("");
     }
 
-    // Dashed strip with a title and lines (out-of-scope list, key takeaway).
-    function strip(x, y, w, h, title, lines) {
+    // Dashed strip with a title and lines (out-of-scope list).
+    // `isNew` fades it in (for build-up slides); the border stays gray.
+    function strip(x, y, w, h, title, lines, isNew = false) {
       const body = lines
         .map((l, i) => `<text class="strip-text" x="${x + 24}" y="${y + 64 + i * 22}">${l}</text>`)
         .join("");
       return `
-        <rect class="strip" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
-        <text class="strip-title" x="${x + 24}" y="${y + 34}">${title}</text>
-        ${body}`;
+        <g class="${isNew ? "new" : ""}">
+          <rect class="strip" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <text class="strip-title" x="${x + 24}" y="${y + 34}">${title}</text>
+          ${body}
+        </g>`;
     }
 
-    // Accent-bordered panel of back-of-the-envelope estimates.
+    // Accent-bordered, filled panel with a title and lines (key takeaway).
+    // `isNew` fades it in (for build-up slides).
+    function panel(x, y, w, h, title, lines, isNew = false) {
+      const body = lines
+        .map((l, i) => `<text class="strip-text" x="${x + 24}" y="${y + 64 + i * 22}">${l}</text>`)
+        .join("");
+      return `
+        <g class="${isNew ? "new" : ""}">
+          <rect class="panel-box" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <text class="panel-title" x="${x + 24}" y="${y + 34}">${title}</text>
+          ${body}
+        </g>`;
+    }
+
+    // Gray-bordered, unfilled panel of back-of-the-envelope estimates.
     // rows = [[heading, [value, value]], ...]
-    function estimatesPanel(x, y, w, h, title, rows) {
+    // `isNew` fades it in (for build-up slides); the border stays gray.
+    function estimatesPanel(x, y, w, h, title, rows, isNew = false) {
       let cy = y + 66;
       const body = rows
         .map(([k, vs]) => {
@@ -376,9 +404,11 @@
         })
         .join("");
       return `
-        <rect class="panel-box" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
-        <text class="panel-title" x="${x + 20}" y="${y + 32}">${title}</text>
-        ${body}`;
+        <g class="${isNew ? "new" : ""}">
+          <rect class="est-box" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <text class="est-title" x="${x + 20}" y="${y + 32}">${title}</text>
+          ${body}
+        </g>`;
     }
 
     // ========================================================================
@@ -526,7 +556,7 @@
         // Edge / infra
         { id: "cdn",        x: 290,  y: 20,  w: 160, h: 54,  label: "CDN", kind: "infra", sub: "edge-cached media" },
         { id: "gateway",    x: 290,  y: 300, w: 160, h: 70,  label: "API Gateway", kind: "infra", sub: "auth · rate limits · routing" },
-        // Slide 3–4 only: the naive monolith and its single database
+        // Slides 24–25 only: the naive monolith and its single database
         { id: "server",     x: 530,  y: 300, w: 190, h: 70,  label: "App Server", kind: "service", sub: "one process does it all" },
         { id: "db",         x: 940,  y: 300, w: 180, h: 70,  label: "Database", kind: "data", sub: "users · tweets · follows" },
         // Services
@@ -613,53 +643,154 @@
     const scene = sceneBuilder(SCENE);
 
     // ========================================================================
-    // SLIDES
+    // EDIT THIS: functional requirements, built up one card per slide.
+    // ========================================================================
+    // Each card is [title, [line, line], script html]. The script describes
+    // just the requirement that card adds. Up to 9 cards fit in the 3×3 grid.
+    const FR_CARDS = [
+      ["Post a tweet", ["Up to 280 chars, optional images / video", "Replies, retweets and quote tweets"],
+        `<p>The write side is <strong>posting a tweet</strong>: up to 280 characters, with
+        optional images or video, plus the variations on that (replies, retweets and
+        quote tweets).</p>`],
+      ["Home timeline", ["Following: accounts you follow, newest first", "For You: an algorithmically ranked feed"],
+        `<p>The read side is where the interesting problems are. The
+        <strong>home timeline</strong> comes in two flavors. "Following" is the tweets of
+        everyone you follow, newest first. "For You" is a ranked feed that can also
+        include accounts you don't follow.</p>`],
+      ["User timeline", ["A profile page of one user's tweets", "Including their replies and retweets"],
+        `<p>There's also the <strong>user timeline</strong>, which is just one person's
+        profile page.</p>`],
+      ["Follow / unfollow", ["Asymmetric: no approval needed", "A few followers … 100M+ followers"],
+        `<p>Then the <strong>social graph</strong>: following and unfollowing. Unlike
+        Facebook friendship, it's <em>asymmetric</em>: I can follow you without your
+        approval. That's why follower counts range from a handful to over a hundred million,
+        and that skew is going to drive the hardest part of the design.</p>`],
+      ["Engagement", ["Like, retweet, reply", "Counts shown on every tweet"],
+        `<p>Around that is <strong>engagement</strong>: likes, retweets and replies, with
+        visible counts.</p>`],
+      ["Search", ["Full-text over tweets and hashtags", "New tweets searchable in seconds"],
+        `<p>Then <strong>search</strong> over tweets and hashtags that's close to
+        real time.</p>`],
+      ["Trending topics", ["What's spiking right now", "Computed per region"],
+        `<p><strong>Trending topics</strong>, per region.</p>`],
+      ["Notifications", ["Mentions, likes, follows, replies", "In-app inbox + mobile push"],
+        `<p><strong>Notifications</strong>, both in-app and as mobile push.</p>`],
+      ["Media", ["Upload images and video", "Served fast, worldwide"],
+        `<p>And <strong>media</strong> upload and delivery.</p>`],
+    ];
+    const FR_OUT_OF_SCOPE = [
+      "Direct messages  ·  Spaces  ·  Ads  ·  Trust &amp; safety / moderation  ·  Signup &amp; auth  ·  Payments / Premium",
+      "The internals of the ranking model — we design the data flowing in and out of it, not the model itself",
+    ];
+
+    // One functional-requirements diagram: the heading, the first `show` cards
+    // (the last of them highlighted), and optionally the out-of-scope strip.
+    function frDiagram({ show = 0, withStrip = false } = {}) {
+      const sub = show ? `<text class="subheading" x="330" y="42">what a user can do</text>` : "";
+      const fresh = withStrip ? -1 : show - 1;
+      return `
+        <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
+          <text class="heading" x="30" y="42">Functional requirements</text>
+          ${sub}
+          ${cardGrid(30, 66, 370, 128, 15, 3, FR_CARDS, { show, fresh })}
+          ${withStrip ? strip(30, 512, 1140, 100, "Out of scope (mentioned, not designed)",
+            FR_OUT_OF_SCOPE, true) : ""}
+        </svg>`;
+    }
+
+    // ========================================================================
+    // EDIT THIS: non-functional requirements, built up one card per slide,
+    // then the estimates panel, then the takeaway panel.
+    // ========================================================================
+    // Each card is [title, [line, line], script html], as for FR_CARDS.
+    const NFR_CARDS = [
+      ["Scale", ["500M MAU · 250M DAU", "500M new tweets / day"],
+        `<p>On <strong>scale</strong>, I'll assume about 500 million monthly users and 250
+        million daily, posting around 500 million tweets a day.</p>`],
+      ["Skewed graph", ["Median: ~100s of followers", "Top accounts: 100M+"],
+        `<p>The graph is <strong>heavily skewed</strong>: most accounts have a few hundred
+        followers, but the biggest have over a hundred million.</p>`],
+      ["Read-heavy", ["~100 reads per write", "Optimize the read path"],
+        `<p>The workload is very <strong>read-heavy</strong>, roughly a hundred timeline
+        reads per tweet written, so I'll optimize the read path even at the cost of extra
+        work on writes.</p>`],
+      ["Low latency", ["Timeline load < 200 ms p99", "Tweet visible to followers < 5 s"],
+        `<p>On <strong>latency</strong>, the timeline should load in under 200
+        milliseconds at p99, and a new tweet should show up in followers' timelines within a
+        few seconds.</p>`],
+      ["99.99% reads", ["Timeline must always load", "Ranking, search degrade"],
+        `<p>Reads need <strong>four nines</strong>: the timeline must always load,
+        even if ranking, search or trends are having a bad day.</p>`],
+      ["Durability", ["Never lose a tweet", "or a follow edge"],
+        `<p><strong>Durability</strong> matters for tweets and follow edges.</p>`],
+      ["Consistency", ["Read-your-own-tweets", "Eventual for everything else"],
+        `<p>On <strong>consistency</strong>, the only hard rule is that you see your own tweet
+        right away. Like counts, follower counts, and when exactly your tweet reaches a
+        follower can all be eventually consistent.</p>`],
+      ["Global", ["Users on every continent", "Serve from nearby regions"],
+        `<p>Traffic is <strong>global</strong>, with users on every continent, so we'll want
+        to serve them from nearby regions.</p>`],
+      ["Bursty", ["Breaking news, sports finals", "10× spikes in minutes"],
+        `<p>It's also <strong>bursty</strong>: a World Cup goal or breaking news can spike
+        write volume tenfold in minutes.</p>`],
+    ];
+    const NFR_ESTIMATES = [
+      ["Tweet writes", ["500M / day ≈ 6K/s avg · ~20K/s peak"]],
+      ["Timeline reads", ["250M × 20 loads ≈ 60K QPS · 200K peak"]],
+      ["Fan-out", ["500M tweets × ~200 followers", "≈ 100B timeline inserts/day ≈ 1M/s"]],
+      ["Tweet storage", ["~300 B × 500M ≈ 150 GB/day ≈ 55 TB/yr"]],
+      ["Media", ["10% with media × ~1 MB ≈ 50 TB/day"]],
+    ];
+    const NFR_TAKEAWAY = [
+      "Pull at read time → cheap writes, slow scatter-gather reads   ·   Push at write time → instant reads, celebrities explode",
+      "So: a hybrid — push for most accounts, pull for the few with huge follower counts. Media → blob store + CDN.",
+    ];
+
+    // One non-functional-requirements diagram: the heading, the first `show`
+    // cards, and optionally the estimates and takeaway panels. The last thing
+    // added is the one highlighted as new.
+    function nfrDiagram({ show = 0, withEstimates = false, withTakeaway = false } = {}) {
+      const sub = show ? `<text class="subheading" x="372" y="42">how well it has to do it</text>` : "";
+      const fresh = withEstimates ? -1 : show - 1;
+      return `
+        <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
+          <text class="heading" x="30" y="42">Non-functional requirements</text>
+          ${sub}
+          ${cardGrid(30, 66, 255, 128, 13, 3, NFR_CARDS, { show, fresh })}
+          ${withEstimates ? estimatesPanel(832, 66, 338, 360, "Back of the envelope",
+            NFR_ESTIMATES, !withTakeaway) : ""}
+          ${withTakeaway ? panel(30, 496, 1140, 100,
+            "Takeaway: the problem is fan-out, not storage", NFR_TAKEAWAY, true) : ""}
+        </svg>`;
+    }
+
+    // ========================================================================
+    // EDIT THIS: one entry per step of the design.
     // ========================================================================
     const SLIDES = [
       {
-        // --- Slide 1: functional requirements ---
-        diagram: `
-          <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
-            <text class="heading" x="30" y="42">Functional requirements</text>
-            <text class="subheading" x="330" y="42">what a user can do</text>
-            ${cardGrid(30, 66, 370, 128, 15, 3, [
-              ["Post a tweet", ["Up to 280 chars, optional images / video", "Replies, retweets and quote tweets"]],
-              ["Home timeline", ["Following: accounts you follow, newest first", "For You: an algorithmically ranked feed"]],
-              ["User timeline", ["A profile page of one user's tweets", "Including their replies and retweets"]],
-              ["Follow / unfollow", ["Asymmetric: no approval needed", "A few followers … 100M+ followers"]],
-              ["Engagement", ["Like, retweet, reply", "Counts shown on every tweet"]],
-              ["Search", ["Full-text over tweets and hashtags", "New tweets searchable in seconds"]],
-              ["Trending topics", ["What's spiking right now", "Computed per region"]],
-              ["Notifications", ["Mentions, likes, follows, replies", "In-app inbox + mobile push"]],
-              ["Media", ["Upload images and video", "Served fast, worldwide"]],
-            ])}
-            ${strip(30, 512, 1140, 100, "Out of scope (mentioned, not designed)", [
-              "Direct messages  ·  Spaces  ·  Ads  ·  Trust &amp; safety / moderation  ·  Signup &amp; auth  ·  Payments / Premium",
-              "The internals of the ranking model — we design the data flowing in and out of it, not the model itself",
-            ])}
-          </svg>`,
+        // --- Functional requirements: title only ---
+        diagram: frDiagram(),
         script: {
-          title: "Functional requirements: what we're building",
+          title: "Functional requirements",
           html: `
             <p>Before drawing anything I want to pin down <strong>what we're building</strong>,
             because Twitter, now X, has grown into a lot of products. I'll scope this to the
-            core microblogging experience.</p>
-            <p>The write side is <strong>posting a tweet</strong>: up to 280 characters, with
-            optional images or video, plus the variations on that (replies, retweets and
-            quote tweets). The read side is where the interesting problems are. The
-            <strong>home timeline</strong> comes in two flavors. "Following" is the tweets of
-            everyone you follow, newest first. "For You" is a ranked feed that can also
-            include accounts you don't follow. There's also the <strong>user timeline</strong>,
-            which is just one person's profile page.</p>
-            <p>Then the <strong>social graph</strong>: following and unfollowing. Unlike
-            Facebook friendship, it's <em>asymmetric</em>: I can follow you without your
-            approval. That's why follower counts range from a handful to over a hundred million,
-            and that skew is going to drive the hardest part of the design.</p>
-            <p>Around that are <strong>engagement</strong> (likes, retweets and replies, with
-            visible counts), <strong>search</strong> over tweets and hashtags that's close to
-            real time, <strong>trending topics</strong> per region,
-            <strong>notifications</strong> both in-app and as mobile push, and
-            <strong>media</strong> upload and delivery.</p>
+            core microblogging experience.</p>`
+        }
+      },
+      // --- Functional requirements: one slide per card ---
+      ...FR_CARDS.map(([title, , html], i) => ({
+        diagram: frDiagram({ show: i + 1 }),
+        // The header is set as plain text, so unescape the SVG-safe "&amp;".
+        script: { title: title.replace(/&amp;/g, "&"), html },
+      })),
+      {
+        // --- Functional requirements: out of scope ---
+        diagram: frDiagram({ show: FR_CARDS.length, withStrip: true }),
+        script: {
+          title: "Out of scope",
+          html: `
             <p>I'm leaving out DMs, Spaces, ads, moderation, signup and auth, and
             payments. They're real systems, but each is its own interview. I'll treat the
             <strong>ranking model</strong> as a box: I'll design how data flows into it and how
@@ -667,52 +798,24 @@
         }
       },
       {
-        // --- Slide 2: non-functional requirements + estimates ---
-        diagram: `
-          <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
-            <text class="heading" x="30" y="42">Non-functional requirements</text>
-            <text class="subheading" x="372" y="42">how well it has to do it</text>
-            ${cardGrid(30, 66, 255, 128, 13, 3, [
-              ["Scale", ["500M MAU · 250M DAU", "500M new tweets / day"]],
-              ["Skewed graph", ["Median: ~100s of followers", "Top accounts: 100M+"]],
-              ["Read-heavy", ["~100 reads per write", "Optimize the read path"]],
-              ["Low latency", ["Timeline load < 200 ms p99", "Tweet visible to followers < 5 s"]],
-              ["99.99% reads", ["Timeline must always load", "Ranking, search degrade"]],
-              ["Durability", ["Never lose a tweet", "or a follow edge"]],
-              ["Consistency", ["Read-your-own-tweets", "Eventual for everything else"]],
-              ["Global", ["Users on every continent", "Serve from nearby regions"]],
-              ["Bursty", ["Breaking news, sports finals", "10× spikes in minutes"]],
-            ])}
-            ${estimatesPanel(832, 66, 338, 360, "Back of the envelope", [
-              ["Tweet writes", ["500M / day ≈ 6K/s avg · ~20K/s peak"]],
-              ["Timeline reads", ["250M × 20 loads ≈ 60K QPS · 200K peak"]],
-              ["Fan-out", ["500M tweets × ~200 followers", "≈ 100B timeline inserts/day ≈ 1M/s"]],
-              ["Tweet storage", ["~300 B × 500M ≈ 150 GB/day ≈ 55 TB/yr"]],
-              ["Media", ["10% with media × ~1 MB ≈ 50 TB/day"]],
-            ])}
-            ${strip(30, 496, 1140, 100, "Takeaway: the problem is fan-out, not storage", [
-              "Pull at read time → cheap writes, slow scatter-gather reads   ·   Push at write time → instant reads, celebrities explode",
-              "So: a hybrid — push for most accounts, pull for the few with huge follower counts. Media → blob store + CDN.",
-            ])}
-          </svg>`,
+        // --- Non-functional requirements: title only ---
+        diagram: nfrDiagram(),
         script: {
-          title: "Non-functional requirements and back-of-the-envelope math",
+          title: "Non-functional requirements",
+          html: `<p>Now the qualities the system needs.</p>`
+        }
+      },
+      // --- Non-functional requirements: one slide per card ---
+      ...NFR_CARDS.map(([title, , html], i) => ({
+        diagram: nfrDiagram({ show: i + 1 }),
+        script: { title: title.replace(/&amp;/g, "&"), html },
+      })),
+      {
+        // --- Non-functional requirements: estimates ---
+        diagram: nfrDiagram({ show: NFR_CARDS.length, withEstimates: true }),
+        script: {
+          title: "Back-of-the-envelope estimates",
           html: `
-            <p>Now the qualities the system needs. On <strong>scale</strong>, I'll assume about
-            500 million monthly users and 250 million daily, posting around 500 million tweets a
-            day. The graph is <strong>heavily skewed</strong>: most accounts have a few hundred
-            followers, but the biggest have over a hundred million.</p>
-            <p>The workload is very <strong>read-heavy</strong>, roughly a hundred timeline
-            reads per tweet written, so I'll optimize the read path even at the cost of extra
-            work on writes. On <strong>latency</strong>, the timeline should load in under 200
-            milliseconds at p99, and a new tweet should show up in followers' timelines within a
-            few seconds. Reads need <strong>four nines</strong>: the timeline must always load,
-            even if ranking, search or trends are having a bad day.</p>
-            <p><strong>Durability</strong> matters for tweets and follow edges. On
-            <strong>consistency</strong>, the only hard rule is that you see your own tweet right
-            away. Like counts, follower counts, and when exactly your tweet reaches a follower
-            can all be eventually consistent. Traffic is global and <strong>bursty</strong>: a
-            World Cup goal or breaking news can spike write volume tenfold in minutes.</p>
             <p>Some quick numbers. 500 million tweets a day is about <strong>6K writes per
             second</strong>, maybe 20K at peak. That's small. Timeline reads are about
             <strong>60K QPS</strong> on average and a couple hundred thousand at peak. The scary
@@ -720,7 +823,15 @@
             timeline, 500 million tweets times an average of ~200 followers is a hundred billion
             inserts a day, or about <strong>a million per second</strong>. Tweet text is only
             about 150 GB a day, while media is closer to 50 TB a day, which means a blob store
-            and a CDN.</p>
+            and a CDN.</p>`
+        }
+      },
+      {
+        // --- Non-functional requirements: takeaway ---
+        diagram: nfrDiagram({ show: NFR_CARDS.length, withEstimates: true, withTakeaway: true }),
+        script: {
+          title: "Takeaway: fan-out, not storage",
+          html: `
             <p>The takeaway: <strong>storage isn't the problem; fan-out is</strong>. Pulling at
             read time keeps writes cheap but makes reads slow. Pushing at write time makes reads
             instant, but a single celebrity tweet turns into a hundred million writes. We'll end
@@ -728,7 +839,7 @@
         }
       },
       {
-        // --- Slide 3: simplest possible starting point ---
+        // --- Slide 24: simplest possible starting point ---
         diagram: scene({ add: ["client", "server", "e_client_server"] }),
         script: {
           title: "Start simple: one client, one server",
@@ -751,7 +862,7 @@
         }
       },
       {
-        // --- Slide 4: a single database ---
+        // --- Slide 25: a single database ---
         diagram: scene({ add: ["db", "e_server_db"] }),
         script: {
           title: "Add a database, and see why the naive timeline breaks",
@@ -778,7 +889,7 @@
         }
       },
       {
-        // --- Slide 5: gateway + tweet service ---
+        // --- Slide 26: gateway + tweet service ---
         diagram: scene({
           add: ["gateway", "tweet", "tweetdb", "e_client_gateway", "e_tweet_tweetdb"],
           remove: ["server", "db"],
@@ -808,7 +919,7 @@
         }
       },
       {
-        // --- Slide 6: social graph ---
+        // --- Slide 27: social graph ---
         diagram: scene({ add: ["graph", "graphdb", "e_graph_graphdb"] }),
         script: {
           title: "The social graph",
@@ -831,7 +942,7 @@
         }
       },
       {
-        // --- Slide 7: naive pull timeline ---
+        // --- Slide 28: naive pull timeline ---
         diagram: scene({ add: ["timeline", "e_tl_pull"] }),
         script: {
           title: "Timeline Service, version 1: fan-out on read",
@@ -859,7 +970,7 @@
         }
       },
       {
-        // --- Slide 8: event bus ---
+        // --- Slide 29: event bus ---
         diagram: scene({ add: ["kafka", "e_tweet_kafka"] }),
         script: {
           title: "An event bus for everything that happens after a write",
@@ -887,7 +998,7 @@
         }
       },
       {
-        // --- Slide 9: fan-out on write ---
+        // --- Slide 30: fan-out on write ---
         diagram: scene({
           add: ["fanout", "tlcache", "e_kafka_fanout", "e_graphdb_fanout", "e_fanout_tlcache", "e_tl_tlcache", "e_tl_hydrate"],
           remove: ["e_tl_pull"],
@@ -915,14 +1026,14 @@
             Someone who hasn't logged in for a month has no cached timeline; we rebuild it with
             the pull path when they return. Second, the cache isn't the source of truth: if we
             lose a Redis node, those timelines get rebuilt from the tweet store and graph.</p>
-            <p>The latency target from slide 2, a tweet reaching followers within about five
+            <p>The latency target from the non-functional requirements, a tweet reaching followers within about five
             seconds, is now a <strong>fan-out lag</strong> we can monitor. And for your own
             tweets, the client inserts them locally, which gives read-your-own-writes
             immediately.</p>`
         }
       },
       {
-        // --- Slide 10: celebrities + hybrid ---
+        // --- Slide 31: celebrities + hybrid ---
         diagram: scene({ add: ["cache", "e_tl_celeb"] }),
         script: {
           title: "The celebrity problem and the hybrid timeline",
@@ -953,7 +1064,7 @@
         }
       },
       {
-        // --- Slide 11: media ---
+        // --- Slide 32: media ---
         diagram: scene({ add: ["media", "blob", "cdn", "e_media_blob", "e_cdn_client", "e_cdn_blob"] }),
         script: {
           title: "Media: blob storage and a CDN",
@@ -977,7 +1088,7 @@
         }
       },
       {
-        // --- Slide 12: engagement + counters ---
+        // --- Slide 33: engagement + counters ---
         diagram: scene({ add: ["engage", "counters", "e_engage_counters", "e_engage_kafka"] }),
         script: {
           title: "Engagement: likes, retweets, replies and counters",
@@ -1004,7 +1115,7 @@
         }
       },
       {
-        // --- Slide 13: search ---
+        // --- Slide 34: search ---
         diagram: scene({ add: ["search", "searchidx", "indexer", "e_search_idx", "e_kafka_indexer", "e_indexer_idx"] }),
         script: {
           title: "Real-time search",
@@ -1031,7 +1142,7 @@
         }
       },
       {
-        // --- Slide 14: trends ---
+        // --- Slide 35: trends ---
         diagram: scene({ add: ["trends", "trendstore", "trendproc", "e_trends_store", "e_kafka_trend", "e_trend_store"] }),
         script: {
           title: "Trending topics",
@@ -1056,7 +1167,7 @@
         }
       },
       {
-        // --- Slide 15: notifications ---
+        // --- Slide 36: notifications ---
         diagram: scene({ add: ["notif", "notifdb", "notifw", "push", "e_notif_notifdb", "e_kafka_notifw", "e_notifw_notifdb", "e_notifw_push"] }),
         script: {
           title: "Notifications",
@@ -1082,7 +1193,7 @@
         }
       },
       {
-        // --- Slide 16: For You ranking ---
+        // --- Slide 37: For You ranking ---
         diagram: scene({ add: ["ranker", "mlpipe", "e_tl_ranker", "e_kafka_ml", "e_ml_ranker"] }),
         script: {
           title: "The For You timeline: candidates and ranking",
@@ -1113,7 +1224,7 @@
         }
       },
       {
-        // --- Slide 17: multi-region ---
+        // --- Slide 38: multi-region ---
         diagram: scene({ add: ["regions", "e_regions"] }),
         script: {
           title: "Going global: regions, replication and failure",
@@ -1131,7 +1242,7 @@
             counters) doesn't need cross-region replication. Each region rebuilds its own copy
             from the replicated event stream. That's one more payoff of putting the event log
             at the center: derived state is <strong>rebuildable</strong>.</p>
-            <p>Failure handling follows the priorities from slide 2. If a region goes down,
+            <p>Failure handling follows the priorities from the non-functional requirements. If a region goes down,
             users are rerouted and their timelines rebuild on demand from the pull path. If
             ranking fails, we show chronological. If search, trends or notifications lag, they
             catch up from Kafka. Posting and reading the Following timeline are protected
@@ -1139,7 +1250,7 @@
         }
       },
       {
-        // --- Slide 18: the complete system ---
+        // --- Slide 39: the complete system ---
         diagram: scene(),
         script: {
           title: "The complete system: one tweet, end to end",

@@ -6,11 +6,14 @@
 
   Built from slides/example.html. Same layout, theme, navigation and engine.
 
-    - Slides 1–2: functional / non-functional requirements (card grids).
-    - Slides 3–16: one scene (SCENE) that grows from a single chat server to
+    - Slides 1–11: functional requirements, built up one card per slide
+      (title, nine cards, out-of-scope strip).
+    - Slides 12–23: non-functional requirements, built up the same way
+      (title, nine cards, estimates panel, takeaway panel).
+    - Slides 24–37: one scene (SCENE) that grows from a single chat server to
       the full system. The central arc is real-time delivery: WebSocket push
-      (slide 5) → stateless webapp vs. stateful gateways (6) → channel
-      servers for per-channel ordering and fan-out (7).
+      (slide 26) → stateless webapp vs. stateful gateways (27) → channel
+      servers for per-channel ordering and fan-out (28).
 
   Navigation (shared by every deck): on-screen back/forward arrows, plus the
   Left/Right arrow keys.
@@ -230,12 +233,13 @@
       svg.animate .new { opacity: 1; animation: none; }
     }
 
-    /* ---- Requirement slides (slides 1–2) ---- */
+    /* ---- Requirement slides (slides 1–23) ---- */
     .heading { fill: var(--accent); font-size: 24px; font-weight: 700; }
     .subheading { fill: var(--ink-dim); font-size: 14px; }
     .card rect { fill: var(--box-fill); stroke: var(--box-stroke); stroke-width: 1.5; }
     .card .badge { fill: var(--accent); }
     .card .badge-num { fill: var(--bg); font-size: 13px; font-weight: 700; text-anchor: middle; dominant-baseline: central; }
+    .card.new rect { stroke: var(--accent); stroke-width: 3; filter: drop-shadow(0 0 7px var(--accent)); }
     .card .title { fill: var(--box-ink); font-size: 17px; font-weight: 700; }
     .card .line { fill: var(--ink-dim); font-size: 13.5px; }
     .panel-box { fill: var(--box-fill); stroke: var(--accent); stroke-width: 1.5; }
@@ -243,7 +247,9 @@
     .strip { fill: transparent; stroke: var(--box-stroke); stroke-width: 1.5; stroke-dasharray: 7 6; }
     .strip-title { fill: var(--ink); font-size: 15px; font-weight: 700; }
     .strip-text { fill: var(--ink-dim); font-size: 13.5px; }
-    .est-k { fill: var(--accent); font-size: 13.5px; font-weight: 700; }
+    .est-box { fill: transparent; stroke: var(--box-stroke); stroke-width: 1.5; }
+    .est-title { fill: var(--ink-dim); font-size: 17px; font-weight: 700; }
+    .est-k { fill: var(--ink); font-size: 13.5px; font-weight: 700; }
     .est-v { fill: var(--ink); font-size: 13.5px; }
   </style>
 </head>
@@ -324,16 +330,17 @@
     }
 
     // ========================================================================
-    // Requirement-slide helpers (slides 1–2). Use viewBox 0 0 1200 640.
+    // Requirement-slide helpers (slides 1–23). Use viewBox 0 0 1200 640.
     // ========================================================================
 
     // One numbered requirement card: a title plus 1–3 short lines.
-    function card(x, y, w, h, num, title, lines) {
+    // `isNew` highlights it and fades it in (for build-up slides).
+    function card(x, y, w, h, num, title, lines, isNew = false) {
       const body = lines
         .map((l, i) => `<text class="line" x="${x + 18}" y="${y + 66 + i * 21}">${l}</text>`)
         .join("");
       return `
-        <g class="card">
+        <g class="card${isNew ? " new" : ""}">
           <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
           <circle class="badge" cx="${x + 30}" cy="${y + 30}" r="13"></circle>
           <text class="badge-num" x="${x + 30}" y="${y + 30}">${num}</text>
@@ -343,29 +350,50 @@
     }
 
     // A grid of cards, numbered 1..N. items = [[title, [line, line]], ...]
-    function cardGrid(x0, y0, w, h, gap, cols, items) {
+    // For a build-up, `show` draws only the first N cards and `fresh` is the
+    // index of the card to highlight as new (-1 for none).
+    function cardGrid(x0, y0, w, h, gap, cols, items, { show = items.length, fresh = -1 } = {}) {
       return items
+        .slice(0, show)
         .map((it, i) => {
           const c = i % cols, r = Math.floor(i / cols);
-          return card(x0 + c * (w + gap), y0 + r * (h + gap), w, h, i + 1, it[0], it[1]);
+          return card(x0 + c * (w + gap), y0 + r * (h + gap), w, h, i + 1, it[0], it[1], i === fresh);
         })
         .join("");
     }
 
-    // Dashed strip with a title and lines (out-of-scope list, key takeaway).
-    function strip(x, y, w, h, title, lines) {
+    // Dashed strip with a title and lines (out-of-scope list).
+    // `isNew` fades it in (for build-up slides); the border stays gray.
+    function strip(x, y, w, h, title, lines, isNew = false) {
       const body = lines
         .map((l, i) => `<text class="strip-text" x="${x + 24}" y="${y + 64 + i * 22}">${l}</text>`)
         .join("");
       return `
-        <rect class="strip" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
-        <text class="strip-title" x="${x + 24}" y="${y + 34}">${title}</text>
-        ${body}`;
+        <g class="${isNew ? "new" : ""}">
+          <rect class="strip" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <text class="strip-title" x="${x + 24}" y="${y + 34}">${title}</text>
+          ${body}
+        </g>`;
     }
 
-    // Accent-bordered panel of back-of-the-envelope estimates.
+    // Accent-bordered, filled panel with a title and lines (key takeaway).
+    // `isNew` fades it in (for build-up slides).
+    function panel(x, y, w, h, title, lines, isNew = false) {
+      const body = lines
+        .map((l, i) => `<text class="strip-text" x="${x + 24}" y="${y + 64 + i * 22}">${l}</text>`)
+        .join("");
+      return `
+        <g class="${isNew ? "new" : ""}">
+          <rect class="panel-box" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <text class="panel-title" x="${x + 24}" y="${y + 34}">${title}</text>
+          ${body}
+        </g>`;
+    }
+
+    // Gray-bordered, unfilled panel of back-of-the-envelope estimates.
     // rows = [[heading, [value, value]], ...]
-    function estimatesPanel(x, y, w, h, title, rows) {
+    // `isNew` fades it in (for build-up slides); the border stays gray.
+    function estimatesPanel(x, y, w, h, title, rows, isNew = false) {
       let cy = y + 66;
       const body = rows
         .map(([k, vs]) => {
@@ -376,9 +404,11 @@
         })
         .join("");
       return `
-        <rect class="panel-box" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
-        <text class="panel-title" x="${x + 20}" y="${y + 32}">${title}</text>
-        ${body}`;
+        <g class="${isNew ? "new" : ""}">
+          <rect class="est-box" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <text class="est-title" x="${x + 20}" y="${y + 32}">${title}</text>
+          ${body}
+        </g>`;
     }
 
     // ========================================================================
@@ -597,54 +627,153 @@
     const scene = sceneBuilder(SCENE);
 
     // ========================================================================
+    // EDIT THIS: functional requirements, built up one card per slide.
+    // ========================================================================
+    // Each card is [title, [line, line], script html]. The script describes
+    // just the requirement that card adds. Up to 9 cards fit in the 3×3 grid.
+    const FR_CARDS = [
+      ["Workspaces &amp; channels", ["Public and private channels", "Join, leave, invite members"],
+        `<p>The basic unit is a <strong>workspace</strong> (one company or team) containing
+        <strong>channels</strong>, both public ones anyone in the workspace can join and
+        private, invite-only ones.</p>`],
+      ["Send messages", ["Real-time delivery to online members", "Same order on every screen"],
+        `<p>Inside a channel you <strong>send messages</strong>, and the defining property is
+        that they appear <strong>in real time</strong> for everyone currently online, in the
+        same order for everyone.</p>`],
+      ["DMs &amp; group DMs", ["1:1 and small-group conversations", "Modeled as tiny private channels"],
+        `<p><strong>DMs and group DMs</strong> are the same experience with a fixed set of
+        people.</p>`],
+      ["Threads &amp; reactions", ["Threaded replies, emoji reactions", "Edit and delete your messages"],
+        `<p>On top of that come the conversation features: <strong>threads</strong>, emoji
+        <strong>reactions</strong>, and editing or deleting your own messages.</p>`],
+      ["History &amp; sync", ["Scroll back through all history", "Desktop, web, mobile stay in sync"],
+        `<p>Unlike a lot of chat apps, Slack is a <strong>system of record</strong>. You can
+        scroll back through years of <strong>history</strong>, and every device you own
+        (desktop, browser, phone) stays in sync.</p>`],
+      ["Unreads &amp; mentions", ["Read position per channel", "Badge counts and @mentions"],
+        `<p>That includes <strong>unread state</strong>: the bold channel names, badge counts
+        and @mentions all have to agree across devices.</p>`],
+      ["Presence &amp; typing", ["Online / away indicators", "“Alice is typing…”"],
+        `<p>Around that core are <strong>presence</strong> (the green dot) and typing
+        indicators.</p>`],
+      ["Notifications", ["Mobile push or email when away", "Respects per-user preferences"],
+        `<p>Then <strong>notifications</strong> by mobile push or email when you're away.</p>`],
+      ["Search &amp; files", ["Full-text, permission-aware search", "Upload and preview files"],
+        `<p>And finally <strong>search</strong> across everything you're allowed to see, and
+        <strong>file</strong> sharing.</p>`],
+    ];
+    const FR_OUT_OF_SCOPE = [
+      "Huddles &amp; calls  ·  Slack Connect (cross-company channels)  ·  Apps, bots &amp; workflows  ·  Compliance / eDiscovery  ·  SSO &amp; auth  ·  Billing",
+      "Rich-text rendering and client UI: we design what the backend stores and delivers, not how the client draws it",
+    ];
+
+    // One functional-requirements diagram: the heading, the first `show` cards
+    // (the last of them highlighted), and optionally the out-of-scope strip.
+    function frDiagram({ show = 0, withStrip = false } = {}) {
+      const sub = show ? `<text class="subheading" x="330" y="42">what a user can do</text>` : "";
+      const fresh = withStrip ? -1 : show - 1;
+      return `
+        <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
+          <text class="heading" x="30" y="42">Functional requirements</text>
+          ${sub}
+          ${cardGrid(30, 66, 370, 128, 15, 3, FR_CARDS, { show, fresh })}
+          ${withStrip ? strip(30, 512, 1140, 100, "Out of scope (mentioned, not designed)",
+            FR_OUT_OF_SCOPE, true) : ""}
+        </svg>`;
+    }
+
+    // ========================================================================
+    // EDIT THIS: non-functional requirements, built up one card per slide,
+    // then the estimates panel, then the takeaway panel.
+    // ========================================================================
+    // Each card is [title, [line, line], script html], as for FR_CARDS.
+    const NFR_CARDS = [
+      ["Scale", ["50M DAU · ~1M workspaces", "Biggest orgs: 500K members"],
+        `<p>On <strong>scale</strong>, I'll assume around 50 million daily users across about
+        a million workspaces. Most workspaces are small, but the biggest enterprises have half
+        a million members, and that skew matters as much as the totals do.</p>`],
+      ["Real-time", ["Delivery to online members", "&lt; 500 ms p99"],
+        `<p>The product has to feel instant, so a message should reach online members in
+        under <strong>500 milliseconds</strong> at p99.</p>`],
+      ["Ordering", ["One total order per channel", "No gaps, no duplicates"],
+        `<p>Everyone must see a channel's messages in the <strong>same order</strong>, with no
+        gaps or duplicates, even across reconnects.</p>`],
+      ["Durability", ["An acked message is never lost", "History kept indefinitely"],
+        `<p>Once the sender sees "sent," the message is <strong>durable</strong>, and history
+        is kept indefinitely on paid plans.</p>`],
+      ["99.99% available", ["Disconnect → reconnect", "and catch up, never lose data"],
+        `<p>Companies run their day on Slack, so I'm targeting <strong>99.99%</strong>
+        availability. The more precise requirement is that losing a connection means a quick
+        reconnect and catch-up, never lost data.</p>`],
+      ["Multi-tenant", ["Isolation between workspaces", "No noisy neighbors"],
+        `<p>It's <strong>multi-tenant</strong>, so one giant customer mustn't slow everyone
+        else down.</p>`],
+      ["Data residency", ["A workspace's data can be", "pinned to a chosen region"],
+        `<p>Some customers also require their data to stay in a particular region.</p>`],
+      ["Bursty", ["Weekday working-hour peaks", "Reconnect storms after outages"],
+        `<p>Traffic is <strong>bursty</strong>: it follows the working day in each time zone,
+        and the worst moment is right after an outage, when everybody reconnects at once.</p>`],
+      ["Huge channels", ["#general with 100K+ members", "Fan-out must stay bounded"],
+        `<p>Channel size is just as skewed: most channels have a handful of members, but
+        #general at a big enterprise can have <strong>over 100,000</strong>, and the work to
+        fan out a single message there has to stay bounded.</p>`],
+    ];
+    const NFR_ESTIMATES = [
+      ["Messages", ["50M × ~50/day ≈ 2.5B/day", "≈ 30K/s avg · ~100K/s peak"]],
+      ["Live connections", ["~30M concurrent WebSockets", "(several devices per user)"]],
+      ["Fan-out", ["~20 online members per message", "≈ 1M socket deliveries/s"]],
+      ["Storage", ["~1 KB with indexes × 2.5B/day", "≈ 2.5 TB/day ≈ 1 PB/yr"]],
+    ];
+    const NFR_TAKEAWAY = [
+      "Tens of millions of long-lived sockets + strict per-channel order → separate the stateful connection tier from the stateless API",
+      "Gateways hold sockets  ·  one owner per channel for order &amp; fan-out  ·  DB sharded by tenant / channel  ·  offline users → push",
+    ];
+
+    // One non-functional-requirements diagram: the heading, the first `show`
+    // cards, and optionally the estimates and takeaway panels. The last thing
+    // added is the one highlighted as new.
+    function nfrDiagram({ show = 0, withEstimates = false, withTakeaway = false } = {}) {
+      const sub = show ? `<text class="subheading" x="372" y="42">how well it has to do it</text>` : "";
+      const fresh = withEstimates ? -1 : show - 1;
+      return `
+        <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
+          <text class="heading" x="30" y="42">Non-functional requirements</text>
+          ${sub}
+          ${cardGrid(30, 66, 255, 128, 13, 3, NFR_CARDS, { show, fresh })}
+          ${withEstimates ? estimatesPanel(832, 66, 338, 410, "Back of the envelope",
+            NFR_ESTIMATES, !withTakeaway) : ""}
+          ${withTakeaway ? panel(30, 496, 1140, 100,
+            "Takeaway: the problem is connections and fan-out, not storage", NFR_TAKEAWAY, true) : ""}
+        </svg>`;
+    }
+
+    // ========================================================================
     // EDIT THIS: one entry per step of the design.
     // ========================================================================
     const SLIDES = [
       {
-        // --- Slide 1: functional requirements ---
-        diagram: `
-          <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
-            <text class="heading" x="30" y="42">Functional requirements</text>
-            <text class="subheading" x="330" y="42">what a user can do</text>
-            ${cardGrid(30, 66, 370, 128, 15, 3, [
-              ["Workspaces &amp; channels", ["Public and private channels", "Join, leave, invite members"]],
-              ["Send messages", ["Real-time delivery to online members", "Same order on every screen"]],
-              ["DMs &amp; group DMs", ["1:1 and small-group conversations", "Modeled as tiny private channels"]],
-              ["Threads &amp; reactions", ["Threaded replies, emoji reactions", "Edit and delete your messages"]],
-              ["History &amp; sync", ["Scroll back through all history", "Desktop, web, mobile stay in sync"]],
-              ["Unreads &amp; mentions", ["Read position per channel", "Badge counts and @mentions"]],
-              ["Presence &amp; typing", ["Online / away indicators", "“Alice is typing…”"]],
-              ["Notifications", ["Mobile push or email when away", "Respects per-user preferences"]],
-              ["Search &amp; files", ["Full-text, permission-aware search", "Upload and preview files"]],
-            ])}
-            ${strip(30, 512, 1140, 100, "Out of scope (mentioned, not designed)", [
-              "Huddles &amp; calls  ·  Slack Connect (cross-company channels)  ·  Apps, bots &amp; workflows  ·  Compliance / eDiscovery  ·  SSO &amp; auth  ·  Billing",
-              "Rich-text rendering and client UI: we design what the backend stores and delivers, not how the client draws it",
-            ])}
-          </svg>`,
+        // --- Functional requirements: title only ---
+        diagram: frDiagram(),
         script: {
-          title: "Functional requirements: what we're building",
+          title: "Functional requirements",
           html: `
             <p>Before drawing anything I want to pin down <strong>what Slack does</strong> for
             the purposes of this design, because it has grown into a large platform. I'll focus
-            on the core: real-time team messaging.</p>
-            <p>The basic unit is a <strong>workspace</strong> (one company or team) containing
-            <strong>channels</strong>, both public ones anyone in the workspace can join and
-            private, invite-only ones. Inside a channel you <strong>send messages</strong>, and
-            the defining property is that they appear <strong>in real time</strong> for
-            everyone currently online, in the same order for everyone. <strong>DMs and group
-            DMs</strong> are the same experience with a fixed set of people. On top of that come
-            the conversation features: <strong>threads</strong>, emoji
-            <strong>reactions</strong>, and editing or deleting your own messages.</p>
-            <p>Unlike a lot of chat apps, Slack is a <strong>system of record</strong>. You can
-            scroll back through years of <strong>history</strong>, and every device you own
-            (desktop, browser, phone) stays in sync. That includes <strong>unread
-            state</strong>: the bold channel names, badge counts and @mentions all have to agree
-            across devices.</p>
-            <p>Around that core are <strong>presence</strong> (the green dot) and typing
-            indicators, <strong>notifications</strong> by mobile push or email when you're away,
-            <strong>search</strong> across everything you're allowed to see, and
-            <strong>file</strong> sharing.</p>
+            on the core: real-time team messaging.</p>`
+        }
+      },
+      // --- Functional requirements: one slide per card ---
+      ...FR_CARDS.map(([title, , html], i) => ({
+        diagram: frDiagram({ show: i + 1 }),
+        // The header is set as plain text, so unescape the SVG-safe "&amp;".
+        script: { title: title.replace(/&amp;/g, "&"), html },
+      })),
+      {
+        // --- Functional requirements: out of scope ---
+        diagram: frDiagram({ show: FR_CARDS.length, withStrip: true }),
+        script: {
+          title: "Out of scope",
+          html: `
             <p>I'm leaving out Huddles and calls, Slack Connect channels shared between
             companies, the apps, bots and workflow platform, enterprise compliance such as
             eDiscovery and legal holds, SSO and billing. Each is a real system that could be its
@@ -652,59 +781,39 @@
         }
       },
       {
-        // --- Slide 2: non-functional requirements + estimates ---
-        diagram: `
-          <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
-            <text class="heading" x="30" y="42">Non-functional requirements</text>
-            <text class="subheading" x="372" y="42">how well it has to do it</text>
-            ${cardGrid(30, 66, 255, 128, 13, 3, [
-              ["Scale", ["50M DAU · ~1M workspaces", "Biggest orgs: 500K members"]],
-              ["Real-time", ["Delivery to online members", "&lt; 500 ms p99"]],
-              ["Ordering", ["One total order per channel", "No gaps, no duplicates"]],
-              ["Durability", ["An acked message is never lost", "History kept indefinitely"]],
-              ["99.99% available", ["Disconnect → reconnect", "and catch up, never lose data"]],
-              ["Multi-tenant", ["Isolation between workspaces", "No noisy neighbors"]],
-              ["Data residency", ["A workspace's data can be", "pinned to a chosen region"]],
-              ["Bursty", ["Weekday working-hour peaks", "Reconnect storms after outages"]],
-              ["Huge channels", ["#general with 100K+ members", "Fan-out must stay bounded"]],
-            ])}
-            ${estimatesPanel(832, 66, 338, 410, "Back of the envelope", [
-              ["Messages", ["50M × ~50/day ≈ 2.5B/day", "≈ 30K/s avg · ~100K/s peak"]],
-              ["Live connections", ["~30M concurrent WebSockets", "(several devices per user)"]],
-              ["Fan-out", ["~20 online members per message", "≈ 1M socket deliveries/s"]],
-              ["Storage", ["~1 KB with indexes × 2.5B/day", "≈ 2.5 TB/day ≈ 1 PB/yr"]],
-            ])}
-            ${strip(30, 496, 1140, 100, "Takeaway: the problem is connections and fan-out, not storage", [
-              "Tens of millions of long-lived sockets + strict per-channel order → separate the stateful connection tier from the stateless API",
-              "Gateways hold sockets  ·  one owner per channel for order &amp; fan-out  ·  DB sharded by tenant / channel  ·  offline users → push",
-            ])}
-          </svg>`,
+        // --- Non-functional requirements: title only ---
+        diagram: nfrDiagram(),
         script: {
-          title: "Non-functional requirements and back-of-the-envelope math",
+          title: "Non-functional requirements",
+          html: `<p>Now the qualities the system needs.</p>`
+        }
+      },
+      // --- Non-functional requirements: one slide per card ---
+      ...NFR_CARDS.map(([title, , html], i) => ({
+        diagram: nfrDiagram({ show: i + 1 }),
+        script: { title: title.replace(/&amp;/g, "&"), html },
+      })),
+      {
+        // --- Non-functional requirements: estimates ---
+        diagram: nfrDiagram({ show: NFR_CARDS.length, withEstimates: true }),
+        script: {
+          title: "Back-of-the-envelope estimates",
           html: `
-            <p>Now the qualities the system needs. On <strong>scale</strong>, I'll assume
-            around 50 million daily users across about a million workspaces. Most workspaces
-            are small, but the biggest enterprises have half a million members, and that skew
-            matters as much as the totals do.</p>
-            <p>The product has to feel instant, so a message should reach online members in
-            under <strong>500 milliseconds</strong> at p99. Everyone must see a channel's
-            messages in the <strong>same order</strong>, with no gaps or duplicates, even across
-            reconnects. Once the sender sees "sent," the message is
-            <strong>durable</strong>, and history is kept indefinitely on paid plans.</p>
-            <p>Companies run their day on Slack, so I'm targeting <strong>99.99%</strong>
-            availability. The more precise requirement is that losing a connection means a
-            quick reconnect and catch-up, never lost data. It's <strong>multi-tenant</strong>,
-            so one giant customer mustn't slow everyone else down, and some customers require
-            their data to stay in a particular region. Traffic is <strong>bursty</strong>: it
-            follows the working day in each time zone, and the worst moment is right after an
-            outage, when everybody reconnects at once.</p>
             <p>The numbers: 50 million people sending about 50 messages a day is roughly
             <strong>2.5 billion messages a day</strong>, around 30,000 a second on average and
             100,000 at peak. Storage comes to about a petabyte a year. That's big, but it's a
             solved problem. The numbers that actually shape the design are about
             <strong>30 million open WebSockets</strong> at any moment, and roughly a
             <strong>million socket deliveries a second</strong> once each message fans out to
-            its online members.</p>
+            its online members.</p>`
+        }
+      },
+      {
+        // --- Non-functional requirements: takeaway ---
+        diagram: nfrDiagram({ show: NFR_CARDS.length, withEstimates: true, withTakeaway: true }),
+        script: {
+          title: "Takeaway: connections and fan-out",
+          html: `
             <p>So the takeaway is that the hard part is <strong>connections and
             fan-out</strong>, not storage. That points to a separate tier that holds sockets,
             something that owns each channel's order and fan-out, a database sharded by tenant,
@@ -712,7 +821,7 @@
         }
       },
       {
-        // --- Slide 3: the simplest possible starting point ---
+        // --- Slide 24: the simplest possible starting point ---
         diagram: scene({ add: ["client", "server", "e_client_server"] }),
         script: {
           title: "Start simple: one client, one chat server",
@@ -738,7 +847,7 @@
         }
       },
       {
-        // --- Slide 4: a database ---
+        // --- Slide 25: a database ---
         diagram: scene({ add: ["db", "e_server_db"] }),
         script: {
           title: "Persist every message in a database",
@@ -770,7 +879,7 @@
         }
       },
       {
-        // --- Slide 5: WebSocket push ---
+        // --- Slide 26: WebSocket push ---
         diagram: scene({ add: ["e_client_server_ws"] }),
         script: {
           title: "Real-time delivery: push over a WebSocket",
@@ -799,7 +908,7 @@
         }
       },
       {
-        // --- Slide 6: split stateless API from stateful connections ---
+        // --- Slide 27: split stateless API from stateful connections ---
         diagram: scene({
           add: ["webapp", "lb", "gw", "e_client_lb", "e_client_gw", "e_webapp_db", "e_webapp_gw_direct"],
           remove: ["server"],
@@ -832,7 +941,7 @@
         }
       },
       {
-        // --- Slide 7: channel servers ---
+        // --- Slide 28: channel servers ---
         diagram: scene({ add: ["cs", "e_webapp_cs", "e_gw_cs"], remove: ["e_webapp_gw_direct"] }),
         script: {
           title: "Channel servers: one owner per channel for order and fan-out",
@@ -863,7 +972,7 @@
         }
       },
       {
-        // --- Slide 8: shard the database ---
+        // --- Slide 29: shard the database ---
         diagram: scene({ add: ["vitess", "e_webapp_vitess"], remove: ["db"] }),
         script: {
           title: "Shard the database by workspace, then by channel",
@@ -893,7 +1002,7 @@
         }
       },
       {
-        // --- Slide 9: edge cache for boot and reconnect ---
+        // --- Slide 30: edge cache for boot and reconnect ---
         diagram: scene({ add: ["flannel", "e_client_flannel", "e_flannel_lb"] }),
         script: {
           title: "Fast startup and reconnects: the edge cache",
@@ -925,7 +1034,7 @@
         }
       },
       {
-        // --- Slide 10: presence ---
+        // --- Slide 31: presence ---
         diagram: scene({ add: ["presence", "e_gw_presence"] }),
         script: {
           title: "Presence and typing: ephemeral, high-volume, never stored",
@@ -955,7 +1064,7 @@
         }
       },
       {
-        // --- Slide 11: job queue ---
+        // --- Slide 32: job queue ---
         diagram: scene({ add: ["queue", "e_webapp_queue"] }),
         script: {
           title: "Take slow work off the send path: the job queue",
@@ -984,7 +1093,7 @@
         }
       },
       {
-        // --- Slide 12: notifications ---
+        // --- Slide 33: notifications ---
         diagram: scene({ add: ["notif", "push", "e_queue_notif", "e_notif_push"] }),
         script: {
           title: "Notifications: deciding who to bother, and when",
@@ -1013,7 +1122,7 @@
         }
       },
       {
-        // --- Slide 13: search ---
+        // --- Slide 34: search ---
         diagram: scene({ add: ["search", "searchidx", "indexer", "e_search_idx", "e_queue_indexer", "e_indexer_idx"] }),
         script: {
           title: "Search that respects permissions",
@@ -1042,7 +1151,7 @@
         }
       },
       {
-        // --- Slide 14: files ---
+        // --- Slide 35: files ---
         diagram: scene({ add: ["file", "blob", "cdn", "e_file_blob", "e_cdn_client", "e_cdn_blob"] }),
         script: {
           title: "Files: blob storage, signed URLs and a CDN",
@@ -1070,7 +1179,7 @@
         }
       },
       {
-        // --- Slide 15: multi-region ---
+        // --- Slide 36: multi-region ---
         diagram: scene({ add: ["regions", "e_vitess_regions"] }),
         script: {
           title: "Going global: edge regions and home regions",
@@ -1098,7 +1207,7 @@
         }
       },
       {
-        // --- Slide 16: the complete system ---
+        // --- Slide 37: the complete system ---
         diagram: scene(),
         script: {
           title: "The complete system: following one message end to end",

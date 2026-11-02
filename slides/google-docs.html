@@ -5,10 +5,16 @@
   ============================================================================
 
   Built from slides/example.html (see that file for how the scene builder and
-  requirement-slide helpers work). This deck uses two scenes:
+  requirement-slide helpers work).
+
+    - Slides 1–10: functional requirements, built up one card per slide
+      (title, eight cards, out-of-scope strip).
+    - Slides 11–22: non-functional requirements, built up the same way
+      (title, nine cards, estimates panel, takeaway panel).
+    - Slides 23–44: the design. This deck uses two scenes:
     - SCENE_MAIN: the full system, built up slide by slide.
     - SCENE_OT:   a zoomed-in deep dive on one collaboration session
-                  (Operational Transformation), slides 6–11.
+                  (Operational Transformation), slides 26–31.
   ============================================================================
 -->
 <html lang="en">
@@ -223,12 +229,13 @@
       svg.animate .new { opacity: 1; animation: none; }
     }
 
-    /* ---- Requirement slides (slides 1–2) ---- */
+    /* ---- Requirement slides (slides 1–22) ---- */
     .heading { fill: var(--accent); font-size: 24px; font-weight: 700; }
     .subheading { fill: var(--ink-dim); font-size: 14px; }
     .card rect { fill: var(--box-fill); stroke: var(--box-stroke); stroke-width: 1.5; }
     .card .badge { fill: var(--accent); }
     .card .badge-num { fill: var(--bg); font-size: 13px; font-weight: 700; text-anchor: middle; dominant-baseline: central; }
+    .card.new rect { stroke: var(--accent); stroke-width: 3; filter: drop-shadow(0 0 7px var(--accent)); }
     .card .title { fill: var(--box-ink); font-size: 17px; font-weight: 700; }
     .card .line { fill: var(--ink-dim); font-size: 13.5px; }
     .panel-box { fill: var(--box-fill); stroke: var(--accent); stroke-width: 1.5; }
@@ -236,7 +243,9 @@
     .strip { fill: transparent; stroke: var(--box-stroke); stroke-width: 1.5; stroke-dasharray: 7 6; }
     .strip-title { fill: var(--ink); font-size: 15px; font-weight: 700; }
     .strip-text { fill: var(--ink-dim); font-size: 13.5px; }
-    .est-k { fill: var(--accent); font-size: 13.5px; font-weight: 700; }
+    .est-box { fill: transparent; stroke: var(--box-stroke); stroke-width: 1.5; }
+    .est-title { fill: var(--ink-dim); font-size: 17px; font-weight: 700; }
+    .est-k { fill: var(--ink); font-size: 13.5px; font-weight: 700; }
     .est-v { fill: var(--ink); font-size: 13.5px; }
   </style>
 </head>
@@ -317,16 +326,17 @@
     }
 
     // ========================================================================
-    // Requirement-slide helpers (slides 1–2). Use viewBox 0 0 1200 640.
+    // Requirement-slide helpers (slides 1–22). Use viewBox 0 0 1200 640.
     // ========================================================================
 
     // One numbered requirement card: a title plus 1–3 short lines.
-    function card(x, y, w, h, num, title, lines) {
+    // `isNew` highlights it and fades it in (for build-up slides).
+    function card(x, y, w, h, num, title, lines, isNew = false) {
       const body = lines
         .map((l, i) => `<text class="line" x="${x + 18}" y="${y + 66 + i * 21}">${l}</text>`)
         .join("");
       return `
-        <g class="card">
+        <g class="card${isNew ? " new" : ""}">
           <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
           <circle class="badge" cx="${x + 30}" cy="${y + 30}" r="13"></circle>
           <text class="badge-num" x="${x + 30}" y="${y + 30}">${num}</text>
@@ -336,29 +346,50 @@
     }
 
     // A grid of cards, numbered 1..N. items = [[title, [line, line]], ...]
-    function cardGrid(x0, y0, w, h, gap, cols, items) {
+    // For a build-up, `show` draws only the first N cards and `fresh` is the
+    // index of the card to highlight as new (-1 for none).
+    function cardGrid(x0, y0, w, h, gap, cols, items, { show = items.length, fresh = -1 } = {}) {
       return items
+        .slice(0, show)
         .map((it, i) => {
           const c = i % cols, r = Math.floor(i / cols);
-          return card(x0 + c * (w + gap), y0 + r * (h + gap), w, h, i + 1, it[0], it[1]);
+          return card(x0 + c * (w + gap), y0 + r * (h + gap), w, h, i + 1, it[0], it[1], i === fresh);
         })
         .join("");
     }
 
-    // Dashed strip with a title and lines (out-of-scope list, key takeaway).
-    function strip(x, y, w, h, title, lines) {
+    // Dashed strip with a title and lines (out-of-scope list).
+    // `isNew` fades it in (for build-up slides); the border stays gray.
+    function strip(x, y, w, h, title, lines, isNew = false) {
       const body = lines
         .map((l, i) => `<text class="strip-text" x="${x + 24}" y="${y + 64 + i * 22}">${l}</text>`)
         .join("");
       return `
-        <rect class="strip" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
-        <text class="strip-title" x="${x + 24}" y="${y + 34}">${title}</text>
-        ${body}`;
+        <g class="${isNew ? "new" : ""}">
+          <rect class="strip" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <text class="strip-title" x="${x + 24}" y="${y + 34}">${title}</text>
+          ${body}
+        </g>`;
     }
 
-    // Accent-bordered panel of back-of-the-envelope estimates.
+    // Accent-bordered, filled panel with a title and lines (key takeaway).
+    // `isNew` fades it in (for build-up slides).
+    function panel(x, y, w, h, title, lines, isNew = false) {
+      const body = lines
+        .map((l, i) => `<text class="strip-text" x="${x + 24}" y="${y + 64 + i * 22}">${l}</text>`)
+        .join("");
+      return `
+        <g class="${isNew ? "new" : ""}">
+          <rect class="panel-box" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <text class="panel-title" x="${x + 24}" y="${y + 34}">${title}</text>
+          ${body}
+        </g>`;
+    }
+
+    // Gray-bordered, unfilled panel of back-of-the-envelope estimates.
     // rows = [[heading, [value, value]], ...]
-    function estimatesPanel(x, y, w, h, title, rows) {
+    // `isNew` fades it in (for build-up slides); the border stays gray.
+    function estimatesPanel(x, y, w, h, title, rows, isNew = false) {
       let cy = y + 66;
       const body = rows
         .map(([k, vs]) => {
@@ -369,9 +400,11 @@
         })
         .join("");
       return `
-        <rect class="panel-box" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
-        <text class="panel-title" x="${x + 20}" y="${y + 32}">${title}</text>
-        ${body}`;
+        <g class="${isNew ? "new" : ""}">
+          <rect class="est-box" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <text class="est-title" x="${x + 20}" y="${y + 32}">${title}</text>
+          ${body}
+        </g>`;
     }
 
     // ========================================================================
@@ -516,7 +549,7 @@
         { id: "lb",        x: 280,  y: 183, w: 180, h: 54,  label: "Load Balancer", kind: "infra", sub: "HTTPS API" },
         { id: "gw",        x: 280,  y: 360, w: 180, h: 124, label: "WS Gateways", kind: "infra", sub: "WebSockets · stateful" },
         { id: "cdn",       x: 280,  y: 510, w: 180, h: 54,  label: "CDN", kind: "infra", sub: "images · signed URLs" },
-        // Slides 3–11 only: the naive single server (same spot as the doc service)
+        // Slides 23–31 only: the naive single server (same spot as the doc service)
         { id: "server",    x: 540,  y: 160, w: 200, h: 100, label: "Docs Server", kind: "service", sub: "one process does it all" },
         // Services
         { id: "search",    x: 540,  y: 20,  w: 200, h: 54,  label: "Search Service", kind: "service", sub: "permission-aware" },
@@ -638,53 +671,161 @@
     const ot = sceneBuilder(SCENE_OT);
 
     // ========================================================================
-    // SLIDES
+    // EDIT THIS: functional requirements, built up one card per slide.
+    // ========================================================================
+    // Each card is [title, [line, line], script html]. The script describes
+    // just the requirement that card adds. Up to 9 cards fit in the 3×3 grid.
+    const FR_CARDS = [
+      ["Create &amp; open docs", ["New doc in one click; list of recent docs", "Opens and is editable in under a second"],
+        `<p>The basics are <strong>creating and opening documents</strong>, quickly. A doc
+        should be editable within about a second of clicking it, even if it's years old and
+        has a long edit history.</p>`],
+      ["Real-time co-editing", ["Many people type in the same doc at once", "Everyone converges to the same text"],
+        `<p>The core is <strong>real-time collaborative
+        editing</strong>. Several people type, delete and format in the same doc at once,
+        everyone sees everyone else's changes within a fraction of a second, and, crucially,
+        <strong>everyone ends up with exactly the same document</strong>.</p>`],
+      ["Presence", ["Live cursors and selections", "Avatars of who is in the doc right now"],
+        `<p>Around that core: <strong>presence</strong>, meaning the colored cursors and avatars
+        that show who's here and where they're working.</p>`],
+      ["Comments &amp; suggestions", ["Anchored to a range of text", "Stay attached as the text around them changes"],
+        `<p><strong>Comments and
+        suggestions</strong> are anchored to a range of text, and they have to stay attached
+        to that text as people edit around it.</p>`],
+      ["Version history", ["Browse past revisions by time and author", "Name a version; restore any of them"],
+        `<p><strong>Version history</strong> lets you see
+        who changed what, name a version, and restore an old one.</p>`],
+      ["Sharing &amp; permissions", ["Owner · editor · commenter · viewer", "Per person, per group, or by link"],
+        `<p><strong>Sharing</strong>
+        uses the familiar roles (owner, editor, commenter, viewer), granted to people, groups,
+        or anyone with the link.</p>`],
+      ["Offline editing", ["Keep typing with no connection", "Merge cleanly when you reconnect"],
+        `<p><strong>Offline editing</strong> lets you keep working on a
+        plane and merge when you land.</p>`],
+      ["Search", ["Find docs by title and content", "Only docs you're allowed to see"],
+        `<p>And <strong>search</strong> finds documents by title
+        and content, among the ones you're allowed to see.</p>`],
+    ];
+    const FR_OUT_OF_SCOPE = [
+      "Sheets &amp; Slides  ·  Spell check &amp; grammar  ·  Voice / video  ·  Import / export conversion  ·  Add-ons  ·  Billing",
+      "Rendering and page layout: we design how edits are synchronized and stored, not how the editor draws pages",
+    ];
+
+    // One functional-requirements diagram: the heading, the first `show` cards
+    // (the last of them highlighted), and optionally the out-of-scope strip.
+    function frDiagram({ show = 0, withStrip = false } = {}) {
+      const sub = show ? `<text class="subheading" x="330" y="42">what a user can do</text>` : "";
+      const fresh = withStrip ? -1 : show - 1;
+      return `
+        <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
+          <text class="heading" x="30" y="42">Functional requirements</text>
+          ${sub}
+          ${cardGrid(30, 66, 370, 128, 15, 3, FR_CARDS, { show, fresh })}
+          ${withStrip ? strip(30, 512, 1140, 100, "Out of scope (mentioned, not designed)",
+            FR_OUT_OF_SCOPE, true) : ""}
+        </svg>`;
+    }
+
+    // ========================================================================
+    // EDIT THIS: non-functional requirements, built up one card per slide,
+    // then the estimates panel, then the takeaway panel.
+    // ========================================================================
+    // Each card is [title, [line, line], script html], as for FR_CARDS.
+    const NFR_CARDS = [
+      ["Scale", ["~1B users · 100M DAU", "~10B documents in total"],
+        `<p>On <strong>scale</strong> I'll assume around a billion users,
+        100 million daily actives, and roughly <strong>10 billion documents</strong>.</p>`],
+      ["Collab latency", ["Remote edits visible", "&lt; 200 ms p99"],
+        `<p>The latency target that defines the product is <strong>collaboration
+        latency</strong>. When you type, a co-editor should see it within about
+        <strong>200 milliseconds</strong>. Your <em>own</em> typing must feel instant, so the
+        client can never wait for the server before showing a keystroke.</p>`],
+      ["Fast open", ["Doc interactive in &lt; 1 s,", "even with a long history"],
+        `<p>Opening a doc should
+        take <strong>under a second</strong> no matter how long its history is.</p>`],
+      ["Durability", ["An acked edit is", "never lost (RPO ≈ 0)"],
+        `<p>For correctness there are two requirements. <strong>Durability</strong>: once the
+        server has acknowledged an edit, it's never lost, even if a machine dies a
+        millisecond later.</p>`],
+      ["Convergence", ["Every copy of a doc reaches", "the same state, intent kept"],
+        `<p>And <strong>convergence</strong>: every copy of a document,
+        whether on the server or in each editor's browser, must end up in the
+        <em>same</em> state, and that state should respect what each person intended. If I
+        bold a word while you fix its spelling, the result should be the correctly spelled
+        word in bold.</p>`],
+      ["99.99% available", ["Editing survives server", "and region failures"],
+        `<p>I'm targeting <strong>99.99%</strong> availability for editing.</p>`],
+      ["Collab size", ["Usually 1–5 editors", "Cap ~100 editors + viewers"],
+        `<p>Collaboration
+        groups are small, typically one to five editors, and I'll cap a doc at about a
+        hundred concurrent editors with more people viewing.</p>`],
+      ["Eventual elsewhere", ["Search, doc lists, counts", "may lag by seconds"],
+        `<p>Search, the doc list and
+        notifications can be <strong>eventually consistent</strong>.</p>`],
+      ["Cost", ["Most docs are cold", "Idle docs must be cheap"],
+        `<p>The
+        vast majority of those documents are cold: written once and rarely opened. So an idle
+        doc should cost us only cheap storage, with no servers or memory tied up until someone
+        opens it.</p>`],
+    ];
+    const NFR_ESTIMATES = [
+      ["Open docs", ["~10M docs open at any moment", "~5M with someone actively typing"]],
+      ["Edit ops", ["~1 op/s per typer (keystrokes batched)", "≈ 2–5M ops/s at peak"]],
+      ["Storage", ["10B docs × ~50 KB ≈ 0.5 PB snapshots", "+ op logs &amp; history ≈ 1–1.5 PB"]],
+      ["Fan-out", ["~2 other people per open doc", "≈ 10M socket pushes/s"]],
+    ];
+    const NFR_TAKEAWAY = [
+      "Millions of small ops per second, each needing a total order within its doc but none across docs → one sequencer per document",
+      "Stateful session per doc (OT)  ·  durable op log + periodic snapshots  ·  search, notifications and history off the hot path",
+    ];
+
+    // One non-functional-requirements diagram: the heading, the first `show`
+    // cards, and optionally the estimates and takeaway panels. The last thing
+    // added is the one highlighted as new.
+    function nfrDiagram({ show = 0, withEstimates = false, withTakeaway = false } = {}) {
+      const sub = show ? `<text class="subheading" x="372" y="42">how well it has to do it</text>` : "";
+      const fresh = withEstimates ? -1 : show - 1;
+      return `
+        <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
+          <text class="heading" x="30" y="42">Non-functional requirements</text>
+          ${sub}
+          ${cardGrid(30, 66, 255, 128, 13, 3, NFR_CARDS, { show, fresh })}
+          ${withEstimates ? estimatesPanel(832, 66, 338, 410, "Back of the envelope",
+            NFR_ESTIMATES, !withTakeaway) : ""}
+          ${withTakeaway ? panel(30, 496, 1140, 100,
+            "Takeaway: tiny, frequent edits that need one order per document", NFR_TAKEAWAY, true) : ""}
+        </svg>`;
+    }
+
+    // ========================================================================
+    // EDIT THIS: one entry per step of the design.
     // ========================================================================
     const SLIDES = [
       {
-        // --- Slide 1: functional requirements ---
-        diagram: `
-          <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
-            <text class="heading" x="30" y="42">Functional requirements</text>
-            <text class="subheading" x="330" y="42">what a user can do</text>
-            ${cardGrid(30, 66, 370, 128, 15, 3, [
-              ["Create &amp; open docs", ["New doc in one click; list of recent docs", "Opens and is editable in under a second"]],
-              ["Real-time co-editing", ["Many people type in the same doc at once", "Everyone converges to the same text"]],
-              ["Presence", ["Live cursors and selections", "Avatars of who is in the doc right now"]],
-              ["Comments &amp; suggestions", ["Anchored to a range of text", "Stay attached as the text around them changes"]],
-              ["Version history", ["Browse past revisions by time and author", "Name a version; restore any of them"]],
-              ["Sharing &amp; permissions", ["Owner · editor · commenter · viewer", "Per person, per group, or by link"]],
-              ["Offline editing", ["Keep typing with no connection", "Merge cleanly when you reconnect"]],
-              ["Search", ["Find docs by title and content", "Only docs you're allowed to see"]],
-            ])}
-            ${strip(30, 496, 1140, 100, "Out of scope (mentioned, not designed)", [
-              "Sheets &amp; Slides  ·  Spell check &amp; grammar  ·  Voice / video  ·  Import / export conversion  ·  Add-ons  ·  Billing",
-              "Rendering and page layout: we design how edits are synchronized and stored, not how the editor draws pages",
-            ])}
-          </svg>`,
+        // --- Functional requirements: title only ---
+        diagram: frDiagram(),
         script: {
-          title: "Functional requirements: what we're building",
+          title: "Functional requirements",
           html: `
             <p>Before drawing anything I want to agree on <strong>what Google Docs does</strong>
             for this design. On the surface it's a word processor in the browser. The reason it's
             an interesting systems question is that it's a <strong>shared</strong> word
             processor: several people edit the same document at the same moment and all of them
-            see the same result.</p>
-            <p>The basics are <strong>creating and opening documents</strong>, quickly. A doc
-            should be editable within about a second of clicking it, even if it's years old and
-            has a long edit history. The core is <strong>real-time collaborative
-            editing</strong>. Several people type, delete and format in the same doc at once,
-            everyone sees everyone else's changes within a fraction of a second, and, crucially,
-            <strong>everyone ends up with exactly the same document</strong>.</p>
-            <p>Around that core: <strong>presence</strong>, meaning the colored cursors and avatars
-            that show who's here and where they're working. <strong>Comments and
-            suggestions</strong> are anchored to a range of text, and they have to stay attached
-            to that text as people edit around it. <strong>Version history</strong> lets you see
-            who changed what, name a version, and restore an old one. <strong>Sharing</strong>
-            uses the familiar roles (owner, editor, commenter, viewer), granted to people, groups,
-            or anyone with the link. <strong>Offline editing</strong> lets you keep working on a
-            plane and merge when you land. And <strong>search</strong> finds documents by title
-            and content, among the ones you're allowed to see.</p>
+            see the same result.</p>`
+        }
+      },
+      // --- Functional requirements: one slide per card ---
+      ...FR_CARDS.map(([title, , html], i) => ({
+        diagram: frDiagram({ show: i + 1 }),
+        // The header is set as plain text, so unescape the SVG-safe "&amp;".
+        script: { title: title.replace(/&amp;/g, "&"), html },
+      })),
+      {
+        // --- Functional requirements: out of scope ---
+        diagram: frDiagram({ show: FR_CARDS.length, withStrip: true }),
+        script: {
+          title: "Out of scope",
+          html: `
             <p>I'm leaving out Sheets and Slides, spell check, calls, import and export
             conversion, add-ons and billing. I'm also not designing how the editor <em>renders</em>
             pages. I'm designing how edits get from one person's keyboard to everyone else's
@@ -692,60 +833,37 @@
         }
       },
       {
-        // --- Slide 2: non-functional requirements + estimates ---
-        diagram: `
-          <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
-            <text class="heading" x="30" y="42">Non-functional requirements</text>
-            <text class="subheading" x="372" y="42">how well it has to do it</text>
-            ${cardGrid(30, 66, 255, 128, 13, 3, [
-              ["Scale", ["~1B users · 100M DAU", "~10B documents in total"]],
-              ["Collab latency", ["Remote edits visible", "&lt; 200 ms p99"]],
-              ["Fast open", ["Doc interactive in &lt; 1 s,", "even with a long history"]],
-              ["Durability", ["An acked edit is", "never lost (RPO ≈ 0)"]],
-              ["Convergence", ["Every copy of a doc reaches", "the same state, intent kept"]],
-              ["99.99% available", ["Editing survives server", "and region failures"]],
-              ["Collab size", ["Usually 1–5 editors", "Cap ~100 editors + viewers"]],
-              ["Eventual elsewhere", ["Search, doc lists, counts", "may lag by seconds"]],
-              ["Cost", ["Most docs are cold", "Idle docs must be cheap"]],
-            ])}
-            ${estimatesPanel(832, 66, 338, 410, "Back of the envelope", [
-              ["Open docs", ["~10M docs open at any moment", "~5M with someone actively typing"]],
-              ["Edit ops", ["~1 op/s per typer (keystrokes batched)", "≈ 2–5M ops/s at peak"]],
-              ["Storage", ["10B docs × ~50 KB ≈ 0.5 PB snapshots", "+ op logs &amp; history ≈ 1–1.5 PB"]],
-              ["Fan-out", ["~2 other people per open doc", "≈ 10M socket pushes/s"]],
-            ])}
-            ${strip(30, 496, 1140, 100, "Takeaway: tiny, frequent edits that need one order per document", [
-              "Millions of small ops per second, each needing a total order within its doc but none across docs → one sequencer per document",
-              "Stateful session per doc (OT)  ·  durable op log + periodic snapshots  ·  search, notifications and history off the hot path",
-            ])}
-          </svg>`,
+        // --- Non-functional requirements: title only ---
+        diagram: nfrDiagram(),
         script: {
-          title: "Non-functional requirements and back-of-the-envelope math",
+          title: "Non-functional requirements",
+          html: `<p>Now the qualities.</p>`
+        }
+      },
+      // --- Non-functional requirements: one slide per card ---
+      ...NFR_CARDS.map(([title, , html], i) => ({
+        diagram: nfrDiagram({ show: i + 1 }),
+        script: { title: title.replace(/&amp;/g, "&"), html },
+      })),
+      {
+        // --- Non-functional requirements: estimates ---
+        diagram: nfrDiagram({ show: NFR_CARDS.length, withEstimates: true }),
+        script: {
+          title: "Back-of-the-envelope estimates",
           html: `
-            <p>Now the qualities. On <strong>scale</strong> I'll assume around a billion users,
-            100 million daily actives, and roughly <strong>10 billion documents</strong>. The
-            vast majority of those documents are cold: written once and rarely opened.</p>
-            <p>The latency target that defines the product is <strong>collaboration
-            latency</strong>. When you type, a co-editor should see it within about
-            <strong>200 milliseconds</strong>. Your <em>own</em> typing must feel instant, so the
-            client can never wait for the server before showing a keystroke. Opening a doc should
-            take <strong>under a second</strong> no matter how long its history is.</p>
-            <p>For correctness there are two requirements. <strong>Durability</strong>: once the
-            server has acknowledged an edit, it's never lost, even if a machine dies a
-            millisecond later. And <strong>convergence</strong>: every copy of a document,
-            whether on the server or in each editor's browser, must end up in the
-            <em>same</em> state, and that state should respect what each person intended. If I
-            bold a word while you fix its spelling, the result should be the correctly spelled
-            word in bold.</p>
-            <p>I'm targeting <strong>99.99%</strong> availability for editing. Collaboration
-            groups are small, typically one to five editors, and I'll cap a doc at about a
-            hundred concurrent editors with more people viewing. Search, the doc list and
-            notifications can be <strong>eventually consistent</strong>.</p>
             <p>The numbers: about 10 million docs open at once, maybe 5 million with someone
             typing. Clients batch keystrokes into roughly one operation a second per typer, which
             gives <strong>2 to 5 million ops a second</strong> at peak. Each op is tiny, tens of
             bytes. Storage is around half a petabyte of snapshots plus the logs and history. Big,
-            but not the hard part.</p>
+            but not the hard part.</p>`
+        }
+      },
+      {
+        // --- Non-functional requirements: takeaway ---
+        diagram: nfrDiagram({ show: NFR_CARDS.length, withEstimates: true, withTakeaway: true }),
+        script: {
+          title: "Takeaway: one order per document",
+          html: `
             <p>The takeaway: this is a <strong>coordination problem</strong>, not a storage or
             bandwidth problem. Each op must be ordered relative to the other ops <em>in the same
             document</em>, but ops in different documents are completely independent. That
@@ -754,7 +872,7 @@
         }
       },
       {
-        // --- Slide 3: the simplest possible starting point ---
+        // --- Slide 23: the simplest possible starting point ---
         diagram: main({ add: ["client", "server", "e_client_server"] }),
         script: {
           title: "Start simple: one client, one server",
@@ -777,7 +895,7 @@
         }
       },
       {
-        // --- Slide 4: a database, and the lost-update problem ---
+        // --- Slide 24: a database, and the lost-update problem ---
         diagram: main({ add: ["db", "e_server_db"] }),
         script: {
           title: "Add a database, and discover lost updates",
@@ -804,7 +922,7 @@
         }
       },
       {
-        // --- Slide 5: operations over a WebSocket ---
+        // --- Slide 25: operations over a WebSocket ---
         diagram: main({ add: ["e_client_server_ws"] }),
         script: {
           title: "Send operations, not documents",
@@ -832,7 +950,7 @@
         }
       },
       {
-        // --- Slide 6: OT deep dive ① — the conflict and the sequencer ---
+        // --- Slide 26: OT deep dive ① — the conflict and the sequencer ---
         diagram: ot({ add: ["clientA", "clientB", "seq", "state", "d_a_seq", "d_b_seq", "d_seq_state"] }),
         script: {
           title: "OT deep dive ①: concurrent edits and a single sequencer",
@@ -861,7 +979,7 @@
         }
       },
       {
-        // --- Slide 7: OT deep dive ② — transform ---
+        // --- Slide 27: OT deep dive ② — transform ---
         diagram: ot({ add: ["tr", "hist", "d_seq_tr", "d_hist_tr", "d_tr_state"], remove: ["d_seq_state"] }),
         script: {
           title: "OT deep dive ②: transforming ops against history",
@@ -893,7 +1011,7 @@
         }
       },
       {
-        // --- Slide 8: OT deep dive ③ — durable append, ack, broadcast ---
+        // --- Slide 28: OT deep dive ③ — durable append, ack, broadcast ---
         diagram: ot({ add: ["log", "bc", "d_tr_log", "d_tr_bc", "d_bc_a", "d_bc_b"] }),
         script: {
           title: "OT deep dive ③: append durably, then ack and broadcast",
@@ -921,7 +1039,7 @@
         }
       },
       {
-        // --- Slide 9: OT deep dive ④ — the client side ---
+        // --- Slide 29: OT deep dive ④ — the client side ---
         diagram: ot({
           add: ["pendA", "pendB", "d_a_pend", "d_pendA_seq", "d_b_pend", "d_pendB_seq"],
           remove: ["d_a_seq", "d_b_seq"],
@@ -953,7 +1071,7 @@
         }
       },
       {
-        // --- Slide 10: OT deep dive ⑤ — presence and cursors ---
+        // --- Slide 30: OT deep dive ⑤ — presence and cursors ---
         diagram: ot({ add: ["cur", "d_bc_cur", "d_tr_cur"] }),
         script: {
           title: "OT deep dive ⑤: presence and live cursors",
@@ -979,7 +1097,7 @@
         }
       },
       {
-        // --- Slide 11: OT deep dive ⑥ — anchors for comments and suggestions ---
+        // --- Slide 31: OT deep dive ⑥ — anchors for comments and suggestions ---
         diagram: ot({ add: ["anch", "d_state_anch"] }),
         script: {
           title: "OT deep dive ⑥: comments and suggestions live in the model",
@@ -1008,7 +1126,7 @@
         }
       },
       {
-        // --- Slide 12: split stateless API from stateful sessions ---
+        // --- Slide 32: split stateless API from stateful sessions ---
         diagram: main({
           add: ["lb", "docapi", "gw", "sessions",
                 "e_client_lb", "e_client_gw", "e_gw_sessions", "e_docapi_db", "e_sessions_db"],
@@ -1042,7 +1160,7 @@
         }
       },
       {
-        // --- Slide 13: session directory, leases, fencing ---
+        // --- Slide 33: session directory, leases, fencing ---
         diagram: main({ add: ["directory", "e_sessions_dir", "e_gw_dir"] }),
         script: {
           title: "Session directory: exactly one owner per doc",
@@ -1071,7 +1189,7 @@
         }
       },
       {
-        // --- Slide 14: split storage into metadata, op log and snapshots ---
+        // --- Slide 34: split storage into metadata, op log and snapshots ---
         diagram: main({
           add: ["metadb", "oplog", "blob", "e_docapi_meta", "e_sessions_oplog", "e_sessions_blob"],
           remove: ["db"],
@@ -1105,7 +1223,7 @@
         }
       },
       {
-        // --- Slide 15: permissions ---
+        // --- Slide 35: permissions ---
         diagram: main({ add: ["acl", "e_docapi_acl", "e_sessions_acl", "e_acl_meta"] }),
         script: {
           title: "Permissions: an ACL service on every path",
@@ -1135,7 +1253,7 @@
         }
       },
       {
-        // --- Slide 16: the change feed ---
+        // --- Slide 36: the change feed ---
         diagram: main({ add: ["kafka", "e_oplog_kafka", "e_meta_kafka"] }),
         script: {
           title: "A change feed to keep the hot path lean",
@@ -1163,7 +1281,7 @@
         }
       },
       {
-        // --- Slide 17: snapshots and version history ---
+        // --- Slide 37: snapshots and version history ---
         diagram: main({ add: ["compactor", "e_kafka_compactor", "e_compactor_blob"] }),
         script: {
           title: "Snapshots and version history",
@@ -1192,7 +1310,7 @@
         }
       },
       {
-        // --- Slide 18: comments ---
+        // --- Slide 38: comments ---
         diagram: main({ add: ["comments", "e_comments_meta"] }),
         script: {
           title: "Comments: threads in the database, anchors in the doc",
@@ -1219,7 +1337,7 @@
         }
       },
       {
-        // --- Slide 19: notifications ---
+        // --- Slide 39: notifications ---
         diagram: main({ add: ["notif", "email", "e_kafka_notif", "e_notif_email"] }),
         script: {
           title: "Notifications: mentions, replies and shares",
@@ -1243,7 +1361,7 @@
         }
       },
       {
-        // --- Slide 20: search ---
+        // --- Slide 40: search ---
         diagram: main({ add: ["search", "searchidx", "indexer", "e_kafka_indexer", "e_indexer_idx", "e_search_idx"] }),
         script: {
           title: "Search across the docs you can see",
@@ -1273,7 +1391,7 @@
         }
       },
       {
-        // --- Slide 21: images and the CDN ---
+        // --- Slide 41: images and the CDN ---
         diagram: main({ add: ["cdn", "e_client_cdn", "e_cdn_blob"] }),
         script: {
           title: "Images: references in the doc, bytes in a CDN",
@@ -1297,7 +1415,7 @@
         }
       },
       {
-        // --- Slide 22: offline editing, and OT vs CRDTs ---
+        // --- Slide 42: offline editing, and OT vs CRDTs ---
         diagram: main({ add: ["local", "e_client_local"] }),
         script: {
           title: "Offline editing, and why OT rather than CRDTs",
@@ -1328,7 +1446,7 @@
         }
       },
       {
-        // --- Slide 23: multi-region ---
+        // --- Slide 43: multi-region ---
         diagram: main({ add: ["regions", "e_blob_regions"] }),
         script: {
           title: "Going global: home regions and replication",
@@ -1354,7 +1472,7 @@
         }
       },
       {
-        // --- Slide 24: the complete system ---
+        // --- Slide 44: the complete system ---
         diagram: main(),
         script: {
           title: "The complete system: following one keystroke",

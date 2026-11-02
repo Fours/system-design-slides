@@ -6,12 +6,15 @@
 
   Built from slides/example.html. Same layout, theme, navigation and engine.
 
-    - Slides 1–2: functional / non-functional requirements (card grids).
-    - Slides 3–8: the main scene (SCENE_MAIN) grows from one server to split
+    - Slides 1–11: functional requirements, built up one card per slide
+      (title, nine cards, out-of-scope strip).
+    - Slides 12–23: non-functional requirements, built up the same way
+      (title, nine cards, estimates panel, takeaway panel).
+    - Slides 24–29: the main scene (SCENE_MAIN) grows from one server to split
       trip / location services, an in-memory H3 geo index, dispatch and ETAs.
-    - Slides 9–13: a deep dive into matching (SCENE_MATCH): candidate search →
+    - Slides 30–34: a deep dive into matching (SCENE_MATCH): candidate search →
       filter → ETA ranking → batch optimizer → offers with a driver lock.
-    - Slides 14–23: back to the main scene: realtime gateways, the trip state
+    - Slides 35–44: back to the main scene: realtime gateways, the trip state
       machine, Kafka, pricing and surge, payments, the data lake, regions.
 
   Navigation (shared by every deck): on-screen back/forward arrows, plus the
@@ -232,12 +235,13 @@
       svg.animate .new { opacity: 1; animation: none; }
     }
 
-    /* ---- Requirement slides (slides 1–2) ---- */
+    /* ---- Requirement slides (slides 1–23) ---- */
     .heading { fill: var(--accent); font-size: 24px; font-weight: 700; }
     .subheading { fill: var(--ink-dim); font-size: 14px; }
     .card rect { fill: var(--box-fill); stroke: var(--box-stroke); stroke-width: 1.5; }
     .card .badge { fill: var(--accent); }
     .card .badge-num { fill: var(--bg); font-size: 13px; font-weight: 700; text-anchor: middle; dominant-baseline: central; }
+    .card.new rect { stroke: var(--accent); stroke-width: 3; filter: drop-shadow(0 0 7px var(--accent)); }
     .card .title { fill: var(--box-ink); font-size: 17px; font-weight: 700; }
     .card .line { fill: var(--ink-dim); font-size: 13.5px; }
     .panel-box { fill: var(--box-fill); stroke: var(--accent); stroke-width: 1.5; }
@@ -245,7 +249,9 @@
     .strip { fill: transparent; stroke: var(--box-stroke); stroke-width: 1.5; stroke-dasharray: 7 6; }
     .strip-title { fill: var(--ink); font-size: 15px; font-weight: 700; }
     .strip-text { fill: var(--ink-dim); font-size: 13.5px; }
-    .est-k { fill: var(--accent); font-size: 13.5px; font-weight: 700; }
+    .est-box { fill: transparent; stroke: var(--box-stroke); stroke-width: 1.5; }
+    .est-title { fill: var(--ink-dim); font-size: 17px; font-weight: 700; }
+    .est-k { fill: var(--ink); font-size: 13.5px; font-weight: 700; }
     .est-v { fill: var(--ink); font-size: 13.5px; }
   </style>
 </head>
@@ -326,16 +332,17 @@
     }
 
     // ========================================================================
-    // Requirement-slide helpers (slides 1–2). Use viewBox 0 0 1200 640.
+    // Requirement-slide helpers (slides 1–23). Use viewBox 0 0 1200 640.
     // ========================================================================
 
     // One numbered requirement card: a title plus 1–3 short lines.
-    function card(x, y, w, h, num, title, lines) {
+    // `isNew` highlights it and fades it in (for build-up slides).
+    function card(x, y, w, h, num, title, lines, isNew = false) {
       const body = lines
         .map((l, i) => `<text class="line" x="${x + 18}" y="${y + 66 + i * 21}">${l}</text>`)
         .join("");
       return `
-        <g class="card">
+        <g class="card${isNew ? " new" : ""}">
           <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
           <circle class="badge" cx="${x + 30}" cy="${y + 30}" r="13"></circle>
           <text class="badge-num" x="${x + 30}" y="${y + 30}">${num}</text>
@@ -345,29 +352,50 @@
     }
 
     // A grid of cards, numbered 1..N. items = [[title, [line, line]], ...]
-    function cardGrid(x0, y0, w, h, gap, cols, items) {
+    // For a build-up, `show` draws only the first N cards and `fresh` is the
+    // index of the card to highlight as new (-1 for none).
+    function cardGrid(x0, y0, w, h, gap, cols, items, { show = items.length, fresh = -1 } = {}) {
       return items
+        .slice(0, show)
         .map((it, i) => {
           const c = i % cols, r = Math.floor(i / cols);
-          return card(x0 + c * (w + gap), y0 + r * (h + gap), w, h, i + 1, it[0], it[1]);
+          return card(x0 + c * (w + gap), y0 + r * (h + gap), w, h, i + 1, it[0], it[1], i === fresh);
         })
         .join("");
     }
 
-    // Dashed strip with a title and lines (out-of-scope list, key takeaway).
-    function strip(x, y, w, h, title, lines) {
+    // Dashed strip with a title and lines (out-of-scope list).
+    // `isNew` fades it in (for build-up slides); the border stays gray.
+    function strip(x, y, w, h, title, lines, isNew = false) {
       const body = lines
         .map((l, i) => `<text class="strip-text" x="${x + 24}" y="${y + 64 + i * 22}">${l}</text>`)
         .join("");
       return `
-        <rect class="strip" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
-        <text class="strip-title" x="${x + 24}" y="${y + 34}">${title}</text>
-        ${body}`;
+        <g class="${isNew ? "new" : ""}">
+          <rect class="strip" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <text class="strip-title" x="${x + 24}" y="${y + 34}">${title}</text>
+          ${body}
+        </g>`;
     }
 
-    // Accent-bordered panel of back-of-the-envelope estimates.
+    // Accent-bordered, filled panel with a title and lines (key takeaway).
+    // `isNew` fades it in (for build-up slides).
+    function panel(x, y, w, h, title, lines, isNew = false) {
+      const body = lines
+        .map((l, i) => `<text class="strip-text" x="${x + 24}" y="${y + 64 + i * 22}">${l}</text>`)
+        .join("");
+      return `
+        <g class="${isNew ? "new" : ""}">
+          <rect class="panel-box" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <text class="panel-title" x="${x + 24}" y="${y + 34}">${title}</text>
+          ${body}
+        </g>`;
+    }
+
+    // Gray-bordered, unfilled panel of back-of-the-envelope estimates.
     // rows = [[heading, [value, value]], ...]
-    function estimatesPanel(x, y, w, h, title, rows) {
+    // `isNew` fades it in (for build-up slides); the border stays gray.
+    function estimatesPanel(x, y, w, h, title, rows, isNew = false) {
       let cy = y + 66;
       const body = rows
         .map(([k, vs]) => {
@@ -378,9 +406,11 @@
         })
         .join("");
       return `
-        <rect class="panel-box" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
-        <text class="panel-title" x="${x + 20}" y="${y + 32}">${title}</text>
-        ${body}`;
+        <g class="${isNew ? "new" : ""}">
+          <rect class="est-box" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <text class="est-title" x="${x + 20}" y="${y + 32}">${title}</text>
+          ${body}
+        </g>`;
     }
 
     // ========================================================================
@@ -517,7 +547,7 @@
     // MAIN: the whole ride-hailing system. Columns:
     //   clients | gateways | services | data / maps | async + payments | payments
     // Slides 3–4 use a monolithic "server" that occupies the services column;
-    // it is removed on slide 5 when the system splits by traffic shape.
+    // it is removed on slide 26 when the system splits by traffic shape.
     // ========================================================================
     const SCENE_MAIN = {
       boxes: [
@@ -631,52 +661,153 @@
     const match = sceneBuilder(SCENE_MATCH);
 
     // ========================================================================
-    // SLIDES
+    // EDIT THIS: functional requirements, built up one card per slide.
+    // ========================================================================
+    // Each card is [title, [line, line], script html]. The script describes
+    // just the requirement that card adds. Up to 9 cards fit in the 3×3 grid.
+    const FR_CARDS = [
+      ["Request a ride", ["Set pickup and dropoff", "Upfront fare and ETA before confirming"],
+        `<p>A rider opens the app, sets a <strong>pickup and dropoff</strong>, and sees an
+        <strong>upfront fare and an ETA</strong> before confirming.</p>`],
+      ["Driver availability", ["Go online and offline", "Stream GPS location while online"],
+        `<p>Meanwhile drivers who are <strong>online</strong> stream their GPS location
+        continuously.</p>`],
+      ["Matching", ["Find a nearby available driver", "Never assign one driver to two trips"],
+        `<p>When a rider confirms, we <strong>match</strong> them with a nearby available
+        driver. The invariant I care most about here: <strong>one driver is never assigned to
+        two trips</strong>.</p>`],
+      ["Accept / decline", ["Driver gets an offer with a ~15 s timeout", "Decline or timeout → next driver"],
+        `<p>The driver gets an <strong>offer</strong> with a short timeout, around 15 seconds.
+        If they decline or ignore it, we move on to the next driver.</p>`],
+      ["Live tracking", ["Rider watches the car approach", "and follows the trip on a map"],
+        `<p>Once matched, the rider watches the car <strong>approach on a map</strong>.</p>`],
+      ["Trip lifecycle", ["Requested → matched → arriving →", "in progress → completed (or cancelled)"],
+        `<p>The trip moves through a <strong>lifecycle</strong>: requested, matched, arriving,
+        in progress, completed, with cancellation possible at most steps.</p>`],
+      ["Dynamic pricing", ["Surge multiplier per area", "from live supply vs. demand"],
+        `<p>Prices are <strong>dynamic</strong>: when demand outstrips supply in an area, a
+        surge multiplier applies.</p>`],
+      ["Payment", ["Charge the card on file, exactly once", "Pay out the driver"],
+        `<p>At the end we <strong>charge the card on file exactly once</strong> and credit the
+        driver.</p>`],
+      ["Ratings &amp; history", ["Riders and drivers rate each other", "Past trips and receipts"],
+        `<p>Both sides <strong>rate</strong> each other, and everyone can see their trip
+        history and receipts.</p>`],
+    ];
+    const FR_OUT_OF_SCOPE = [
+      "UberEats &amp; delivery  ·  Pool / shared rides  ·  Scheduled rides  ·  In-app chat &amp; calls  ·  Fraud &amp; safety  ·  Driver onboarding / KYC",
+      "Building the maps and routing engine (we call it as a service)  ·  Payment-processor internals",
+    ];
+
+    // One functional-requirements diagram: the heading, the first `show` cards
+    // (the last of them highlighted), and optionally the out-of-scope strip.
+    function frDiagram({ show = 0, withStrip = false } = {}) {
+      const sub = show ? `<text class="subheading" x="330" y="42">what riders and drivers can do</text>` : "";
+      const fresh = withStrip ? -1 : show - 1;
+      return `
+        <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
+          <text class="heading" x="30" y="42">Functional requirements</text>
+          ${sub}
+          ${cardGrid(30, 66, 370, 128, 15, 3, FR_CARDS, { show, fresh })}
+          ${withStrip ? strip(30, 512, 1140, 100, "Out of scope (mentioned, not designed)",
+            FR_OUT_OF_SCOPE, true) : ""}
+        </svg>`;
+    }
+
+    // ========================================================================
+    // EDIT THIS: non-functional requirements, built up one card per slide,
+    // then the estimates panel, then the takeaway panel.
+    // ========================================================================
+    // Each card is [title, [line, line], script html], as for FR_CARDS.
+    const NFR_CARDS = [
+      ["Scale", ["20M trips/day worldwide", "~5M drivers online at peak"],
+        `<p>For <strong>scale</strong> I'll assume about <strong>20 million trips a day</strong>
+        worldwide and about <strong>5 million drivers online</strong> at the global peak.</p>`],
+      ["Match latency", ["A match within seconds", "Nearby search &lt; 100 ms"],
+        `<p>Riders expect a <strong>match within a few seconds</strong>, which means the "who's
+        near me" query needs to come back in well under 100 milliseconds.</p>`],
+      ["Fresh locations", ["Positions ≤ ~5 s old", "Lossy is OK, stale is not"],
+        `<p>Driver positions should be <strong>at most a few seconds old</strong>; dropping an
+        update is fine, as the next one is coming anyway.</p>`],
+      ["Consistency", ["Strong: trips, assignment", "Eventual: locations, map"],
+        `<p><strong>Consistency is split down the middle</strong>, and this shapes the whole
+        design. Trip state and driver assignment must be <strong>strongly consistent</strong>:
+        double-booking a driver or charging someone twice is a real failure. Locations and the
+        map are <strong>eventually consistent</strong>: a car icon a second behind reality is
+        fine.</p>`],
+      ["99.99% available", ["Request + match path", "Trips survive flaky phones"],
+        `<p>The request path needs <strong>four nines</strong>, and a trip must survive the
+        driver's phone going through a tunnel.</p>`],
+      ["Durability", ["Trips &amp; payments never lost", "Location history can be lossy"],
+        `<p>Trips and payments are <strong>durable</strong>: once recorded, they are never
+        lost. Location history is different; losing a few points of a driver's trail
+        is harmless.</p>`],
+      ["Exactly-once pay", ["Idempotent charges", "Safe under any retry"],
+        `<p>Payments are <strong>exactly-once</strong>.</p>`],
+      ["Geo-partitioned", ["Demand is local: shard by city", "Failures stay in one region"],
+        `<p>Demand is intensely <strong>local</strong> (a rider in Paris never needs a driver
+        in Tokyo), which is a gift for partitioning.</p>`],
+      ["Spiky", ["Concerts, rain, New Year's Eve", "10× local surges"],
+        `<p>And traffic is <strong>spiky</strong>: a concert letting out puts 10× normal
+        demand on a few city blocks.</p>`],
+    ];
+    const NFR_ESTIMATES = [
+      ["Location writes", ["5M drivers ÷ 4 s ≈ 1.25M writes/s"]],
+      ["Trips", ["20M/day ≈ 230/s average", "~1–2K/s at peak"]],
+      ["Live locations", ["5M × ~100 B ≈ 500 MB", "fits in RAM, sharded by region"]],
+      ["Trip storage", ["~5 KB × 20M/day ≈ 100 GB/day", "≈ 35 TB/yr"]],
+    ];
+    const NFR_TAKEAWAY = [
+      "1.25M location writes/s, each overwritten seconds later → an in-memory geo index, never a row in a SQL table",
+      "~1K trips/s with strict state and money attached → a small, strongly consistent store  ·  shard everything by city",
+    ];
+
+    // One non-functional-requirements diagram: the heading, the first `show`
+    // cards, and optionally the estimates and takeaway panels. The last thing
+    // added is the one highlighted as new.
+    function nfrDiagram({ show = 0, withEstimates = false, withTakeaway = false } = {}) {
+      const sub = show ? `<text class="subheading" x="372" y="42">how well it has to do it</text>` : "";
+      const fresh = withEstimates ? -1 : show - 1;
+      return `
+        <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
+          <text class="heading" x="30" y="42">Non-functional requirements</text>
+          ${sub}
+          ${cardGrid(30, 66, 255, 128, 13, 3, NFR_CARDS, { show, fresh })}
+          ${withEstimates ? estimatesPanel(832, 66, 338, 410, "Back of the envelope",
+            NFR_ESTIMATES, !withTakeaway) : ""}
+          ${withTakeaway ? panel(30, 496, 1140, 100,
+            "Takeaway: a firehose of locations and a trickle of trips that must be exact",
+            NFR_TAKEAWAY, true) : ""}
+        </svg>`;
+    }
+
+    // ========================================================================
+    // EDIT THIS: one entry per step of the design.
     // ========================================================================
     const SLIDES = [
       {
-        // --- Slide 1: functional requirements ---
-        diagram: `
-          <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
-            <text class="heading" x="30" y="42">Functional requirements</text>
-            <text class="subheading" x="330" y="42">what riders and drivers can do</text>
-            ${cardGrid(30, 66, 370, 128, 15, 3, [
-              ["Request a ride", ["Set pickup and dropoff", "Upfront fare and ETA before confirming"]],
-              ["Driver availability", ["Go online and offline", "Stream GPS location while online"]],
-              ["Matching", ["Find a nearby available driver", "Never assign one driver to two trips"]],
-              ["Accept / decline", ["Driver gets an offer with a ~15 s timeout", "Decline or timeout → next driver"]],
-              ["Live tracking", ["Rider watches the car approach", "and follows the trip on a map"]],
-              ["Trip lifecycle", ["Requested → matched → arriving →", "in progress → completed (or cancelled)"]],
-              ["Dynamic pricing", ["Surge multiplier per area", "from live supply vs. demand"]],
-              ["Payment", ["Charge the card on file, exactly once", "Pay out the driver"]],
-              ["Ratings &amp; history", ["Riders and drivers rate each other", "Past trips and receipts"]],
-            ])}
-            ${strip(30, 512, 1140, 100, "Out of scope (mentioned, not designed)", [
-              "UberEats &amp; delivery  ·  Pool / shared rides  ·  Scheduled rides  ·  In-app chat &amp; calls  ·  Fraud &amp; safety  ·  Driver onboarding / KYC",
-              "Building the maps and routing engine (we call it as a service)  ·  Payment-processor internals",
-            ])}
-          </svg>`,
+        // --- Functional requirements: title only ---
+        diagram: frDiagram(),
         script: {
-          title: "Functional requirements: what we're building",
+          title: "Functional requirements",
           html: `
             <p>Before drawing anything I want to agree on <strong>what Uber does</strong> for
             this design. There are two kinds of user, <strong>riders</strong> and
-            <strong>drivers</strong>, and the product is the moment they're brought together.</p>
-            <p>A rider opens the app, sets a <strong>pickup and dropoff</strong>, and sees an
-            <strong>upfront fare and an ETA</strong> before confirming. Meanwhile drivers who
-            are <strong>online</strong> stream their GPS location continuously. When a rider
-            confirms, we <strong>match</strong> them with a nearby available driver. The
-            invariant I care most about here: <strong>one driver is never assigned to two
-            trips</strong>. The driver gets an <strong>offer</strong> with a short timeout,
-            around 15 seconds. If they decline or ignore it, we move on to the next
-            driver.</p>
-            <p>Once matched, the rider watches the car <strong>approach on a map</strong>, and
-            the trip moves through a <strong>lifecycle</strong>: requested, matched, arriving,
-            in progress, completed, with cancellation possible at most steps. Prices are
-            <strong>dynamic</strong>: when demand outstrips supply in an area, a surge
-            multiplier applies. At the end we <strong>charge the card on file exactly
-            once</strong> and credit the driver. Both sides <strong>rate</strong> each other,
-            and everyone can see their trip history and receipts.</p>
+            <strong>drivers</strong>, and the product is the moment they're brought together.</p>`
+        }
+      },
+      // --- Functional requirements: one slide per card ---
+      ...FR_CARDS.map(([title, , html], i) => ({
+        diagram: frDiagram({ show: i + 1 }),
+        // The header is set as plain text, so unescape the SVG-safe "&amp;".
+        script: { title: title.replace(/&amp;/g, "&"), html },
+      })),
+      {
+        // --- Functional requirements: out of scope ---
+        diagram: frDiagram({ show: FR_CARDS.length, withStrip: true }),
+        script: {
+          title: "Out of scope",
+          html: `
             <p>I'm leaving out UberEats and delivery, Pool (shared rides change matching a
             lot), scheduled rides, in-app chat and calls, fraud and safety, and driver
             onboarding. I'm also <strong>not designing the maps engine</strong> itself.
@@ -686,59 +817,38 @@
         }
       },
       {
-        // --- Slide 2: non-functional requirements + estimates ---
-        diagram: `
-          <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
-            <text class="heading" x="30" y="42">Non-functional requirements</text>
-            <text class="subheading" x="372" y="42">how well it has to do it</text>
-            ${cardGrid(30, 66, 255, 128, 13, 3, [
-              ["Scale", ["20M trips/day worldwide", "~5M drivers online at peak"]],
-              ["Match latency", ["A match within seconds", "Nearby search &lt; 100 ms"]],
-              ["Fresh locations", ["Positions ≤ ~5 s old", "Lossy is OK, stale is not"]],
-              ["Consistency", ["Strong: trips, assignment", "Eventual: locations, map"]],
-              ["99.99% available", ["Request + match path", "Trips survive flaky phones"]],
-              ["Durability", ["Trips &amp; payments never lost", "Location history can be lossy"]],
-              ["Exactly-once pay", ["Idempotent charges", "Safe under any retry"]],
-              ["Geo-partitioned", ["Demand is local: shard by city", "Failures stay in one region"]],
-              ["Spiky", ["Concerts, rain, New Year's Eve", "10× local surges"]],
-            ])}
-            ${estimatesPanel(832, 66, 338, 410, "Back of the envelope", [
-              ["Location writes", ["5M drivers ÷ 4 s ≈ 1.25M writes/s"]],
-              ["Trips", ["20M/day ≈ 230/s average", "~1–2K/s at peak"]],
-              ["Live locations", ["5M × ~100 B ≈ 500 MB", "fits in RAM, sharded by region"]],
-              ["Trip storage", ["~5 KB × 20M/day ≈ 100 GB/day", "≈ 35 TB/yr"]],
-            ])}
-            ${strip(30, 496, 1140, 100, "Takeaway: a firehose of locations and a trickle of trips that must be exact", [
-              "1.25M location writes/s, each overwritten seconds later → an in-memory geo index, never a row in a SQL table",
-              "~1K trips/s with strict state and money attached → a small, strongly consistent store  ·  shard everything by city",
-            ])}
-          </svg>`,
+        // --- Non-functional requirements: title only ---
+        diagram: nfrDiagram(),
         script: {
-          title: "Non-functional requirements and back-of-the-envelope math",
+          title: "Non-functional requirements",
+          html: `<p>Now the qualities.</p>`
+        }
+      },
+      // --- Non-functional requirements: one slide per card ---
+      ...NFR_CARDS.map(([title, , html], i) => ({
+        diagram: nfrDiagram({ show: i + 1 }),
+        script: { title: title.replace(/&amp;/g, "&"), html },
+      })),
+      {
+        // --- Non-functional requirements: estimates ---
+        diagram: nfrDiagram({ show: NFR_CARDS.length, withEstimates: true }),
+        script: {
+          title: "Back-of-the-envelope estimates",
           html: `
-            <p>Now the qualities. For <strong>scale</strong> I'll assume about
-            <strong>20 million trips a day</strong> worldwide and about <strong>5 million
-            drivers online</strong> at the global peak. Riders expect a <strong>match within a
-            few seconds</strong>, which means the "who's near me" query needs to come back in
-            well under 100 milliseconds. Driver positions should be <strong>at most a few
-            seconds old</strong>; dropping an update is fine, as the next one is coming
-            anyway.</p>
-            <p><strong>Consistency is split down the middle</strong>, and this shapes the whole
-            design. Trip state and driver assignment must be <strong>strongly
-            consistent</strong>: double-booking a driver or charging someone twice is a real
-            failure. Locations and the map are <strong>eventually consistent</strong>: a car
-            icon a second behind reality is fine. The request path needs <strong>four
-            nines</strong>, and a trip must survive the driver's phone going through a tunnel.
-            Payments are <strong>exactly-once</strong>. Demand is intensely
-            <strong>local</strong> (a rider in Paris never needs a driver in Tokyo), which is a
-            gift for partitioning. And traffic is <strong>spiky</strong>: a concert letting out
-            puts 10× normal demand on a few city blocks.</p>
             <p>The numbers. <strong>Location writes</strong>: 5 million drivers pinging every 4
             seconds is about <strong>1.25 million writes per second</strong>. Compare that to
             <strong>trips</strong>: 20 million a day is only about 230 per second on average,
             maybe a couple of thousand at peak. The current location of every driver is about
             5 million × 100 bytes, roughly <strong>half a gigabyte</strong>, so the whole live
-            map fits in memory. Trip records are about 100 GB a day.</p>
+            map fits in memory. Trip records are about 100 GB a day.</p>`
+        }
+      },
+      {
+        // --- Non-functional requirements: takeaway ---
+        diagram: nfrDiagram({ show: NFR_CARDS.length, withEstimates: true, withTakeaway: true }),
+        script: {
+          title: "Takeaway: a firehose and a trickle",
+          html: `
             <p>So the takeaway: there are two very different problems here. A
             <strong>firehose</strong> of tiny, short-lived location writes that need fast
             spatial queries, and a <strong>trickle</strong> of trips that must be exact. I'll
@@ -746,7 +856,7 @@
         }
       },
       {
-        // --- Slide 3: simplest thing ---
+        // --- Slide 24: simplest thing ---
         diagram: main({ add: ["rider", "driver", "server", "e_rider_server", "e_driver_server"] }),
         script: {
           title: "Start simple: two apps and one server",
@@ -774,7 +884,7 @@
         }
       },
       {
-        // --- Slide 4: database ---
+        // --- Slide 25: database ---
         diagram: main({ add: ["db", "e_server_db"] }),
         script: {
           title: "Persist trips (and, naively, locations) in a database",
@@ -805,7 +915,7 @@
         }
       },
       {
-        // --- Slide 5: split by traffic shape ---
+        // --- Slide 26: split by traffic shape ---
         diagram: main({
           add: ["apigw", "trip", "location", "e_rider_apigw", "e_driver_location", "e_trip_db", "e_location_db"],
           remove: ["server"],
@@ -837,7 +947,7 @@
         }
       },
       {
-        // --- Slide 6: geo index ---
+        // --- Slide 27: geo index ---
         diagram: main({ add: ["geo", "e_location_geo"], remove: ["e_location_db"] }),
         script: {
           title: "The geo index: drivers bucketed into hexagonal cells",
@@ -871,7 +981,7 @@
         }
       },
       {
-        // --- Slide 7: dispatch ---
+        // --- Slide 28: dispatch ---
         diagram: main({ add: ["dispatch", "e_trip_dispatch", "e_dispatch_geo"] }),
         script: {
           title: "A dispatch service owns matching",
@@ -898,7 +1008,7 @@
         }
       },
       {
-        // --- Slide 8: maps / ETA ---
+        // --- Slide 29: maps / ETA ---
         diagram: main({ add: ["maps", "e_dispatch_maps"] }),
         script: {
           title: "Maps and ETAs: distance is the wrong metric",
@@ -927,7 +1037,7 @@
         }
       },
       {
-        // --- Slide 9: matching deep dive 1 — candidate search ---
+        // --- Slide 30: matching deep dive 1 — candidate search ---
         diagram: match({ add: ["trip", "geo", "cand", "m_trip_cand", "m_geo_cand"] }),
         script: {
           title: "Matching deep dive ①: candidate search",
@@ -953,7 +1063,7 @@
         }
       },
       {
-        // --- Slide 10: matching deep dive 2 — filter + driver state ---
+        // --- Slide 31: matching deep dive 2 — filter + driver state ---
         diagram: match({ add: ["filter", "state", "m_cand_filter", "m_state_filter"] }),
         script: {
           title: "Matching deep dive ②: filter on driver state",
@@ -980,7 +1090,7 @@
         }
       },
       {
-        // --- Slide 11: matching deep dive 3 — ETA ranking ---
+        // --- Slide 32: matching deep dive 3 — ETA ranking ---
         diagram: match({ add: ["rank", "maps", "m_filter_rank", "m_maps_rank"] }),
         script: {
           title: "Matching deep dive ③: rank by ETA",
@@ -1005,7 +1115,7 @@
         }
       },
       {
-        // --- Slide 12: matching deep dive 4 — batch optimizer ---
+        // --- Slide 33: matching deep dive 4 — batch optimizer ---
         diagram: match({ add: ["batch", "m_rank_batch"] }),
         script: {
           title: "Matching deep dive ④: batch matching beats greedy",
@@ -1035,7 +1145,7 @@
         }
       },
       {
-        // --- Slide 13: matching deep dive 5 — offers + locking ---
+        // --- Slide 34: matching deep dive 5 — offers + locking ---
         diagram: match({
           add: ["offer", "driver", "m_batch_offer", "m_offer_driver", "m_offer_state", "m_retry", "m_matched"],
         }),
@@ -1072,7 +1182,7 @@
         }
       },
       {
-        // --- Slide 14: realtime gateway ---
+        // --- Slide 35: realtime gateway ---
         diagram: main({
           add: ["rtgw", "e_driver_rtgw", "e_rtgw_location", "e_dispatch_rtgw"],
           remove: ["e_driver_location"],
@@ -1105,7 +1215,7 @@
         }
       },
       {
-        // --- Slide 15: rider tracking + push ---
+        // --- Slide 36: rider tracking + push ---
         diagram: main({ add: ["push", "e_rider_rtgw", "e_trip_rtgw", "e_rtgw_push", "e_push_driver"] }),
         script: {
           title: "Live tracking for riders, and push as a fallback",
@@ -1132,7 +1242,7 @@
         }
       },
       {
-        // --- Slide 16: trip state machine + trip store ---
+        // --- Slide 37: trip state machine + trip store ---
         diagram: main({ add: ["tripdb", "e_trip_tripdb"], remove: ["db"] }),
         script: {
           title: "The trip state machine and a sharded trip store",
@@ -1164,7 +1274,7 @@
         }
       },
       {
-        // --- Slide 17: Kafka ---
+        // --- Slide 38: Kafka ---
         diagram: main({ add: ["kafka", "e_trip_kafka", "e_location_kafka"] }),
         script: {
           title: "An event log: Kafka for trip and location events",
@@ -1194,7 +1304,7 @@
         }
       },
       {
-        // --- Slide 18: pricing ---
+        // --- Slide 39: pricing ---
         diagram: main({ add: ["pricing", "e_pricing_maps"] }),
         script: {
           title: "Pricing: upfront fare quotes",
@@ -1224,7 +1334,7 @@
         }
       },
       {
-        // --- Slide 19: surge ---
+        // --- Slide 40: surge ---
         diagram: main({ add: ["surge", "surgestore", "e_kafka_surge", "e_surge_store", "e_pricing_surgestore"] }),
         script: {
           title: "Surge: streaming supply and demand per hex cell",
@@ -1253,7 +1363,7 @@
         }
       },
       {
-        // --- Slide 20: payments ---
+        // --- Slide 41: payments ---
         diagram: main({
           add: ["payment", "ledger", "psp", "e_kafka_payment", "e_payment_ledger", "e_payment_psp"],
         }),
@@ -1285,7 +1395,7 @@
         }
       },
       {
-        // --- Slide 21: data lake ---
+        // --- Slide 42: data lake ---
         diagram: main({ add: ["lake", "e_kafka_lake"] }),
         script: {
           title: "The data lake: analytics and the models that feed back in",
@@ -1315,7 +1425,7 @@
         }
       },
       {
-        // --- Slide 22: multi-region ---
+        // --- Slide 43: multi-region ---
         diagram: main({ add: ["regions", "e_tripdb_regions"] }),
         script: {
           title: "Going global: regions, cells and surviving failover",
@@ -1344,7 +1454,7 @@
         }
       },
       {
-        // --- Slide 23: the complete system ---
+        // --- Slide 44: the complete system ---
         diagram: main(),
         script: {
           title: "The complete system: following one ride end to end",

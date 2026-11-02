@@ -6,14 +6,17 @@
 
   Built from slides/example.html. Same layout, theme, navigation and engine.
 
-    - Slides 1–2: functional / non-functional requirements (card grids).
-    - Slides 3–11: the main scene (SCENE_MAIN) grows from one server to split
+    - Slides 1–11: functional requirements, built up one card per slide
+      (title, nine cards, out-of-scope strip).
+    - Slides 12–23: non-functional requirements, built up the same way
+      (title, nine cards, estimates panel, takeaway panel).
+    - Slides 24–32: the main scene (SCENE_MAIN) grows from one server to split
       event / booking services, seat holds with expiry, checkout and payment,
       search, caching, a CDN, and the waiting room as a single box.
-    - Slides 12–16: a deep dive into the virtual waiting room (SCENE_WAIT):
+    - Slides 33–37: a deep dive into the virtual waiting room (SCENE_WAIT):
       join → cached status polling → admission control → access tokens →
       bots and fairness.
-    - Slides 17–20: back to the main scene: the event bus and notifications,
+    - Slides 38–41: back to the main scene: the event bus and notifications,
       the live seat map, other regions, and the complete system.
 
   Navigation (shared by every deck): on-screen back/forward arrows, plus the
@@ -234,12 +237,13 @@
       svg.animate .new { opacity: 1; animation: none; }
     }
 
-    /* ---- Requirement slides (slides 1–2) ---- */
+    /* ---- Requirement slides (slides 1–23) ---- */
     .heading { fill: var(--accent); font-size: 24px; font-weight: 700; }
     .subheading { fill: var(--ink-dim); font-size: 14px; }
     .card rect { fill: var(--box-fill); stroke: var(--box-stroke); stroke-width: 1.5; }
     .card .badge { fill: var(--accent); }
     .card .badge-num { fill: var(--bg); font-size: 13px; font-weight: 700; text-anchor: middle; dominant-baseline: central; }
+    .card.new rect { stroke: var(--accent); stroke-width: 3; filter: drop-shadow(0 0 7px var(--accent)); }
     .card .title { fill: var(--box-ink); font-size: 17px; font-weight: 700; }
     .card .line { fill: var(--ink-dim); font-size: 13.5px; }
     .panel-box { fill: var(--box-fill); stroke: var(--accent); stroke-width: 1.5; }
@@ -247,7 +251,9 @@
     .strip { fill: transparent; stroke: var(--box-stroke); stroke-width: 1.5; stroke-dasharray: 7 6; }
     .strip-title { fill: var(--ink); font-size: 15px; font-weight: 700; }
     .strip-text { fill: var(--ink-dim); font-size: 13.5px; }
-    .est-k { fill: var(--accent); font-size: 13.5px; font-weight: 700; }
+    .est-box { fill: transparent; stroke: var(--box-stroke); stroke-width: 1.5; }
+    .est-title { fill: var(--ink-dim); font-size: 17px; font-weight: 700; }
+    .est-k { fill: var(--ink); font-size: 13.5px; font-weight: 700; }
     .est-v { fill: var(--ink); font-size: 13.5px; }
   </style>
 </head>
@@ -328,16 +334,17 @@
     }
 
     // ========================================================================
-    // Requirement-slide helpers (slides 1–2). Use viewBox 0 0 1200 640.
+    // Requirement-slide helpers (slides 1–23). Use viewBox 0 0 1200 640.
     // ========================================================================
 
     // One numbered requirement card: a title plus 1–3 short lines.
-    function card(x, y, w, h, num, title, lines) {
+    // `isNew` highlights it and fades it in (for build-up slides).
+    function card(x, y, w, h, num, title, lines, isNew = false) {
       const body = lines
         .map((l, i) => `<text class="line" x="${x + 18}" y="${y + 66 + i * 21}">${l}</text>`)
         .join("");
       return `
-        <g class="card">
+        <g class="card${isNew ? " new" : ""}">
           <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
           <circle class="badge" cx="${x + 30}" cy="${y + 30}" r="13"></circle>
           <text class="badge-num" x="${x + 30}" y="${y + 30}">${num}</text>
@@ -347,29 +354,50 @@
     }
 
     // A grid of cards, numbered 1..N. items = [[title, [line, line]], ...]
-    function cardGrid(x0, y0, w, h, gap, cols, items) {
+    // For a build-up, `show` draws only the first N cards and `fresh` is the
+    // index of the card to highlight as new (-1 for none).
+    function cardGrid(x0, y0, w, h, gap, cols, items, { show = items.length, fresh = -1 } = {}) {
       return items
+        .slice(0, show)
         .map((it, i) => {
           const c = i % cols, r = Math.floor(i / cols);
-          return card(x0 + c * (w + gap), y0 + r * (h + gap), w, h, i + 1, it[0], it[1]);
+          return card(x0 + c * (w + gap), y0 + r * (h + gap), w, h, i + 1, it[0], it[1], i === fresh);
         })
         .join("");
     }
 
-    // Dashed strip with a title and lines (out-of-scope list, key takeaway).
-    function strip(x, y, w, h, title, lines) {
+    // Dashed strip with a title and lines (out-of-scope list).
+    // `isNew` fades it in (for build-up slides); the border stays gray.
+    function strip(x, y, w, h, title, lines, isNew = false) {
       const body = lines
         .map((l, i) => `<text class="strip-text" x="${x + 24}" y="${y + 64 + i * 22}">${l}</text>`)
         .join("");
       return `
-        <rect class="strip" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
-        <text class="strip-title" x="${x + 24}" y="${y + 34}">${title}</text>
-        ${body}`;
+        <g class="${isNew ? "new" : ""}">
+          <rect class="strip" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <text class="strip-title" x="${x + 24}" y="${y + 34}">${title}</text>
+          ${body}
+        </g>`;
     }
 
-    // Accent-bordered panel of back-of-the-envelope estimates.
+    // Accent-bordered, filled panel with a title and lines (key takeaway).
+    // `isNew` fades it in (for build-up slides).
+    function panel(x, y, w, h, title, lines, isNew = false) {
+      const body = lines
+        .map((l, i) => `<text class="strip-text" x="${x + 24}" y="${y + 64 + i * 22}">${l}</text>`)
+        .join("");
+      return `
+        <g class="${isNew ? "new" : ""}">
+          <rect class="panel-box" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <text class="panel-title" x="${x + 24}" y="${y + 34}">${title}</text>
+          ${body}
+        </g>`;
+    }
+
+    // Gray-bordered, unfilled panel of back-of-the-envelope estimates.
     // rows = [[heading, [value, value]], ...]
-    function estimatesPanel(x, y, w, h, title, rows) {
+    // `isNew` fades it in (for build-up slides); the border stays gray.
+    function estimatesPanel(x, y, w, h, title, rows, isNew = false) {
       let cy = y + 66;
       const body = rows
         .map(([k, vs]) => {
@@ -380,9 +408,11 @@
         })
         .join("");
       return `
-        <rect class="panel-box" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
-        <text class="panel-title" x="${x + 20}" y="${y + 32}">${title}</text>
-        ${body}`;
+        <g class="${isNew ? "new" : ""}">
+          <rect class="est-box" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+          <text class="est-title" x="${x + 20}" y="${y + 32}">${title}</text>
+          ${body}
+        </g>`;
     }
 
     // ========================================================================
@@ -610,31 +640,135 @@
     const wait = sceneBuilder(SCENE_WAIT);
 
     // ========================================================================
-    // SLIDES
+    // EDIT THIS: functional requirements, built up one card per slide.
+    // ========================================================================
+    // Each card is [title, [line, line], script html]. The script describes
+    // just the requirement that card adds. Up to 9 cards fit in the 3×3 grid.
+    const FR_CARDS = [
+      ["Browse events", ["Event pages: date, venue, lineup, prices", "Browse by city, date and category"],
+        `<p>Fans can <strong>browse</strong> event pages (date, venue, lineup, price
+        range).</p>`],
+      ["Search", ["By artist, venue, city, date range", "Typo-tolerant, with filters"],
+        `<p>They can also <strong>search</strong> by artist, venue, city or date.</p>`],
+      ["Seat map", ["Live availability for every seat", "Available · held · sold"],
+        `<p>On an event they see a <strong>seat map</strong> showing which seats are
+        available, held by someone else, or sold.</p>`],
+      ["Reserve seats", ["Pick seats, or “best available”", "Held for you for ~10 minutes"],
+        `<p>They can <strong>reserve</strong> specific seats or ask for "best available", and
+        those seats are <strong>held for about ten minutes</strong> while they check out.</p>`],
+      ["Checkout", ["Pay within the hold window", "Every seat is sold exactly once"],
+        `<p>If they <strong>pay</strong> in that window, the seats are theirs, and the
+        invariant I care most about is that <strong>a seat is sold exactly once</strong>.</p>`],
+      ["Hold expiry", ["Abandoned holds release on their own", "Seats go straight back on sale"],
+        `<p>If they walk away, the hold <strong>expires on its own</strong> and the seats go
+        back on sale.</p>`],
+      ["Virtual waiting room", ["Hot on-sales queue fans fairly", "and admit them at a controlled rate"],
+        `<p>For hot on-sales, where demand dwarfs supply, we put fans in a <strong>virtual
+        waiting room</strong> and let them into the purchase flow at a controlled rate.</p>`],
+      ["Tickets &amp; orders", ["Mobile ticket with a QR code", "Order history"],
+        `<p>Afterwards they get a <strong>mobile ticket</strong> and can see their order
+        history.</p>`],
+      ["Notifications", ["Order confirmation by email / push", "“It’s your turn” from the queue"],
+        `<p>They also receive <strong>notifications</strong>: the order confirmation, and
+        "it's your turn" when they reach the front of the queue.</p>`],
+    ];
+    const FR_OUT_OF_SCOPE = [
+      "Resale / secondary marketplace  ·  Dynamic pricing  ·  Organizer &amp; venue admin tools  ·  Gate scanning hardware",
+      "Bot-detection internals (we call a service)  ·  Payment-processor internals  ·  Recommendations",
+    ];
+
+    // One functional-requirements diagram: the heading, the first `show` cards
+    // (the last of them highlighted), and optionally the out-of-scope strip.
+    function frDiagram({ show = 0, withStrip = false } = {}) {
+      const sub = show ? `<text class="subheading" x="330" y="42">what a fan can do</text>` : "";
+      const fresh = withStrip ? -1 : show - 1;
+      return `
+        <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
+          <text class="heading" x="30" y="42">Functional requirements</text>
+          ${sub}
+          ${cardGrid(30, 66, 370, 128, 15, 3, FR_CARDS, { show, fresh })}
+          ${withStrip ? strip(30, 512, 1140, 100, "Out of scope (mentioned, not designed)",
+            FR_OUT_OF_SCOPE, true) : ""}
+        </svg>`;
+    }
+
+    // ========================================================================
+    // EDIT THIS: non-functional requirements, built up one card per slide,
+    // then the estimates panel, then the takeaway panel.
+    // ========================================================================
+    // Each card is [title, [line, line], script html], as for FR_CARDS.
+    const NFR_CARDS = [
+      ["Never double-sell", ["One seat, one buyer, always", "Strongly consistent inventory"],
+        `<p>The number-one quality is <strong>correctness of inventory</strong>: we
+        <strong>never sell the same seat twice</strong>. That needs <strong>strong
+        consistency</strong> on seats and orders.</p>`],
+      ["Spiky on-sales", ["Quiet most of the time, then", "10M+ fans in a few minutes"],
+        `<p>The second defining quality is that traffic is <strong>wildly spiky</strong>.
+        When a stadium tour goes on sale at 10 a.m., <strong>ten million fans</strong> show
+        up in minutes for maybe <strong>50,000 seats</strong>.</p>`],
+      ["Read-heavy", ["~100 browses per purchase", "Browse may be a bit stale"],
+        `<p>The workload is <strong>read-heavy</strong>: roughly a hundred browses for every
+        purchase. Beyond seats and orders, everything else (event pages, search results, even
+        the seat map) can be <strong>a few seconds stale</strong>, and we'll exploit that
+        heavily.</p>`],
+      ["Latency", ["Browse / search &lt; 200 ms", "Seat hold &lt; 500 ms at peak"],
+        `<p>For latency, browse and search should be <strong>under 200 ms</strong>, and
+        grabbing a seat should feel instant, <strong>under half a second</strong> even at
+        peak.</p>`],
+      ["Availability", ["Browse 99.99%", "Overload → queue, not crash"],
+        `<p>Browse needs <strong>four nines</strong>. For the purchase path I'd rather
+        <strong>degrade gracefully</strong>: under overload, put people in a queue rather
+        than throw errors.</p>`],
+      ["Fairness", ["Roughly first come, first served", "Bots don't get ahead"],
+        `<p>Because so many people are disappointed, the process has to <strong>feel
+        fair</strong>: roughly first come, first served, with bots not getting ahead.</p>`],
+      ["Durability", ["Orders, payments never lost", "Charges are idempotent"],
+        `<p>Orders and payments must be <strong>durable</strong>, and charging a card must be
+        <strong>idempotent</strong>.</p>`],
+      ["Fresh seat map", ["At most a few seconds stale", "Taken seats vanish quickly"],
+        `<p>The <strong>seat map</strong> may lag, but only by a few seconds: a seat someone
+        just took should vanish quickly, or fans keep clicking on seats they can't have.</p>`],
+      ["Scale", ["~100M users · 1M tickets/day", "~100K events on sale"],
+        `<p>On <strong>scale</strong>, I'll assume about <strong>100 million users</strong>,
+        a million tickets sold a day, and around 100,000 events on sale at any time.</p>`],
+    ];
+    const NFR_ESTIMATES = [
+      ["Normal day", ["1M tickets/day ≈ 12 orders/s", "×100 browse ≈ 1–2K req/s"]],
+      ["Hot on-sale", ["10M fans ÷ 50K seats ≈ 200 per seat", "polling every 5 s ≈ 2M req/s"]],
+      ["Inventory", ["100K events × ~10K seats ≈ 1B rows", "× ~200 B ≈ 200 GB, sharded by event"]],
+      ["Orders", ["1M/day × ~2 KB ≈ 2 GB/day"]],
+    ];
+    const NFR_TAKEAWAY = [
+      "200 fans per seat and 2M req/s → stop the crowd at the edge, and admit buyers only as fast as checkout can serve them",
+      "Only ~200 GB of seats, but every one is contested → conditional writes on a strongly consistent store, sharded by event",
+    ];
+
+    // One non-functional-requirements diagram: the heading, the first `show`
+    // cards, and optionally the estimates and takeaway panels. The last thing
+    // added is the one highlighted as new.
+    function nfrDiagram({ show = 0, withEstimates = false, withTakeaway = false } = {}) {
+      const sub = show ? `<text class="subheading" x="372" y="42">how well it has to do it</text>` : "";
+      const fresh = withEstimates ? -1 : show - 1;
+      return `
+        <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
+          <text class="heading" x="30" y="42">Non-functional requirements</text>
+          ${sub}
+          ${cardGrid(30, 66, 255, 128, 13, 3, NFR_CARDS, { show, fresh })}
+          ${withEstimates ? estimatesPanel(832, 66, 338, 410, "Back of the envelope",
+            NFR_ESTIMATES, !withTakeaway) : ""}
+          ${withTakeaway ? panel(30, 496, 1140, 100,
+            "Takeaway: a small, fought-over inventory behind a huge, mostly disappointed crowd",
+            NFR_TAKEAWAY, true) : ""}
+        </svg>`;
+    }
+
+    // ========================================================================
+    // EDIT THIS: one entry per step of the design.
     // ========================================================================
     const SLIDES = [
       {
-        // --- Slide 1: functional requirements ---
-        diagram: `
-          <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
-            <text class="heading" x="30" y="42">Functional requirements</text>
-            <text class="subheading" x="330" y="42">what a fan can do</text>
-            ${cardGrid(30, 66, 370, 128, 15, 3, [
-              ["Browse events", ["Event pages: date, venue, lineup, prices", "Browse by city, date and category"]],
-              ["Search", ["By artist, venue, city, date range", "Typo-tolerant, with filters"]],
-              ["Seat map", ["Live availability for every seat", "Available · held · sold"]],
-              ["Reserve seats", ["Pick seats, or “best available”", "Held for you for ~10 minutes"]],
-              ["Checkout", ["Pay within the hold window", "Every seat is sold exactly once"]],
-              ["Hold expiry", ["Abandoned holds release on their own", "Seats go straight back on sale"]],
-              ["Virtual waiting room", ["Hot on-sales queue fans fairly", "and admit them at a controlled rate"]],
-              ["Tickets &amp; orders", ["Mobile ticket with a QR code", "Order history"]],
-              ["Notifications", ["Order confirmation by email / push", "“It’s your turn” from the queue"]],
-            ])}
-            ${strip(30, 512, 1140, 100, "Out of scope (mentioned, not designed)", [
-              "Resale / secondary marketplace  ·  Dynamic pricing  ·  Organizer &amp; venue admin tools  ·  Gate scanning hardware",
-              "Bot-detection internals (we call a service)  ·  Payment-processor internals  ·  Recommendations",
-            ])}
-          </svg>`,
+        // --- Functional requirements: title only ---
+        diagram: frDiagram(),
         script: {
           title: "Functional requirements: what we're building",
           html: `
@@ -642,21 +776,21 @@
             for this design. The core journey is short: a fan <strong>finds an event</strong>,
             looks at the <strong>seat map</strong>, <strong>grabs some seats</strong>, and
             <strong>pays</strong> for them. Everything interesting comes from doing that for
-            the wrong number of people at the wrong moment.</p>
-            <p>Fans can <strong>browse</strong> event pages (date, venue, lineup, price range)
-            and <strong>search</strong> by artist, venue, city or date. On an event they see a
-            <strong>seat map</strong> showing which seats are available, held by someone else,
-            or sold. They can <strong>reserve</strong> specific seats or ask for "best
-            available", and those seats are <strong>held for about ten minutes</strong> while
-            they check out. If they <strong>pay</strong> in that window, the seats are theirs,
-            and the invariant I care most about is that <strong>a seat is sold exactly
-            once</strong>. If they walk away, the hold <strong>expires on its own</strong> and the
-            seats go back on sale.</p>
-            <p>For hot on-sales, where demand dwarfs supply, we put fans in a <strong>virtual
-            waiting room</strong> and let them into the purchase flow at a controlled rate.
-            Afterwards they get a <strong>mobile ticket</strong>, can see their order history,
-            and receive <strong>notifications</strong>: the order confirmation, and "it's your
-            turn" when they reach the front of the queue.</p>
+            the wrong number of people at the wrong moment.</p>`
+        }
+      },
+      // --- Functional requirements: one slide per card ---
+      ...FR_CARDS.map(([title, , html], i) => ({
+        diagram: frDiagram({ show: i + 1 }),
+        // The header is set as plain text, so unescape the SVG-safe "&amp;".
+        script: { title: title.replace(/&amp;/g, "&"), html },
+      })),
+      {
+        // --- Functional requirements: out of scope ---
+        diagram: frDiagram({ show: FR_CARDS.length, withStrip: true }),
+        script: {
+          title: "Out of scope",
+          html: `
             <p>I'm leaving out <strong>resale</strong>, which is a whole marketplace of its own,
             plus dynamic pricing, the tools organizers and venues use to set up events, and
             the scanners at the gate. Bot detection matters, but I'll treat it as a service we
@@ -664,68 +798,50 @@
         }
       },
       {
-        // --- Slide 2: non-functional requirements + estimates ---
-        diagram: `
-          <svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
-            <text class="heading" x="30" y="42">Non-functional requirements</text>
-            <text class="subheading" x="372" y="42">how well it has to do it</text>
-            ${cardGrid(30, 66, 255, 128, 13, 3, [
-              ["Never double-sell", ["One seat, one buyer, always", "Strongly consistent inventory"]],
-              ["Spiky on-sales", ["Quiet most of the time, then", "10M+ fans in a few minutes"]],
-              ["Read-heavy", ["~100 browses per purchase", "Browse may be a bit stale"]],
-              ["Latency", ["Browse / search &lt; 200 ms", "Seat hold &lt; 500 ms at peak"]],
-              ["Availability", ["Browse 99.99%", "Overload → queue, not crash"]],
-              ["Fairness", ["Roughly first come, first served", "Bots don't get ahead"]],
-              ["Durability", ["Orders, payments never lost", "Charges are idempotent"]],
-              ["Fresh seat map", ["At most a few seconds stale", "Taken seats vanish quickly"]],
-              ["Scale", ["~100M users · 1M tickets/day", "~100K events on sale"]],
-            ])}
-            ${estimatesPanel(832, 66, 338, 410, "Back of the envelope", [
-              ["Normal day", ["1M tickets/day ≈ 12 orders/s", "×100 browse ≈ 1–2K req/s"]],
-              ["Hot on-sale", ["10M fans ÷ 50K seats ≈ 200 per seat", "polling every 5 s ≈ 2M req/s"]],
-              ["Inventory", ["100K events × ~10K seats ≈ 1B rows", "× ~200 B ≈ 200 GB, sharded by event"]],
-              ["Orders", ["1M/day × ~2 KB ≈ 2 GB/day"]],
-            ])}
-            ${strip(30, 496, 1140, 100, "Takeaway: a small, fought-over inventory behind a huge, mostly disappointed crowd", [
-              "200 fans per seat and 2M req/s → stop the crowd at the edge, and admit buyers only as fast as checkout can serve them",
-              "Only ~200 GB of seats, but every one is contested → conditional writes on a strongly consistent store, sharded by event",
-            ])}
-          </svg>`,
+        // --- Non-functional requirements: title only ---
+        diagram: nfrDiagram(),
         script: {
-          title: "Non-functional requirements and back-of-the-envelope math",
+          title: "Non-functional requirements",
+          html: `<p>Now the qualities the system needs.</p>`
+        }
+      },
+      // --- Non-functional requirements: one slide per card ---
+      ...NFR_CARDS.map(([title, , html], i) => ({
+        diagram: nfrDiagram({ show: i + 1 }),
+        script: { title: title.replace(/&amp;/g, "&"), html },
+      })),
+      {
+        // --- Non-functional requirements: estimates ---
+        diagram: nfrDiagram({ show: NFR_CARDS.length, withEstimates: true }),
+        script: {
+          title: "Back-of-the-envelope estimates",
           html: `
-            <p>The number-one quality is <strong>correctness of inventory</strong>: we
-            <strong>never sell the same seat twice</strong>. That needs <strong>strong
-            consistency</strong> on seats and orders. Everything else (event pages, search
-            results, even the seat map) can be <strong>a few seconds stale</strong>, and we'll
-            exploit that heavily.</p>
-            <p>The second defining quality is that traffic is <strong>wildly spiky</strong>.
-            On a normal day, with about <strong>a million tickets</strong> sold across
+            <p>On a normal day, with about <strong>a million tickets</strong> sold across
             100,000 events, that's roughly <strong>12 orders a second</strong> and a couple
-            of thousand browse requests a second. That's a modest system. But when a stadium
-            tour goes on sale at 10 a.m., <strong>ten million fans</strong> show up in minutes
-            for maybe <strong>50,000 seats</strong>. That's 200 people per seat. If each of them
-            refreshes the seat map every five seconds, that's about <strong>2 million requests a
-            second</strong> on one event, three orders of magnitude above normal.</p>
-            <p>For latency, browse and search should be <strong>under 200 ms</strong>, and
-            grabbing a seat should feel instant, <strong>under half a second</strong> even at
-            peak. Browse needs <strong>four nines</strong>. For the purchase path I'd rather
-            <strong>degrade gracefully</strong>: under overload, put people in a queue rather
-            than throw errors. And because so many people are disappointed, the process has to
-            <strong>feel fair</strong>: roughly first come, first served, with bots not getting
-            ahead. Orders and payments must be <strong>durable</strong>, and charging a card
-            must be <strong>idempotent</strong>.</p>
+            of thousand browse requests a second. That's a modest system. A hot on-sale is
+            different: that's 200 people per seat. If each of them refreshes the seat map every
+            five seconds, that's about <strong>2 million requests a second</strong> on one
+            event, three orders of magnitude above normal.</p>
             <p>The interesting thing about the storage math is how <strong>small</strong> it
             is. A billion seat rows at a couple of hundred bytes is about
-            <strong>200 GB</strong>, and orders add a couple of GB a day. Data volume isn't the
-            problem. <strong>Contention</strong> is: 200 people reaching for the same row. So
-            two things will shape the design. We stop the crowd <strong>before</strong> it
-            reaches the inventory. And the inventory itself uses <strong>conditional
-            writes</strong> on a strongly consistent store, partitioned by event.</p>`
+            <strong>200 GB</strong>, and orders add a couple of GB a day.</p>`
         }
       },
       {
-        // --- Slide 3: the simplest possible starting point ---
+        // --- Non-functional requirements: takeaway ---
+        diagram: nfrDiagram({ show: NFR_CARDS.length, withEstimates: true, withTakeaway: true }),
+        script: {
+          title: "Takeaway: stop the crowd, protect the inventory",
+          html: `
+            <p>Data volume isn't the problem. <strong>Contention</strong> is: 200 people
+            reaching for the same row. So two things will shape the design. We stop the crowd
+            <strong>before</strong> it reaches the inventory. And the inventory itself uses
+            <strong>conditional writes</strong> on a strongly consistent store, partitioned by
+            event.</p>`
+        }
+      },
+      {
+        // --- Slide 24: the simplest possible starting point ---
         diagram: main({ add: ["client", "server", "e_client_server"] }),
         script: {
           title: "Start with the simplest thing that works",
@@ -752,7 +868,7 @@
         }
       },
       {
-        // --- Slide 4: persistence + data model ---
+        // --- Slide 25: persistence + data model ---
         diagram: main({ add: ["db", "e_server_db"] }),
         script: {
           title: "A relational database and the data model",
@@ -783,7 +899,7 @@
         }
       },
       {
-        // --- Slide 5: split into services behind a gateway ---
+        // --- Slide 26: split into services behind a gateway ---
         diagram: main({
           add: ["gateway", "event", "booking", "e_client_gateway", "e_event_db", "e_booking_db"],
           remove: ["server"],
@@ -815,7 +931,7 @@
         }
       },
       {
-        // --- Slide 6: seat holds and expiry ---
+        // --- Slide 27: seat holds and expiry ---
         diagram: main({ add: ["sweeper", "e_sweeper_db"] }),
         script: {
           title: "Holding seats without double-booking",
@@ -848,7 +964,7 @@
         }
       },
       {
-        // --- Slide 7: checkout and payment ---
+        // --- Slide 28: checkout and payment ---
         diagram: main({ add: ["order", "payment", "e_order_db", "e_order_payment"] }),
         script: {
           title: "Checkout: pay, then confirm, exactly once",
@@ -879,7 +995,7 @@
         }
       },
       {
-        // --- Slide 8: search ---
+        // --- Slide 29: search ---
         diagram: main({ add: ["search", "searchidx", "e_search_searchidx", "e_db_searchidx"] }),
         script: {
           title: "Search with a dedicated index",
@@ -907,7 +1023,7 @@
         }
       },
       {
-        // --- Slide 9: cache tier ---
+        // --- Slide 30: cache tier ---
         diagram: main({ add: ["cache"] }),
         script: {
           title: "Cache event pages and seat-map snapshots",
@@ -936,7 +1052,7 @@
         }
       },
       {
-        // --- Slide 10: CDN ---
+        // --- Slide 31: CDN ---
         diagram: main({ add: ["cdn", "e_client_cdn", "e_cdn_gateway"] }),
         script: {
           title: "Push the read path to the edge with a CDN",
@@ -961,7 +1077,7 @@
         }
       },
       {
-        // --- Slide 11: waiting room enters the main scene ---
+        // --- Slide 32: waiting room enters the main scene ---
         diagram: main({ add: ["waitroom", "queuestore", "e_waitroom_queuestore"] }),
         script: {
           title: "The on-sale problem and the waiting room",
@@ -992,7 +1108,7 @@
         }
       },
       {
-        // --- Slide 12: deep dive — joining the queue ---
+        // --- Slide 33: deep dive — joining the queue ---
         diagram: wait({
           add: ["fans", "edge", "wrsvc", "queue", "w_fans_edge", "w_edge_wrsvc", "w_wrsvc_queue"],
         }),
@@ -1024,7 +1140,7 @@
         }
       },
       {
-        // --- Slide 13: deep dive — cached status ---
+        // --- Slide 34: deep dive — cached status ---
         diagram: wait({ add: ["status", "w_edge_status"] }),
         script: {
           title: "Waiting cheaply: status from the edge",
@@ -1052,7 +1168,7 @@
         }
       },
       {
-        // --- Slide 14: deep dive — admission control ---
+        // --- Slide 35: deep dive — admission control ---
         diagram: wait({
           add: ["admission", "health", "w_queue_admission", "w_admission_status", "w_health_admission"],
         }),
@@ -1083,7 +1199,7 @@
         }
       },
       {
-        // --- Slide 15: deep dive — access tokens ---
+        // --- Slide 36: deep dive — access tokens ---
         diagram: wait({
           add: ["gateway", "booking", "w_fans_gateway", "w_gateway_booking", "w_booking_health"],
         }),
@@ -1114,7 +1230,7 @@
         }
       },
       {
-        // --- Slide 16: deep dive — bots and fairness ---
+        // --- Slide 37: deep dive — bots and fairness ---
         diagram: wait({ add: ["bots", "w_edge_bots"] }),
         script: {
           title: "Bots, fairness and verified fans",
@@ -1142,7 +1258,7 @@
         }
       },
       {
-        // --- Slide 17: back to main — event bus + notifications ---
+        // --- Slide 38: back to main — event bus + notifications ---
         diagram: main({
           add: ["kafka", "notify", "email", "e_db_kafka", "e_kafka_notify", "e_notify_email"],
         }),
@@ -1175,7 +1291,7 @@
         }
       },
       {
-        // --- Slide 18: live seat map ---
+        // --- Slide 39: live seat map ---
         diagram: main({ add: ["seatstream", "e_kafka_seatstream"] }),
         script: {
           title: "A live seat map with server-sent events",
@@ -1204,7 +1320,7 @@
         }
       },
       {
-        // --- Slide 19: other regions + partitioning ---
+        // --- Slide 40: other regions + partitioning ---
         diagram: main({ add: ["regions", "e_db_regions"] }),
         script: {
           title: "Partitioning inventory and going multi-region",
@@ -1235,7 +1351,7 @@
         }
       },
       {
-        // --- Slide 20: the complete system ---
+        // --- Slide 41: the complete system ---
         diagram: main(),
         script: {
           title: "The complete system",
