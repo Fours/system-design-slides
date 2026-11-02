@@ -254,32 +254,163 @@
       "add": ["client", "server", "e_client_server"],
       "title": "Start simple: one client, one server",
       "script": [
-        "Let's start with the simplest thing that could work: a **Docs client**, which is the editor running in a browser or app, talking to a single **Docs server** over HTTPS. Opening a doc fetches it, and the client **autosaves** by sending the whole document back every few seconds.",
-        "The first decision that lasts through the final design is **what a document is**. It isn't a file of bytes. It's a **structured model**: a sequence of characters, plus formatting ranges (bold, heading, link) and embedded objects like images and tables, each at a position in that sequence. The server and every client hold this same model. Thinking of it as \"a long string with annotations\" is what lets us describe changes as small edits at positions, which we'll need very soon.",
-        "For one person this works fine. The obvious problems: everything lives in the server's memory, so a restart loses every document. And it isn't collaborative at all. Let's add storage first, and then see what goes wrong as soon as a second person opens the same document."
+        "Let's start with the simplest thing that could work: a **Docs client**, which is the editor running in a browser or app, talking to a single **Docs server** over HTTPS. Opening a doc fetches it, and the client **autosaves** by sending the whole document back every few seconds."
       ]
+    },
+    {
+      "title": "A document is a structured model",
+      "script": [
+        "The first decision that lasts through the final design is **what a document is**. It isn't a file of bytes. It's a **structured model**: a sequence of characters, plus formatting ranges (bold, heading, link) and embedded objects like images and tables, each at a position in that sequence. The server and every client hold this same model. Thinking of it as \"a long string with annotations\" is what lets us describe changes as small edits at positions, which we'll need very soon."
+      ],
+      "entities": {
+        "items": [
+          { "id": "doc", "name": "Document", "kind": "data", "fields": ["doc_id: uuid", "text: sequence of characters", "revision: int"] },
+          { "id": "fmt", "name": "FormatRange", "kind": "data", "fields": ["start, end: position", "style: bold | heading | link …"] },
+          { "id": "embed", "name": "Embed", "kind": "data", "fields": ["position: int", "type: image | table …", "properties"] }
+        ],
+        "relations": [
+          { "from": "doc", "to": "fmt", "label": "1 — *" },
+          { "from": "fmt", "to": "embed", "label": "same positions" }
+        ]
+      }
+    },
+    {
+      "title": "What's wrong with it",
+      "script": [
+        "For one person this works fine. The obvious problems: everything lives in the server's memory, so a restart loses every document. And it isn't collaborative at all. Let's add storage first, and then see what goes wrong as soon as a second person opens the same document."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Fine for one person**", "detail": "open, type, autosave every few seconds" },
+          { "text": "**Everything lives in memory**", "detail": "a server restart loses every document" },
+          { "text": "**Not collaborative at all**", "detail": "a second editor is where it really breaks" }
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["db", "e_server_db"],
       "title": "Add a database, and discover lost updates",
       "script": [
-        "The server stores each document as a **row in a database**: the doc ID, its owner and title, and the serialized document body. Every autosave overwrites the body. Now nothing is lost when the server restarts.",
-        "Now Alice and Bob open the same doc. Alice fixes a typo in paragraph one. Bob rewrites paragraph five. Alice's autosave lands, then Bob's autosave lands, carrying *his* copy of the whole document, which still has the typo. Alice's fix silently disappears. This is the classic **lost update**, and with whole-document saves every few seconds it would happen constantly.",
-        "The textbook fixes don't fit a collaborative editor. **Pessimistic locking**, check out the doc and nobody else can edit, is how shared Word files used to work, and it's exactly the experience we're replacing. **Optimistic concurrency**, where each save carries a version number and stale saves are rejected, prevents data loss, but then the client has to merge. **Three-way text merges** like git's work for code, which is edited slowly in big chunks. Here two people are typing in the same sentence many times a second, and line-based merges produce conflicts that no user wants to resolve.",
-        "The real issue is the **unit of change**. Sending whole documents throws away the information we need: *what* each person actually did. So the next step is to stop shipping documents and start shipping **operations**."
+        "The server stores each document as a **row in a database**: the doc ID, its owner and title, and the serialized document body. Every autosave overwrites the body. Now nothing is lost when the server restarts."
       ]
+    },
+    {
+      "title": "Two editors: Alice's fix disappears",
+      "script": [
+        "Now Alice and Bob open the same doc. Alice fixes a typo in paragraph one. Bob rewrites paragraph five. Alice's autosave lands, then Bob's autosave lands, carrying *his* copy of the whole document, which still has the typo. Alice's fix silently disappears."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "alice", "label": "Alice", "kind": "client" },
+          { "id": "server", "label": "Docs Server", "kind": "service" },
+          { "id": "db", "label": "Database", "kind": "data" },
+          { "id": "bob", "label": "Bob", "kind": "client" }
+        ],
+        "steps": [
+          { "from": "server", "to": "alice", "label": "load doc (v1)", "reply": true },
+          { "from": "server", "to": "bob", "label": "load doc (v1)", "reply": true },
+          { "from": "alice", "to": "alice", "label": "fix typo in ¶1" },
+          { "from": "bob", "to": "bob", "label": "rewrite ¶5" },
+          { "from": "alice", "to": "server", "label": "save whole doc" },
+          { "from": "server", "to": "db", "label": "overwrite body: ¶1 fixed" },
+          { "from": "bob", "to": "server", "label": "save whole doc (still has the typo)" },
+          { "from": "server", "to": "db", "label": "overwrite body: ¶5 new, ¶1 typo back" },
+          { "note": "Alice's fix is silently gone", "over": ["alice", "bob"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Three textbook fixes",
+      "script": [
+        "This is the classic **lost update**, and with whole-document saves every few seconds it would happen constantly. The textbook fixes don't fit a collaborative editor. **Pessimistic locking**, check out the doc and nobody else can edit, is how shared Word files used to work, and it's exactly the experience we're replacing. **Optimistic concurrency**, where each save carries a version number and stale saves are rejected, prevents data loss, but then the client has to merge."
+      ],
+      "table": {
+        "heading": "Fixing the lost update",
+        "columns": ["Fix", "How it works", "Why it doesn't fit"],
+        "rows": [
+          ["**Pessimistic lock**", "check out the doc; nobody else edits", "the old shared-Word experience"],
+          ["**Optimistic versions**", "stale saves are rejected", "no data loss, but the client must merge"],
+          ["**Three-way merge**", "git-style diff of both copies", "next: works for code, not here"]
+        ]
+      }
+    },
+    {
+      "title": "The unit of change",
+      "script": [
+        "**Three-way text merges** like git's work for code, which is edited slowly in big chunks. Here two people are typing in the same sentence many times a second, and line-based merges produce conflicts that no user wants to resolve.",
+        "The real issue is the **unit of change**. Sending whole documents throws away the information we need: *what* each person actually did. So the next step is to stop shipping documents and start shipping **operations**."
+      ],
+      "table": {
+        "columns": ["", "Code in git", "A live doc"],
+        "rows": [
+          ["**Edit pace**", "minutes to days between commits", "many edits a second"],
+          ["**Edit size**", "big chunks, different files", "keystrokes in the same sentence"],
+          ["**Conflicts**", "a developer resolves them", "no user wants to"],
+          ["**Unit of change**", "a whole file version", "should be one **operation**"]
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["e_client_server_ws"],
       "title": "Send operations, not documents",
       "script": [
-        "Instead of saving the document, the client sends **operations**: *insert \"big \" at position 6*, *delete 4 characters at position 20*, *apply bold to positions 30–42*. An op is tens of bytes, it describes exactly what the user did, and the server can apply it to its copy of the model.",
-        "These go over a **WebSocket**, a long-lived two-way connection, because traffic flows *both ways* continuously. The client streams its ops up, and the server pushes everyone else's ops down the moment they happen. Polling can't meet a 200 ms target without hammering the server. The initial load still uses plain HTTPS. The socket is for the live session.",
-        "The client applies its own ops **locally first** and sends them in the background. You never wait for the network to see your keystroke. That's what makes the editor feel like a local app, and it's also what makes the problem hard. At any moment, Alice's copy has edits the server hasn't seen, and the server has Bob's edits that Alice hasn't seen. Their copies have **diverged**, and an op like \"insert at position 6\" only means something relative to the exact document state it was made against.",
-        "So we need a rule that turns concurrent, diverged ops into one consistent order that everyone converges on. That rule is **Operational Transformation**, and it's the heart of this system, so let's **zoom into the server** and look at one editing session for one document."
+        "Instead of saving the document, the client sends **operations**: *insert \"big \" at position 6*, *delete 4 characters at position 20*, *apply bold to positions 30–42*. An op is tens of bytes, it describes exactly what the user did, and the server can apply it to its copy of the model."
       ]
+    },
+    {
+      "title": "Why a WebSocket",
+      "script": [
+        "These go over a **WebSocket**, a long-lived two-way connection, because traffic flows *both ways* continuously. The client streams its ops up, and the server pushes everyone else's ops down the moment they happen. Polling can't meet a 200 ms target without hammering the server. The initial load still uses plain HTTPS. The socket is for the live session."
+      ],
+      "table": {
+        "columns": ["Channel", "Used for", "Why"],
+        "rows": [
+          ["**HTTPS**", "the initial load", "one request, one response"],
+          ["**HTTPS polling**", "—", "can't hit 200 ms without hammering the server"],
+          ["**WebSocket**", "the live session: ops up, ops down", "long-lived, two-way, pushed the moment they happen"]
+        ],
+        "highlight": 2
+      }
+    },
+    {
+      "title": "Local first",
+      "script": [
+        "The client applies its own ops **locally first** and sends them in the background. You never wait for the network to see your keystroke. That's what makes the editor feel like a local app, and it's also what makes the problem hard."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Apply locally**, immediately", "detail": "the keystroke is on screen before any network call" },
+          { "text": "**Send in the background**", "detail": "the op goes up over the socket" },
+          { "text": "**Feels like a local app**", "detail": "and it's exactly what makes the problem hard" }
+        ]
+      }
+    },
+    {
+      "title": "Copies diverge",
+      "script": [
+        "At any moment, Alice's copy has edits the server hasn't seen, and the server has Bob's edits that Alice hasn't seen. Their copies have **diverged**, and an op like \"insert at position 6\" only means something relative to the exact document state it was made against.",
+        "So we need a rule that turns concurrent, diverged ops into one consistent order that everyone converges on. That rule is **Operational Transformation**, and it's the heart of this system, so let's **zoom into the server** and look at one editing session for one document."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "alice", "label": "Alice", "kind": "client" },
+          { "id": "server", "label": "Docs Server", "kind": "service" },
+          { "id": "bob", "label": "Bob", "kind": "client" }
+        ],
+        "steps": [
+          { "from": "alice", "to": "alice", "label": "apply: insert \"big \" at 6" },
+          { "from": "bob", "to": "bob", "label": "apply: delete 6 at 0" },
+          { "from": "bob", "to": "server", "label": "delete 6 at 0" },
+          { "from": "server", "to": "server", "label": "apply Bob's op" },
+          { "from": "alice", "to": "server", "label": "insert \"big \" at 6" },
+          { "note": "Alice's copy, Bob's copy and the server's copy all differ", "over": ["alice", "bob"] },
+          { "note": "\"at 6\" only means something against the state it was made on", "over": ["alice", "bob"] }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "ot",
@@ -287,10 +418,75 @@
       "title": "OT deep dive ①: concurrent edits and a single sequencer",
       "script": [
         "We're now inside the server, looking at **one document's session**. Two clients, A and B, are connected, and the server holds the current **doc state** in memory.",
-        "The first rule: each document has **exactly one sequencer**. Every op for this doc passes through it, and it assigns each op the next **revision number**: rev 41, rev 42, rev 43. That gives the document a single **total order** of history that every participant will eventually agree on. Different documents have different sequencers and never coordinate. That's why this scales: we only need ordering within a doc.",
-        "Each op also carries its **base revision**, the revision of the document the client was looking at when it made the edit. That's where the trouble starts. Say the doc says *\"Hello world\"* at rev 10. Alice inserts *\"big \"* at position 6, aiming for \"Hello big world\". At the same moment Bob deletes the first 6 characters, \"Hello \". Both ops have base revision 10.",
-        "The sequencer receives Bob's delete first, so it becomes rev 11, leaving \"world\". Then Alice's op arrives. If we **apply it as-is** and insert at position 6 of a 5-character string, we either fail or produce \"worldbig \". And Alice's browser, which applied her own insert first and Bob's delete second, shows something different again. The copies have **diverged permanently**. Ordering ops isn't enough. Ops made against an older state have to be **adjusted** to fit the newer state."
+        "The first rule: each document has **exactly one sequencer**."
       ]
+    },
+    {
+      "title": "One sequencer, one order",
+      "script": [
+        "Every op for this doc passes through it, and it assigns each op the next **revision number**: rev 41, rev 42, rev 43. That gives the document a single **total order** of history that every participant will eventually agree on. Different documents have different sequencers and never coordinate. That's why this scales: we only need ordering within a doc."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Every op** for the doc passes through it", "detail": "no other path into the doc state" },
+          { "text": "Each op gets the **next revision**", "detail": "rev 41, rev 42, rev 43 …" },
+          { "text": "One **total order** of history", "detail": "every participant eventually agrees on it" },
+          { "text": "**No coordination across docs**", "detail": "ordering is only needed within a doc, so it scales" }
+        ]
+      }
+    },
+    {
+      "title": "Every op carries a base revision",
+      "script": [
+        "Each op also carries its **base revision**, the revision of the document the client was looking at when it made the edit. That's where the trouble starts. Say the doc says *\"Hello world\"* at rev 10."
+      ],
+      "entities": {
+        "items": [
+          { "id": "op", "name": "Op", "kind": "service", "fields": ["doc_id: uuid", "base_rev: int  (what the author saw)", "kind: insert | delete | format", "position: int", "text / length / style"] },
+          { "id": "doc", "name": "Doc State", "kind": "data", "fields": ["revision: 10", "text: \"Hello world\""] }
+        ],
+        "relations": [
+          { "from": "op", "to": "doc", "label": "made against rev 10" }
+        ]
+      }
+    },
+    {
+      "title": "Two edits against rev 10",
+      "script": [
+        "Alice inserts *\"big \"* at position 6, aiming for \"Hello big world\". At the same moment Bob deletes the first 6 characters, \"Hello \". Both ops have base revision 10. The sequencer receives Bob's delete first, so it becomes rev 11, leaving \"world\". Then Alice's op arrives."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "a", "label": "Client A", "kind": "client", "sub": "Alice" },
+          { "id": "seq", "label": "Sequencer", "kind": "service" },
+          { "id": "state", "label": "Doc State", "kind": "data" },
+          { "id": "b", "label": "Client B", "kind": "client", "sub": "Bob" }
+        ],
+        "steps": [
+          { "note": "rev 10: \"Hello world\"", "over": ["a", "b"] },
+          { "from": "a", "to": "a", "label": "insert \"big \" at 6" },
+          { "from": "b", "to": "b", "label": "delete 6 at 0" },
+          { "from": "b", "to": "seq", "label": "delete 6 at 0 · base 10" },
+          { "from": "seq", "to": "state", "label": "rev 11: \"world\"" },
+          { "from": "a", "to": "seq", "label": "insert \"big \" at 6 · base 10" }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Applied as-is, the copies diverge",
+      "script": [
+        "If we **apply it as-is** and insert at position 6 of a 5-character string, we either fail or produce \"worldbig \". And Alice's browser, which applied her own insert first and Bob's delete second, shows something different again. The copies have **diverged permanently**. Ordering ops isn't enough. Ops made against an older state have to be **adjusted** to fit the newer state."
+      ],
+      "table": {
+        "columns": ["Copy", "Order applied", "Result"],
+        "rows": [
+          ["**Server**", "Bob's delete, then Alice's insert at 6", "error, or \"worldbig \""],
+          ["**Alice's browser**", "her insert, then Bob's delete", "\"big world\""],
+          ["**Needed**", "adjust ops made against an older state", "one result everywhere"]
+        ],
+        "highlight": 2
+      }
     },
     {
       "scene": "ot",
@@ -298,11 +494,89 @@
       "remove": ["d_seq_state"],
       "title": "OT deep dive ②: transforming ops against history",
       "script": [
-        "The fix is **transformation**. The server keeps the **recent ops** in memory. When an op arrives with base revision *k* and the doc is at revision *N*, the server **transforms** it against every op from k+1 to N, rewriting it as if the user had made it against the current state.",
-        "The transform rules are intuitive. If someone deleted text *before* your insert position, shift your insert left by that many characters. If they inserted before you, shift right. If two inserts land at the same position, break the tie deterministically, for example by user ID, so everyone picks the same order. If two deletes overlap, the second only deletes what's left. In our example, Alice's *insert \"big \" at 6* is transformed against Bob's *delete 6 at 0*, becoming *insert \"big \" at 0*. The result is \"big world\", which is what both of them meant.",
-        "Why does this converge? With a **central server**, there's only one canonical history, and each client only ever has to reconcile with the server, never with other clients directly. The transform function only has to satisfy one property: transforming A against B and B against A leads to the same document. This is the **Jupiter** model behind Google Wave and Docs. Peer-to-peer OT also needs a second, much harder property that many published algorithms got wrong. The central server makes OT tractable.",
-        "The real engineering cost is **breadth**. A rich-text model has many op types: insert, delete, format, table edits, list changes, image moves. Every pair needs a transform rule, so the rule table grows with the square of the op types, and each rule must be identical in the server and every client. That's why the clients and the server share one OT library."
+        "The fix is **transformation**. The server keeps the **recent ops** in memory. When an op arrives with base revision *k* and the doc is at revision *N*, the server **transforms** it against every op from k+1 to N, rewriting it as if the user had made it against the current state."
       ]
+    },
+    {
+      "title": "The transform rules",
+      "script": [
+        "The transform rules are intuitive. If someone deleted text *before* your insert position, shift your insert left by that many characters. If they inserted before you, shift right. If two inserts land at the same position, break the tie deterministically, for example by user ID, so everyone picks the same order. If two deletes overlap, the second only deletes what's left."
+      ],
+      "table": {
+        "columns": ["Earlier op", "Your op", "Transform"],
+        "rows": [
+          ["**Delete** before you", "insert", "shift left by the deleted length"],
+          ["**Insert** before you", "insert", "shift right by the inserted length"],
+          ["**Insert** at the same spot", "insert", "tie-break by user ID, same everywhere"],
+          ["**Delete** overlapping", "delete", "delete only what's left"]
+        ]
+      }
+    },
+    {
+      "title": "Alice's insert, transformed",
+      "script": [
+        "In our example, Alice's *insert \"big \" at 6* is transformed against Bob's *delete 6 at 0*, becoming *insert \"big \" at 0*. The result is \"big world\", which is what both of them meant."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "seq", "label": "Sequencer", "kind": "service" },
+          { "id": "tr", "label": "OT Transform", "kind": "service" },
+          { "id": "hist", "label": "Recent Ops", "kind": "data" },
+          { "id": "state", "label": "Doc State", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "seq", "to": "tr", "label": "insert \"big \" at 6 · base 10" },
+          { "from": "tr", "to": "hist", "label": "ops after rev 10?" },
+          { "from": "hist", "to": "tr", "label": "rev 11: delete 6 at 0", "reply": true },
+          { "from": "tr", "to": "tr", "label": "shift left 6 → insert at 0" },
+          { "from": "tr", "to": "state", "label": "apply as rev 12" },
+          { "note": "\"big world\": what both of them meant", "over": ["seq", "state"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Why it converges",
+      "script": [
+        "Why does this converge? With a **central server**, there's only one canonical history, and each client only ever has to reconcile with the server, never with other clients directly. The transform function only has to satisfy one property: transforming A against B and B against A leads to the same document."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**One canonical history**", "detail": "the server's revision order" },
+          { "text": "Clients reconcile **only with the server**", "detail": "never with each other directly" },
+          { "text": "The transform needs **one property**", "detail": "A after B′ and B after A′ give the same document" }
+        ]
+      }
+    },
+    {
+      "title": "Central server vs. peer-to-peer",
+      "script": [
+        "This is the **Jupiter** model behind Google Wave and Docs. Peer-to-peer OT also needs a second, much harder property that many published algorithms got wrong. The central server makes OT tractable."
+      ],
+      "table": {
+        "columns": ["", "Central server (Jupiter)", "Peer-to-peer OT"],
+        "rows": [
+          ["**Histories**", "one, on the server", "one per peer"],
+          ["**Reconcile with**", "the server only", "every other peer"],
+          ["**Properties needed**", "one", "two; the second is much harder"],
+          ["**Track record**", "Google Wave, Google Docs", "many published algorithms were wrong"]
+        ],
+        "highlight": 0
+      }
+    },
+    {
+      "title": "The real cost: breadth",
+      "script": [
+        "The real engineering cost is **breadth**. A rich-text model has many op types: insert, delete, format, table edits, list changes, image moves. Every pair needs a transform rule, so the rule table grows with the square of the op types, and each rule must be identical in the server and every client. That's why the clients and the server share one OT library."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Many op types**", "detail": "insert, delete, format, table edits, list changes, image moves" },
+          { "text": "**Every pair needs a rule**", "detail": "the rule table grows with the square of the op types" },
+          { "text": "**Identical everywhere**", "detail": "server and every client must transform the same way" },
+          { "text": "**One shared OT library**", "detail": "used by the server and all the clients" }
+        ]
+      }
     },
     {
       "scene": "ot",
@@ -310,10 +584,66 @@
       "title": "OT deep dive ③: append durably, then ack and broadcast",
       "script": [
         "Once an op is transformed and has its revision number, two things happen, in a strict order.",
-        "First, it's **appended to the op log**, durable and replicated storage, keyed by document and revision. Only after that write succeeds does anyone hear about the op. This ordering is what gives us **RPO ≈ 0**. If the server crashes before the append, the client never got an ack and will resend. If it crashes after, the op is safely in the log and the next server picks up from there. The append is also **conditional**: \"write rev 43 only if rev 43 doesn't exist yet.\" That will matter when we talk about failover.",
-        "Second, the **broadcaster** sends an **ack** to the author (\"your op is rev 43\") and the **transformed op** to every other client in the session. Those clients apply ops in revision order. If a client sees rev 45 after rev 43, it knows it missed 44 and asks for it, so gaps are always detectable.",
-        "Two details make this robust to flaky networks. Every op carries a **client ID and a client sequence number**, so if a client reconnects and resends an op the server already logged, the server recognizes the duplicate and just re-acks it. And a reconnecting client says \"I'm at rev 40,\" and the server replays 41 onward from memory or from the op log. As with every real-time system, the socket is a fast path, and the **log is the source of truth**."
+        "First, it's **appended to the op log**, durable and replicated storage, keyed by document and revision. Only after that write succeeds does anyone hear about the op."
       ]
+    },
+    {
+      "title": "Crash before or after the append",
+      "script": [
+        "This ordering is what gives us **RPO ≈ 0**. If the server crashes before the append, the client never got an ack and will resend. If it crashes after, the op is safely in the log and the next server picks up from there. The append is also **conditional**: \"write rev 43 only if rev 43 doesn't exist yet.\" That will matter when we talk about failover."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "a", "label": "Client A", "kind": "client" },
+          { "id": "s", "label": "Session", "kind": "service", "sub": "sequencer · transform" },
+          { "id": "log", "label": "Op Log", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "a", "to": "s", "label": "op · base 42" },
+          { "note": "crash here: no ack, so A resends", "over": ["a", "log"] },
+          { "from": "s", "to": "log", "label": "append rev 43, only if rev 43 is new" },
+          { "from": "log", "to": "s", "label": "committed", "reply": true },
+          { "note": "crash here: rev 43 is in the log; the next server resumes", "over": ["a", "log"] },
+          { "from": "s", "to": "a", "label": "ack: rev 43", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Ack, broadcast, and detect gaps",
+      "script": [
+        "Second, the **broadcaster** sends an **ack** to the author (\"your op is rev 43\") and the **transformed op** to every other client in the session. Those clients apply ops in revision order. If a client sees rev 45 after rev 43, it knows it missed 44 and asks for it, so gaps are always detectable."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "a", "label": "Client A", "kind": "client", "sub": "author" },
+          { "id": "bc", "label": "Broadcaster", "kind": "service" },
+          { "id": "b", "label": "Client B", "kind": "client" }
+        ],
+        "steps": [
+          { "from": "bc", "to": "a", "label": "ack: your op is rev 43", "reply": true },
+          { "from": "bc", "to": "b", "label": "rev 43 (transformed op)" },
+          { "from": "bc", "to": "b", "label": "rev 45" },
+          { "from": "b", "to": "b", "label": "gap: 44 is missing" },
+          { "from": "b", "to": "bc", "label": "send me rev 44" },
+          { "from": "bc", "to": "b", "label": "rev 44", "reply": true },
+          { "from": "b", "to": "b", "label": "apply 44, then 45, in order" }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Built for flaky networks",
+      "script": [
+        "Two details make this robust to flaky networks. Every op carries a **client ID and a client sequence number**, so if a client reconnects and resends an op the server already logged, the server recognizes the duplicate and just re-acks it. And a reconnecting client says \"I'm at rev 40,\" and the server replays 41 onward from memory or from the op log. As with every real-time system, the socket is a fast path, and the **log is the source of truth**."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Client ID + client sequence number**", "detail": "a resent op that's already logged is recognized and re-acked" },
+          { "text": "**Resume from a revision**", "detail": "\"I'm at rev 40\": the server replays 41 onward, from memory or the log" },
+          { "text": "The socket is a **fast path**", "detail": "the **op log is the source of truth**" }
+        ]
+      }
     },
     {
       "scene": "ot",
@@ -321,32 +651,178 @@
       "remove": ["d_a_seq", "d_b_seq"],
       "title": "OT deep dive ④: the client keeps one op in flight",
       "script": [
-        "Now the client's half, which is just as important. Remember, the client applies your edits **immediately**. Everything you've typed that the server hasn't acknowledged yet sits in a small queue of **pending ops**.",
-        "The protocol keeps **at most one op in flight**. The client sends an op and waits for its ack. Anything you type meanwhile goes into a **buffer**, and consecutive keystrokes are **composed** into a single op: typing \"hello\" becomes one insert of five characters, not five ops. When the ack arrives, the whole buffer goes out as the next op. On a fast connection that means an op every round trip. On a slow one, ops naturally get bigger and fewer. This batching is how we got to roughly one op per second per typer in the estimates.",
-        "When a **remote op** arrives from the server, the client can't apply it directly, because its own copy already includes the pending local edits that the remote op knows nothing about. So the client **transforms in the other direction**: the remote op is transformed against the in-flight op and the buffer, and they in turn are transformed against the remote op. Your screen updates with Bob's change in the right place, and your pending ops are now expressed against the newer revision.",
-        "With one op in flight, each client only ever has a **two-party conversation** with the server. The server never has to reason about what clients have seen of *each other's* edits. That simplicity is what makes the whole scheme provably convergent."
+        "Now the client's half, which is just as important. Remember, the client applies your edits **immediately**. Everything you've typed that the server hasn't acknowledged yet sits in a small queue of **pending ops**."
       ]
+    },
+    {
+      "title": "One op in flight, the rest buffered",
+      "script": [
+        "The protocol keeps **at most one op in flight**. The client sends an op and waits for its ack. Anything you type meanwhile goes into a **buffer**, and consecutive keystrokes are **composed** into a single op: typing \"hello\" becomes one insert of five characters, not five ops. When the ack arrives, the whole buffer goes out as the next op."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "user", "label": "Alice", "kind": "client", "sub": "typing" },
+          { "id": "pend", "label": "Pending Ops (A)", "kind": "data", "sub": "in flight · buffer" },
+          { "id": "seq", "label": "Session", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "pend", "to": "seq", "label": "op 1 (in flight)" },
+          { "from": "user", "to": "pend", "label": "types h, e, l, l, o" },
+          { "from": "pend", "to": "pend", "label": "compose: insert \"hello\"" },
+          { "from": "seq", "to": "pend", "label": "ack op 1", "reply": true },
+          { "from": "pend", "to": "seq", "label": "op 2 = the whole buffer" }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Ops adapt to the network",
+      "script": [
+        "On a fast connection that means an op every round trip. On a slow one, ops naturally get bigger and fewer. This batching is how we got to roughly one op per second per typer in the estimates."
+      ],
+      "table": {
+        "columns": ["Connection", "Ops sent", "Op size"],
+        "rows": [
+          ["**Fast** (~50 ms round trip)", "one every round trip", "a few keystrokes"],
+          ["**Slow** (~1 s round trip)", "fewer", "bigger: everything typed meanwhile"],
+          ["**Typical typer**", "~1 op/s", "the number in our estimates"]
+        ]
+      }
+    },
+    {
+      "title": "Transforming the other way",
+      "script": [
+        "When a **remote op** arrives from the server, the client can't apply it directly, because its own copy already includes the pending local edits that the remote op knows nothing about. So the client **transforms in the other direction**: the remote op is transformed against the in-flight op and the buffer, and they in turn are transformed against the remote op. Your screen updates with Bob's change in the right place, and your pending ops are now expressed against the newer revision."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "a", "label": "Client A", "kind": "client", "sub": "screen" },
+          { "id": "pend", "label": "Pending Ops (A)", "kind": "data", "sub": "in flight · buffer" },
+          { "id": "seq", "label": "Session", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "seq", "to": "a", "label": "remote op: Bob's edit, rev 44" },
+          { "from": "a", "to": "pend", "label": "transform remote op past pending" },
+          { "from": "pend", "to": "a", "label": "remote op′", "reply": true },
+          { "from": "a", "to": "a", "label": "apply op′: Bob's change in the right place" },
+          { "from": "pend", "to": "pend", "label": "rebase in-flight + buffer onto rev 44" }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "A two-party conversation",
+      "script": [
+        "With one op in flight, each client only ever has a **two-party conversation** with the server. The server never has to reason about what clients have seen of *each other's* edits. That simplicity is what makes the whole scheme provably convergent."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**One op in flight** per client", "detail": "the client always knows which revision the server has seen" },
+          { "text": "A **two-party conversation**", "detail": "each client with the server, never client with client" },
+          { "text": "**Provably convergent**", "detail": "the server never reasons about what clients saw of each other" }
+        ]
+      }
     },
     {
       "scene": "ot",
       "add": ["cur", "d_bc_cur", "d_tr_cur"],
       "title": "OT deep dive ⑤: presence and live cursors",
       "script": [
-        "Next, **presence**: the avatars at the top and everyone's colored cursors and selections. The key observation is that a cursor is just a **position in the document**, so it has the same problem ops have. If Bob's cursor is at position 50 and Alice inserts ten characters at position 10, Bob's cursor must move to 60, or it will jump to the wrong word.",
-        "So the session keeps a **cursor map**, user to selection range, and runs every applied op through the same transform logic to **shift the positions**. Clients send cursor updates with the revision they were made at, so they get transformed exactly like ops.",
-        "But presence is treated very differently from content. It's **ephemeral**: never written to the op log, never in history. If the session server restarts, cursors reappear a second later when clients resend them. Updates are **throttled** to a few per second and can be dropped under load, because only the latest position matters. And presence is **coalesced**: in a doc with hundreds of viewers, we don't stream every viewer's cursor to everyone. We show live cursors for active editors and a summarized \"+87 viewers\" for the rest. That's how the per-doc cost stays bounded no matter how popular the doc gets."
+        "Next, **presence**: the avatars at the top and everyone's colored cursors and selections. The key observation is that a cursor is just a **position in the document**, so it has the same problem ops have."
       ]
+    },
+    {
+      "scene": "ot",
+      "focus": ["tr", "cur", "bc", "d_tr_cur", "d_bc_cur"],
+      "title": "Cursors shift with every op",
+      "script": [
+        "If Bob's cursor is at position 50 and Alice inserts ten characters at position 10, Bob's cursor must move to 60, or it will jump to the wrong word.",
+        "So the session keeps a **cursor map**, user to selection range, and runs every applied op through the same transform logic to **shift the positions**. Clients send cursor updates with the revision they were made at, so they get transformed exactly like ops."
+      ]
+    },
+    {
+      "title": "Content vs. presence",
+      "script": [
+        "But presence is treated very differently from content. It's **ephemeral**: never written to the op log, never in history. If the session server restarts, cursors reappear a second later when clients resend them. Updates are **throttled** to a few per second and can be dropped under load, because only the latest position matters."
+      ],
+      "table": {
+        "columns": ["", "Content ops", "Presence"],
+        "rows": [
+          ["**Stored**", "op log, history", "never: ephemeral"],
+          ["**After a restart**", "replayed from the log", "clients resend a second later"],
+          ["**Rate**", "every op, in order", "throttled to a few per second"],
+          ["**Under load**", "never dropped", "dropped; only the latest matters"]
+        ]
+      }
+    },
+    {
+      "title": "Coalesced for big docs",
+      "script": [
+        "And presence is **coalesced**: in a doc with hundreds of viewers, we don't stream every viewer's cursor to everyone. We show live cursors for active editors and a summarized \"+87 viewers\" for the rest. That's how the per-doc cost stays bounded no matter how popular the doc gets."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Active editors**: live cursors", "detail": "a handful of colored carets and selections" },
+          { "text": "**Everyone else**: a summary", "detail": "\"+87 viewers\" instead of 87 streams of cursor updates" },
+          { "text": "**Bounded cost per doc**", "detail": "no matter how popular the doc gets" }
+        ]
+      }
     },
     {
       "scene": "ot",
       "add": ["anch", "d_state_anch"],
       "title": "OT deep dive ⑥: comments and suggestions live in the model",
       "script": [
-        "The last piece of the session is how **comments and suggestions** stay attached to text. A comment is attached to a range, say \"the third sentence.\" If we stored that as character offsets in a separate database, the first edit above it would make it point at the wrong text.",
-        "So the **anchor** lives **inside the document model** itself, as a pair of markers around the range, tagged with a comment ID. Because the anchors are part of the model, every op is transformed past them, and they move with the text automatically, for free. The comment's *conversation* (the thread, replies, resolved state) is ordinary data that lives in a database keyed by that ID. If someone deletes all the anchored text, the anchor collapses and the comment shows \"original content deleted.\"",
-        "**Suggestions** use the same trick. In suggesting mode, your edits are real ops, but they're tagged: inserted text is marked \"suggested by Bob\" and shown in green, and deletions mark text as \"suggested for removal\" rather than removing it. **Accepting** is just another op that clears the mark. **Rejecting** is an op that removes the suggested text. Suggestions get convergence, history and real-time display from the existing OT pipeline, with no separate system.",
-        "That's the session. Ordering, transformation, durability, presence and anchors all happen inside one stateful process per document. Now let's **zoom back out** and work out how to run millions of these."
+        "The last piece of the session is how **comments and suggestions** stay attached to text. A comment is attached to a range, say \"the third sentence.\" If we stored that as character offsets in a separate database, the first edit above it would make it point at the wrong text."
       ]
+    },
+    {
+      "title": "Anchor in the model, thread in a database",
+      "script": [
+        "So the **anchor** lives **inside the document model** itself, as a pair of markers around the range, tagged with a comment ID. Because the anchors are part of the model, every op is transformed past them, and they move with the text automatically, for free. The comment's *conversation* (the thread, replies, resolved state) is ordinary data that lives in a database keyed by that ID. If someone deletes all the anchored text, the anchor collapses and the comment shows \"original content deleted.\""
+      ],
+      "entities": {
+        "items": [
+          { "id": "doc", "name": "Document Model", "kind": "data", "fields": ["text", "format ranges", "anchors"] },
+          { "id": "anchor", "name": "Anchor", "kind": "data", "fields": ["comment_id", "start marker", "end marker", "moves with the text (OT)"] },
+          { "id": "thread", "name": "Comment Thread", "kind": "service", "fields": ["comment_id  PK", "doc_id", "replies", "resolved: bool", "in a database"] }
+        ],
+        "relations": [
+          { "from": "doc", "to": "anchor", "label": "1 — *" },
+          { "from": "anchor", "to": "thread", "label": "comment_id" }
+        ]
+      }
+    },
+    {
+      "title": "Suggestions are tagged ops",
+      "script": [
+        "**Suggestions** use the same trick. In suggesting mode, your edits are real ops, but they're tagged: inserted text is marked \"suggested by Bob\" and shown in green, and deletions mark text as \"suggested for removal\" rather than removing it. **Accepting** is just another op that clears the mark. **Rejecting** is an op that removes the suggested text. Suggestions get convergence, history and real-time display from the existing OT pipeline, with no separate system."
+      ],
+      "table": {
+        "columns": ["Action", "The op"],
+        "rows": [
+          ["**Suggest an insert**", "insert text, marked \"suggested by Bob\" (green)"],
+          ["**Suggest a delete**", "mark text \"suggested for removal\"; keep it"],
+          ["**Accept**", "an op that clears the mark"],
+          ["**Reject**", "an op that removes the suggested text"]
+        ]
+      }
+    },
+    {
+      "title": "One stateful process per document",
+      "script": [
+        "That's the session. Ordering, transformation, durability, presence and anchors all happen inside one stateful process per document. Now let's **zoom back out** and work out how to run millions of these."
+      ],
+      "bullets": {
+        "heading": "One document's session",
+        "items": [
+          { "text": "**Ordering**", "detail": "one sequencer assigns revisions" },
+          { "text": "**Transformation**", "detail": "ops rebased onto the current revision" },
+          { "text": "**Durability**", "detail": "append to the op log before ack and broadcast" },
+          { "text": "**Presence**", "detail": "cursor map, shifted by the same transforms" },
+          { "text": "**Anchors**", "detail": "comments and suggestions move with the text" }
+        ]
+      }
     },
     {
       "scene": "main",
@@ -354,23 +830,132 @@
       "remove": ["server"],
       "title": "Split the stateless API from the stateful sessions",
       "script": [
-        "Back at the system level. One server can't host 10 million open documents and their sockets, and the two kinds of work it does are very different. So I split it.",
-        "The **Doc Service** is a **stateless** fleet behind a **load balancer**. It handles everything request/response: list my docs, create a doc, rename, change sharing, and the initial **open**, which returns the doc and a revision number. Any server can handle any request, and we scale it and deploy it like any web tier.",
-        "The **WebSocket gateways** terminate the long-lived connections. A gateway does nothing clever: authenticate the socket, and forward frames between the client and the right session. Keeping it dumb means we can deploy session logic without dropping millions of sockets.",
-        "**Collab sessions** are the stateful tier: the per-document OT sessions we just designed. The invariant that matters most is **exactly one live session per document**, on one server, because that's where the sequencer lives. Two sessions for the same doc would mean two histories, which is exactly the divergence we worked so hard to prevent.",
-        "Sessions are **created on demand**. When the first person opens a doc, some session server loads it and starts accepting ops. When the last person leaves, it lingers briefly and then unloads. Cold docs cost nothing but storage, which satisfies the cost requirement for 10 billion mostly idle documents. One session server can host thousands of documents, since most of them see a few ops a second at most."
+        "Back at the system level. One server can't host 10 million open documents and their sockets, and the two kinds of work it does are very different. So I split it."
       ]
+    },
+    {
+      "scene": "main",
+      "focus": ["client", "lb", "docapi", "db", "e_client_lb", "e_docapi_db"],
+      "title": "Doc Service: stateless request/response",
+      "script": [
+        "The **Doc Service** is a **stateless** fleet behind a **load balancer**. It handles everything request/response: list my docs, create a doc, rename, change sharing, and the initial **open**, which returns the doc and a revision number. Any server can handle any request, and we scale it and deploy it like any web tier."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["client", "gw", "sessions", "e_client_gw", "e_gw_sessions"],
+      "title": "WebSocket gateways: dumb on purpose",
+      "script": [
+        "The **WebSocket gateways** terminate the long-lived connections. A gateway does nothing clever: authenticate the socket, and forward frames between the client and the right session. Keeping it dumb means we can deploy session logic without dropping millions of sockets."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["sessions", "db", "e_sessions_db"],
+      "title": "Collab sessions: exactly one per doc",
+      "script": [
+        "**Collab sessions** are the stateful tier: the per-document OT sessions we just designed. The invariant that matters most is **exactly one live session per document**, on one server, because that's where the sequencer lives. Two sessions for the same doc would mean two histories, which is exactly the divergence we worked so hard to prevent."
+      ]
+    },
+    {
+      "title": "Sessions on demand",
+      "script": [
+        "Sessions are **created on demand**. When the first person opens a doc, some session server loads it and starts accepting ops. When the last person leaves, it lingers briefly and then unloads. Cold docs cost nothing but storage, which satisfies the cost requirement for 10 billion mostly idle documents. One session server can host thousands of documents, since most of them see a few ops a second at most."
+      ],
+      "bullets": {
+        "heading": "A session's life",
+        "items": [
+          { "text": "**First person opens** the doc", "detail": "some session server loads it and starts accepting ops" },
+          { "text": "**Last person leaves**", "detail": "it lingers briefly, then unloads" },
+          { "text": "**Cold docs cost only storage**", "detail": "10 billion mostly idle docs tie up no servers or memory" },
+          { "text": "**Thousands of docs per server**", "detail": "most see a few ops a second at most" }
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["directory", "e_sessions_dir", "e_gw_dir"],
       "title": "Session directory: exactly one owner per doc",
       "script": [
-        "How does a gateway know which session server owns doc X? The tempting answer is **consistent hashing** on the doc ID. That's a good way to *place* docs, but on its own it's dangerous for *ownership*. During a network partition or a membership change, two servers can briefly disagree about the ring, and both believe they own the doc. That's two sequencers and a split history.",
-        "So ownership comes from a **session directory** backed by a consensus store: Chubby or ZooKeeper style, or a sharding service like Google's Slicer. A server holds a **lease** on each doc it serves, and must renew it every few seconds. The gateway asks the directory, caches the answer, and forwards ops to the owner. Hashing can still choose which server gets a new doc. The lease is what makes it *the* owner.",
-        "Leases alone aren't quite enough, because a paused server may not realize its lease expired. So each lease carries an increasing **epoch**, a fencing token, and op-log appends are conditional on both the epoch and the next revision number. A stale owner's writes are rejected by storage itself, so split-brain can't corrupt history even if it briefly happens.",
-        "**Failover** follows directly. If a session server dies, its leases expire within seconds. The next client to reconnect causes the directory to assign the doc to a healthy server, which loads the latest snapshot, replays the log tail, and resumes. Clients resend their unacked ops, which dedupe by client sequence number. Users see a short \"reconnecting…\" and lose nothing."
+        "How does a gateway know which session server owns doc X? The tempting answer is **consistent hashing** on the doc ID."
       ]
+    },
+    {
+      "title": "Placement vs. ownership",
+      "script": [
+        "That's a good way to *place* docs, but on its own it's dangerous for *ownership*. During a network partition or a membership change, two servers can briefly disagree about the ring, and both believe they own the doc. That's two sequencers and a split history."
+      ],
+      "table": {
+        "columns": ["", "Consistent hashing", "Lease in a directory"],
+        "rows": [
+          ["**Good for**", "*placing* a new doc on a server", "*owning* the doc right now"],
+          ["**During a membership change**", "two servers can disagree about the ring", "one lease holder at a time"],
+          ["**Worst case**", "two sequencers, a split history", "a short wait for the lease to expire"]
+        ],
+        "highlight": 1
+      }
+    },
+    {
+      "title": "Leases from a consensus store",
+      "script": [
+        "So ownership comes from a **session directory** backed by a consensus store: Chubby or ZooKeeper style, or a sharding service like Google's Slicer. A server holds a **lease** on each doc it serves, and must renew it every few seconds. The gateway asks the directory, caches the answer, and forwards ops to the owner. Hashing can still choose which server gets a new doc. The lease is what makes it *the* owner."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "gw", "label": "WS Gateway", "kind": "infra" },
+          { "id": "dir", "label": "Session Directory", "kind": "infra", "sub": "consensus store" },
+          { "id": "s", "label": "Session Server", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "s", "to": "dir", "label": "acquire lease on doc X" },
+          { "from": "dir", "to": "s", "label": "granted · epoch 7", "reply": true },
+          { "from": "s", "to": "dir", "label": "renew (every few seconds)" },
+          { "from": "gw", "to": "dir", "label": "who owns doc X?" },
+          { "from": "dir", "to": "gw", "label": "this session server", "reply": true },
+          { "from": "gw", "to": "gw", "label": "cache the answer" },
+          { "from": "gw", "to": "s", "label": "forward ops for doc X" }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Fencing with epochs",
+      "script": [
+        "Leases alone aren't quite enough, because a paused server may not realize its lease expired. So each lease carries an increasing **epoch**, a fencing token, and op-log appends are conditional on both the epoch and the next revision number. A stale owner's writes are rejected by storage itself, so split-brain can't corrupt history even if it briefly happens."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "old", "label": "Server A", "kind": "service", "sub": "old owner" },
+          { "id": "dir", "label": "Session Directory", "kind": "infra" },
+          { "id": "new", "label": "Server B", "kind": "service", "sub": "new owner" },
+          { "id": "log", "label": "Op Log", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "old", "to": "old", "label": "long pause; lease expires" },
+          { "from": "dir", "to": "new", "label": "lease on doc X · epoch 8" },
+          { "from": "new", "to": "log", "label": "append rev 43 · epoch 8" },
+          { "from": "log", "to": "new", "label": "committed", "reply": true },
+          { "from": "old", "to": "log", "label": "append rev 43 · epoch 7" },
+          { "from": "log", "to": "old", "label": "rejected: stale epoch", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Failover",
+      "script": [
+        "**Failover** follows directly. If a session server dies, its leases expire within seconds. The next client to reconnect causes the directory to assign the doc to a healthy server, which loads the latest snapshot, replays the log tail, and resumes. Clients resend their unacked ops, which dedupe by client sequence number. Users see a short \"reconnecting…\" and lose nothing."
+      ],
+      "bullets": {
+        "heading": "When a session server dies",
+        "items": [
+          { "text": "Its **leases expire** within seconds", "detail": "no one has to declare it dead" },
+          { "text": "**A client reconnects**", "detail": "the directory assigns the doc to a healthy server" },
+          { "text": "The new owner **rebuilds the doc**", "detail": "latest snapshot, then the op-log tail" },
+          { "text": "Clients **resend unacked ops**", "detail": "duplicates dedupe by client sequence number" },
+          { "text": "Users see **\"reconnecting…\"**", "detail": "for a moment, and lose nothing" }
+        ]
+      }
     },
     {
       "scene": "main",
@@ -378,65 +963,345 @@
       "remove": ["db"],
       "title": "Storage: metadata, an op log, and snapshots",
       "script": [
-        "Our single database is doing three jobs with completely different access patterns, so I split it into three stores.",
-        "The **metadata DB** holds docs (ID, title, owner, folder, timestamps), sharing, and later comments. That's relational data with cross-references and a need for transactions: moving a doc to a folder, transferring ownership. Google would use **Spanner**: strongly consistent SQL that scales horizontally and replicates across regions. Writes here are low volume, because nobody renames docs a million times a second.",
-        "The **op log** is the high-volume store: millions of tiny appends a second. It's a wide-column store like **Bigtable**, with row key *doc_id + revision*, so one doc's ops are contiguous and \"everything after rev k\" is a single range scan. It only needs per-row conditional writes, which is exactly what the fencing check uses. Because the key starts with the doc ID, load spreads evenly across billions of docs.",
-        "**Snapshots** go in a **blob store**. A snapshot is the full serialized model at some revision R. To **open** a doc, the session loads the latest snapshot and replays the ops after R. Without snapshots, opening a five-year-old doc would mean replaying millions of ops. With a snapshot every few hundred ops, opening is one blob read plus a short range scan, comfortably under a second.",
-        "This is effectively **event sourcing**. The op log is the truth, and snapshots are a cache of \"the log applied up to here.\" Everything else we add, like history, search and notifications, will also be a function of that log."
+        "Our single database is doing three jobs with completely different access patterns, so I split it into three stores."
       ]
+    },
+    {
+      "title": "Metadata DB: relational, low volume",
+      "script": [
+        "The **metadata DB** holds docs (ID, title, owner, folder, timestamps), sharing, and later comments. That's relational data with cross-references and a need for transactions: moving a doc to a folder, transferring ownership. Google would use **Spanner**: strongly consistent SQL that scales horizontally and replicates across regions. Writes here are low volume, because nobody renames docs a million times a second."
+      ],
+      "entities": {
+        "items": [
+          { "id": "folder", "name": "Folder", "kind": "data", "fields": ["folder_id: uuid  PK", "parent_id: uuid  FK", "owner_id: uuid"] },
+          { "id": "doc", "name": "Doc", "kind": "data", "fields": ["doc_id: uuid  PK", "title: text", "owner_id: uuid", "folder_id: uuid  FK", "created_at, updated_at"] },
+          { "id": "share", "name": "Sharing", "kind": "data", "fields": ["doc_id: uuid  FK", "principal: user | group | link", "role: enum"] }
+        ],
+        "relations": [
+          { "from": "folder", "to": "doc", "label": "1 — *" },
+          { "from": "doc", "to": "share", "label": "1 — *" }
+        ]
+      }
+    },
+    {
+      "title": "Op log: doc_id + revision",
+      "script": [
+        "The **op log** is the high-volume store: millions of tiny appends a second. It's a wide-column store like **Bigtable**, with row key *doc_id + revision*, so one doc's ops are contiguous and \"everything after rev k\" is a single range scan. It only needs per-row conditional writes, which is exactly what the fencing check uses. Because the key starts with the doc ID, load spreads evenly across billions of docs."
+      ],
+      "entities": {
+        "items": [
+          { "id": "row", "name": "Op Log Row", "kind": "data", "fields": ["row key: doc_id + revision", "op: bytes (tens of bytes)", "author: user_id", "client_id, client_seq", "epoch: int", "committed_at: timestamp"] },
+          { "id": "scan", "name": "Access patterns", "kind": "service", "fields": ["append: if rev is new and epoch current", "scan: doc_id, rev > k", "spread: keys lead with doc_id"] }
+        ],
+        "relations": [
+          { "from": "scan", "to": "row", "label": "range scan" }
+        ]
+      }
+    },
+    {
+      "title": "Opening a doc: snapshot plus tail",
+      "script": [
+        "**Snapshots** go in a **blob store**. A snapshot is the full serialized model at some revision R. To **open** a doc, the session loads the latest snapshot and replays the ops after R. Without snapshots, opening a five-year-old doc would mean replaying millions of ops. With a snapshot every few hundred ops, opening is one blob read plus a short range scan, comfortably under a second."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client", "kind": "client" },
+          { "id": "s", "label": "Collab Session", "kind": "service" },
+          { "id": "blob", "label": "Blob Store", "kind": "data", "sub": "snapshots" },
+          { "id": "log", "label": "Op Log", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "client", "to": "s", "label": "open doc X" },
+          { "from": "s", "to": "blob", "label": "latest snapshot" },
+          { "from": "blob", "to": "s", "label": "model at rev R", "reply": true },
+          { "from": "s", "to": "log", "label": "scan doc X, rev > R" },
+          { "from": "log", "to": "s", "label": "a few hundred ops at most", "reply": true },
+          { "from": "s", "to": "s", "label": "replay → rev N" },
+          { "from": "s", "to": "client", "label": "doc at rev N  (< 1 s)", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Event sourcing",
+      "script": [
+        "This is effectively **event sourcing**. The op log is the truth, and snapshots are a cache of \"the log applied up to here.\" Everything else we add, like history, search and notifications, will also be a function of that log."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "The **op log is the truth**", "detail": "every committed op, in revision order" },
+          { "text": "**Snapshots are a cache**", "detail": "\"the log applied up to here\"; rebuildable" },
+          { "text": "**Everything else derives from the log**", "detail": "history, search, notifications" }
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["acl", "e_docapi_acl", "e_sessions_acl", "e_acl_meta"],
       "title": "Permissions: an ACL service on every path",
       "script": [
-        "Sharing is a central feature, and permission checks sit on **every path**: listing and opening docs in the Doc Service, and joining a session on the session servers. The session also enforces the **role on every op**. A viewer's socket can't send ops at all. A commenter can only send comment and suggestion ops. An editor can do anything.",
-        "I'd put this behind a dedicated **ACL service** modeled on Google's **Zanzibar**. Permissions are stored as relation tuples like *doc:123#editor@user:alice*, *doc:123#viewer@group:eng*, or *doc:123#parent@folder:9*. A check walks those relations: Bob can view the doc because he's in a group that can view the folder that contains it. Inheritance through folders and groups is what makes a single \"share this folder\" click cover thousands of docs.",
-        "Checks are frequent, so the ACL service caches aggressively. That raises the **\"new enemy\" problem**: you remove Bob from a doc and then add a sensitive paragraph, and a stale cache lets Bob read it. Zanzibar's answer is a **consistency token**. The doc remembers the ACL version at its last permission change, and checks must be evaluated at least that fresh.",
-        "**Revocation** also has to reach live sessions. When an ACL changes, the session server re-checks the connected users of that doc, and anyone who lost access is disconnected or downgraded to read-only within seconds. Link sharing is simply a tuple granting a role to \"anyone with the link,\" and the link carries an unguessable token."
+        "Sharing is a central feature, and permission checks sit on **every path**: listing and opening docs in the Doc Service, and joining a session on the session servers."
       ]
+    },
+    {
+      "title": "Roles on every op",
+      "script": [
+        "The session also enforces the **role on every op**. A viewer's socket can't send ops at all. A commenter can only send comment and suggestion ops. An editor can do anything."
+      ],
+      "table": {
+        "columns": ["Role", "Ops the session accepts"],
+        "rows": [
+          ["**Viewer**", "none: read-only socket"],
+          ["**Commenter**", "comment and suggestion ops only"],
+          ["**Editor**", "anything"]
+        ]
+      }
+    },
+    {
+      "title": "Relation tuples, Zanzibar-style",
+      "script": [
+        "I'd put this behind a dedicated **ACL service** modeled on Google's **Zanzibar**. Permissions are stored as relation tuples like *doc:123#editor@user:alice*, *doc:123#viewer@group:eng*, or *doc:123#parent@folder:9*. A check walks those relations: Bob can view the doc because he's in a group that can view the folder that contains it. Inheritance through folders and groups is what makes a single \"share this folder\" click cover thousands of docs."
+      ],
+      "entities": {
+        "items": [
+          { "id": "bob", "name": "user:bob", "kind": "client", "fields": ["group:eng#member@user:bob"] },
+          { "id": "eng", "name": "group:eng", "kind": "service", "fields": ["folder:9#viewer@group:eng"] },
+          { "id": "folder", "name": "folder:9", "kind": "data", "fields": ["doc:123#parent@folder:9"] },
+          { "id": "doc", "name": "doc:123", "kind": "data", "fields": ["doc:123#editor@user:alice", "viewer if viewer of parent"] }
+        ],
+        "relations": [
+          { "from": "bob", "to": "eng", "label": "member" },
+          { "from": "eng", "to": "folder", "label": "viewer" },
+          { "from": "folder", "to": "doc", "label": "parent of" }
+        ]
+      }
+    },
+    {
+      "title": "The new-enemy problem",
+      "script": [
+        "Checks are frequent, so the ACL service caches aggressively. That raises the **\"new enemy\" problem**: you remove Bob from a doc and then add a sensitive paragraph, and a stale cache lets Bob read it. Zanzibar's answer is a **consistency token**. The doc remembers the ACL version at its last permission change, and checks must be evaluated at least that fresh."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "alice", "label": "Alice", "kind": "client", "sub": "owner" },
+          { "id": "docs", "label": "Doc Service", "kind": "service" },
+          { "id": "acl", "label": "ACL Service", "kind": "service", "sub": "cached checks" },
+          { "id": "bob", "label": "Bob", "kind": "client" }
+        ],
+        "steps": [
+          { "from": "alice", "to": "docs", "label": "remove Bob" },
+          { "from": "docs", "to": "acl", "label": "delete tuple" },
+          { "from": "acl", "to": "docs", "label": "ACL version t2", "reply": true },
+          { "from": "docs", "to": "docs", "label": "doc remembers t2" },
+          { "from": "alice", "to": "docs", "label": "add a sensitive paragraph" },
+          { "from": "bob", "to": "docs", "label": "open doc" },
+          { "from": "docs", "to": "acl", "label": "check Bob, at least as fresh as t2" },
+          { "from": "acl", "to": "docs", "label": "denied (no stale cache)", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Revocation reaches live sessions",
+      "script": [
+        "**Revocation** also has to reach live sessions. When an ACL changes, the session server re-checks the connected users of that doc, and anyone who lost access is disconnected or downgraded to read-only within seconds. Link sharing is simply a tuple granting a role to \"anyone with the link,\" and the link carries an unguessable token."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**An ACL changes**", "detail": "the session server re-checks that doc's connected users" },
+          { "text": "**Lost access?**", "detail": "disconnected, or downgraded to read-only, within seconds" },
+          { "text": "**Link sharing** is just a tuple", "detail": "a role for \"anyone with the link\", plus an unguessable token" }
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["kafka", "e_oplog_kafka", "e_meta_kafka"],
       "title": "A change feed to keep the hot path lean",
       "script": [
-        "Several features still to come (snapshots, version history, search, notifications) all need to react to changes. The worst thing we could do is bolt each of them onto the session server. Its job is latency-critical and stateful. It should order, transform, durably append, broadcast, and nothing else.",
-        "So I add a **change feed**, a log like **Kafka** or Pub/Sub. Committed ops flow into it from the op log via change data capture, and metadata changes such as new comments, shares and renames flow in from the metadata DB the same way. Taking events from the *stores* rather than having services publish them means we never have the dual-write bug where the database committed but the event was lost, or vice versa.",
-        "The feed is **partitioned by doc ID**, so every consumer sees one doc's changes in order, and consumers scale by adding partitions. Each consumer keeps its own offset and can fall behind, catch up, or replay from scratch, for example to rebuild the search index after a ranking change, without the session tier noticing.",
-        "This is where the consistency split from the requirements becomes concrete. Everything **left** of the change feed is synchronous and strongly consistent: the edit you see is the edit that's stored. Everything **right** of it is asynchronous and eventually consistent, typically seconds behind. That's fine for search results and email, and it means a slow downstream system can never make typing slow."
+        "Several features still to come (snapshots, version history, search, notifications) all need to react to changes. The worst thing we could do is bolt each of them onto the session server. Its job is latency-critical and stateful. It should order, transform, durably append, broadcast, and nothing else."
       ]
+    },
+    {
+      "scene": "main",
+      "focus": ["oplog", "metadb", "kafka", "e_oplog_kafka", "e_meta_kafka"],
+      "title": "Events come from the stores",
+      "script": [
+        "So I add a **change feed**, a log like **Kafka** or Pub/Sub. Committed ops flow into it from the op log via change data capture, and metadata changes such as new comments, shares and renames flow in from the metadata DB the same way. Taking events from the *stores* rather than having services publish them means we never have the dual-write bug where the database committed but the event was lost, or vice versa."
+      ]
+    },
+    {
+      "title": "Partitioned by doc ID",
+      "script": [
+        "The feed is **partitioned by doc ID**, so every consumer sees one doc's changes in order, and consumers scale by adding partitions. Each consumer keeps its own offset and can fall behind, catch up, or replay from scratch, for example to rebuild the search index after a ranking change, without the session tier noticing."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Keyed by doc_id**", "detail": "every consumer sees one doc's changes in order" },
+          { "text": "**Scale by adding partitions**", "detail": "and consumers to read them" },
+          { "text": "**Each consumer keeps its own offset**", "detail": "fall behind, catch up, or replay from scratch" },
+          { "text": "**Invisible to the session tier**", "detail": "e.g. rebuild the search index after a ranking change" }
+        ]
+      }
+    },
+    {
+      "title": "Left and right of the feed",
+      "script": [
+        "This is where the consistency split from the requirements becomes concrete. Everything **left** of the change feed is synchronous and strongly consistent: the edit you see is the edit that's stored. Everything **right** of it is asynchronous and eventually consistent, typically seconds behind. That's fine for search results and email, and it means a slow downstream system can never make typing slow."
+      ],
+      "table": {
+        "columns": ["", "Left of the feed", "Right of the feed"],
+        "rows": [
+          ["**What**", "sessions, op log, metadata", "snapshots, history, search, notifications"],
+          ["**Timing**", "synchronous", "asynchronous, seconds behind"],
+          ["**Consistency**", "strong: what you see is stored", "eventual"],
+          ["**If it's slow**", "typing is slow", "results arrive late; typing is unaffected"]
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["compactor", "e_kafka_compactor", "e_compactor_blob"],
       "title": "Snapshots and version history",
       "script": [
-        "The first consumer is the **snapshot worker**. It follows each doc's ops, and every few hundred ops, or when a doc goes idle, it applies them to the last snapshot and writes a new one to the blob store. Doing this off the session server keeps snapshot CPU and I/O away from the typing path, and bounds how many ops any open has to replay.",
-        "The same worker builds **version history**. Keystroke-level history is useless to a person, so the worker groups ops into **revisions**: a run of edits by the same people within a few minutes becomes one entry, \"Alice and Bob, 10:42 AM.\" Each revision records its revision range and authors, and points at a nearby snapshot. **Named versions** (\"Final draft v2\") are just pinned revisions.",
-        "**Viewing** an old version loads the nearest snapshot and replays ops up to that revision. **Showing changes** works because every op records its author, so the viewer can color text by who wrote it. **Restoring** never rewrites history. The session computes an op that turns today's document into the old one, and applies it like any other edit. History stays append-only, collaborators see the restore live, and you can undo a restore.",
-        "To keep storage bounded, older history is **coarsened**. After some weeks, we keep the revision snapshots and drop the individual ops between them. Recent history stays fine-grained, and ancient history keeps every revision a person would want, without keeping every keystroke forever."
+        "The first consumer is the **snapshot worker**. It follows each doc's ops, and every few hundred ops, or when a doc goes idle, it applies them to the last snapshot and writes a new one to the blob store. Doing this off the session server keeps snapshot CPU and I/O away from the typing path, and bounds how many ops any open has to replay."
       ]
+    },
+    {
+      "title": "Revisions, not keystrokes",
+      "script": [
+        "The same worker builds **version history**. Keystroke-level history is useless to a person, so the worker groups ops into **revisions**: a run of edits by the same people within a few minutes becomes one entry, \"Alice and Bob, 10:42 AM.\" Each revision records its revision range and authors, and points at a nearby snapshot. **Named versions** (\"Final draft v2\") are just pinned revisions."
+      ],
+      "entities": {
+        "items": [
+          { "id": "ops", "name": "Op Log", "kind": "data", "fields": ["doc_id + revision", "op", "author"] },
+          { "id": "rev", "name": "Revision", "kind": "service", "fields": ["doc_id", "rev_from … rev_to", "authors: Alice, Bob", "time: 10:42 AM", "snapshot_ref", "name?  (\"Final draft v2\")"] },
+          { "id": "snap", "name": "Snapshot", "kind": "data", "fields": ["doc_id", "revision", "blob_ref"] }
+        ],
+        "relations": [
+          { "from": "ops", "to": "rev", "label": "* — 1" },
+          { "from": "rev", "to": "snap", "label": "nearby" }
+        ]
+      }
+    },
+    {
+      "title": "View, compare, restore",
+      "script": [
+        "**Viewing** an old version loads the nearest snapshot and replays ops up to that revision. **Showing changes** works because every op records its author, so the viewer can color text by who wrote it. **Restoring** never rewrites history. The session computes an op that turns today's document into the old one, and applies it like any other edit. History stays append-only, collaborators see the restore live, and you can undo a restore."
+      ],
+      "table": {
+        "columns": ["Action", "How it works"],
+        "rows": [
+          ["**View** an old version", "nearest snapshot + replay up to that revision"],
+          ["**Show changes**", "every op records its author: color text by writer"],
+          ["**Restore**", "a new op turning today's doc into the old one"],
+          ["**Undo a restore**", "history is append-only, so it's just another edit"]
+        ]
+      }
+    },
+    {
+      "title": "Coarsening old history",
+      "script": [
+        "To keep storage bounded, older history is **coarsened**. After some weeks, we keep the revision snapshots and drop the individual ops between them. Recent history stays fine-grained, and ancient history keeps every revision a person would want, without keeping every keystroke forever."
+      ],
+      "table": {
+        "columns": ["Age", "Kept", "Dropped"],
+        "rows": [
+          ["**Recent** (weeks)", "every op, every revision", "nothing"],
+          ["**Older**", "revision snapshots, named versions", "individual ops between revisions"]
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["comments", "e_comments_meta"],
       "title": "Comments: threads in the database, anchors in the doc",
       "script": [
-        "Comments split across the two halves of the system, exactly as we designed in the deep dive. The **anchor** is part of the document model, so it moves with the text through OT. The **thread** (the comment text, replies, @mentions, assignments, resolved or reopened) belongs to a **Comment Service** on the HTTP API, stored in the metadata DB keyed by doc and comment ID.",
-        "Why not put the whole comment in the document model? Comment threads change on a human timescale: a reply every few minutes, not every hundred milliseconds. They also have their own lifecycle and permissions, since a commenter can write them but not the text. And they have to be queryable on their own, for example \"all comments assigned to me across every doc.\" That's a database query, not something you get by replaying op logs.",
+        "Comments split across the two halves of the system, exactly as we designed in the deep dive. The **anchor** is part of the document model, so it moves with the text through OT. The **thread** (the comment text, replies, @mentions, assignments, resolved or reopened) belongs to a **Comment Service** on the HTTP API, stored in the metadata DB keyed by doc and comment ID."
+      ]
+    },
+    {
+      "title": "Why threads aren't in the doc model",
+      "script": [
+        "Why not put the whole comment in the document model? Comment threads change on a human timescale: a reply every few minutes, not every hundred milliseconds. They also have their own lifecycle and permissions, since a commenter can write them but not the text. And they have to be queryable on their own, for example \"all comments assigned to me across every doc.\" That's a database query, not something you get by replaying op logs."
+      ],
+      "table": {
+        "columns": ["", "Document text", "Comment threads"],
+        "rows": [
+          ["**Changes**", "many times a second", "a reply every few minutes"],
+          ["**Who can write**", "editors", "commenters too"],
+          ["**Lifecycle**", "the doc's history", "open, resolved, reopened, assigned"],
+          ["**Queried as**", "replay the op log", "\"all comments assigned to me\""]
+        ]
+      }
+    },
+    {
+      "title": "Creating a comment, in two steps",
+      "script": [
         "Creating a comment is a **two-step** action: the client inserts the anchor op through the session, and creates the thread through the Comment Service with the same ID. If one half fails, the client retries, and an anchor without a thread, or the reverse, is simply hidden until it's resolved.",
         "Collaborators see new comments in real time because the Comment Service tells the doc's session, which broadcasts a \"comment changed\" event over the existing sockets. And because comment writes land in the metadata DB, they automatically show up on the change feed. That's exactly what the next component needs."
-      ]
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client", "kind": "client" },
+          { "id": "s", "label": "Collab Session", "kind": "service" },
+          { "id": "cs", "label": "Comment Service", "kind": "service" },
+          { "id": "meta", "label": "Metadata DB", "kind": "data" },
+          { "id": "others", "label": "Collaborators", "kind": "client" }
+        ],
+        "steps": [
+          { "from": "client", "to": "s", "label": "anchor op · comment c7" },
+          { "from": "client", "to": "cs", "label": "create thread c7" },
+          { "from": "cs", "to": "meta", "label": "insert thread" },
+          { "note": "one half failed? retry; hide the orphan until resolved", "over": ["client", "meta"] },
+          { "from": "cs", "to": "s", "label": "comment c7 changed" },
+          { "from": "s", "to": "others", "label": "\"comment changed\" event" },
+          { "note": "the write lands on the change feed via CDC", "over": ["cs", "others"] }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
       "add": ["notif", "email", "e_kafka_notif", "e_notif_email"],
       "title": "Notifications: mentions, replies and shares",
       "script": [
-        "When someone @mentions you, assigns you a comment, replies to your thread, or shares a doc with you, you get an email or mobile push. **Notification workers** consume the change feed and decide **who to tell, and when**.",
-        "The logic matters more than the plumbing. For each event the worker resolves recipients, checks **permissions** (you can @mention someone who can't see the doc, in which case the *author* is prompted to share it rather than the mentioned person getting a dead link), and applies the recipient's preferences.",
-        "Then it **suppresses and batches**. If you're *in* the doc right now, which the worker can check against session presence, you've already seen the comment, so no email. Five replies in a thread within ten minutes become one digest-style email, not five. Delivery goes to email and push providers through a queue with retries and **idempotency keys**, so a worker crash mid-batch doesn't send duplicates.",
+        "When someone @mentions you, assigns you a comment, replies to your thread, or shares a doc with you, you get an email or mobile push. **Notification workers** consume the change feed and decide **who to tell, and when**."
+      ]
+    },
+    {
+      "title": "Who to tell",
+      "script": [
+        "The logic matters more than the plumbing. For each event the worker resolves recipients, checks **permissions** (you can @mention someone who can't see the doc, in which case the *author* is prompted to share it rather than the mentioned person getting a dead link), and applies the recipient's preferences."
+      ],
+      "bullets": {
+        "heading": "For each event",
+        "items": [
+          { "text": "**Resolve recipients**", "detail": "the @mentioned, the assignee, the thread's participants, the new sharee" },
+          { "text": "**Check permissions**", "detail": "can't see the doc? prompt the *author* to share, not a dead link" },
+          { "text": "**Apply preferences**", "detail": "email, push, or nothing" }
+        ]
+      }
+    },
+    {
+      "title": "Suppress and batch",
+      "script": [
+        "Then it **suppresses and batches**. If you're *in* the doc right now, which the worker can check against session presence, you've already seen the comment, so no email. Five replies in a thread within ten minutes become one digest-style email, not five. Delivery goes to email and push providers through a queue with retries and **idempotency keys**, so a worker crash mid-batch doesn't send duplicates."
+      ],
+      "table": {
+        "columns": ["Rule", "Effect"],
+        "rows": [
+          ["**You're in the doc**", "no email: presence says you've seen it"],
+          ["**5 replies in 10 minutes**", "one digest email, not five"],
+          ["**Worker crash mid-batch**", "retry with idempotency keys: no duplicates"]
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "focus": ["kafka", "notif", "email", "e_kafka_notif", "e_notif_email"],
+      "title": "Downstream of the feed",
+      "script": [
         "Because this is all downstream of the change feed, a backlog at the email provider just means notifications arrive a bit late. It never slows down anyone's typing."
       ]
     },
@@ -445,19 +1310,124 @@
       "add": ["search", "searchidx", "indexer", "e_kafka_indexer", "e_indexer_idx", "e_search_idx"],
       "title": "Search across the docs you can see",
       "script": [
-        "Search has a write side and a read side. On the write side, the **search indexer** consumes the change feed. Indexing on every op would be absurd at millions of ops a second, so it **debounces per doc**. It notes \"doc 123 changed,\" waits until the doc has been quiet for 30 seconds or so (or a cap is hit), then reads the latest snapshot plus tail and re-indexes the doc's title and text in one go. A doc being actively edited is re-indexed every half-minute or so, not ten times a second.",
-        "The **index** is an inverted index, sharded by doc. The hard part is **permissions**: results must only include docs the searcher can see, and a user can see millions of docs through groups and domain-wide sharing. Checking each hit against the ACL service after the search (**late binding**) is accurate, but it's slow when most hits get filtered out. Storing each doc's allowed principals in the index and filtering at query time (**early binding**) is fast, but it can be stale.",
-        "I'd do **both**. The index stores each doc's principals (users, groups, domain), the query expands the searcher into their principals and filters on them, and then the top results are re-verified against the ACL service before we return them. A stale index can cost a result, but it can never leak one.",
-        "The **Search Service** sits behind the load balancer with the other APIs. It handles prefix autocomplete on titles and full-text queries, and it ranks by text match, recency, and your relationship to the doc (owned, recently opened, shared with you directly)."
+        "Search has a write side and a read side. On the write side, the **search indexer** consumes the change feed."
       ]
+    },
+    {
+      "title": "Debounced indexing",
+      "script": [
+        "Indexing on every op would be absurd at millions of ops a second, so it **debounces per doc**. It notes \"doc 123 changed,\" waits until the doc has been quiet for 30 seconds or so (or a cap is hit), then reads the latest snapshot plus tail and re-indexes the doc's title and text in one go. A doc being actively edited is re-indexed every half-minute or so, not ten times a second."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "feed", "label": "Change Feed", "kind": "stream" },
+          { "id": "ix", "label": "Search Indexer", "kind": "service" },
+          { "id": "store", "label": "Blob Store + Op Log", "kind": "data" },
+          { "id": "idx", "label": "Search Index", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "feed", "to": "ix", "label": "doc 123 changed" },
+          { "from": "feed", "to": "ix", "label": "doc 123 changed (×200)" },
+          { "from": "ix", "to": "ix", "label": "wait for ~30 s of quiet (or a cap)" },
+          { "from": "ix", "to": "store", "label": "latest snapshot + tail" },
+          { "from": "store", "to": "ix", "label": "doc 123 now", "reply": true },
+          { "from": "ix", "to": "idx", "label": "re-index title + text, once" }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Early vs. late binding",
+      "script": [
+        "The **index** is an inverted index, sharded by doc. The hard part is **permissions**: results must only include docs the searcher can see, and a user can see millions of docs through groups and domain-wide sharing. Checking each hit against the ACL service after the search (**late binding**) is accurate, but it's slow when most hits get filtered out. Storing each doc's allowed principals in the index and filtering at query time (**early binding**) is fast, but it can be stale."
+      ],
+      "table": {
+        "heading": "Permission-aware search",
+        "columns": ["Approach", "How", "Catch"],
+        "rows": [
+          ["**Late binding**", "check each hit with the ACL service", "accurate, slow when most hits are filtered"],
+          ["**Early binding**", "principals stored in the index", "fast, can be stale"],
+          ["**Both**", "filter in the index, verify the top hits", "a stale index costs a result, never leaks one"]
+        ],
+        "highlight": 2
+      }
+    },
+    {
+      "title": "Both: filter, then verify",
+      "script": [
+        "I'd do **both**. The index stores each doc's principals (users, groups, domain), the query expands the searcher into their principals and filters on them, and then the top results are re-verified against the ACL service before we return them. A stale index can cost a result, but it can never leak one."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "user", "label": "Client", "kind": "client" },
+          { "id": "ss", "label": "Search Service", "kind": "service" },
+          { "id": "acl", "label": "ACL Service", "kind": "service" },
+          { "id": "idx", "label": "Search Index", "kind": "data", "sub": "+ ACL principals" }
+        ],
+        "steps": [
+          { "from": "user", "to": "ss", "label": "search \"roadmap\"" },
+          { "from": "ss", "to": "acl", "label": "expand user → principals" },
+          { "from": "acl", "to": "ss", "label": "user, groups, domain", "reply": true },
+          { "from": "ss", "to": "idx", "label": "query, filtered by principals" },
+          { "from": "idx", "to": "ss", "label": "top hits", "reply": true },
+          { "from": "ss", "to": "acl", "label": "re-verify top hits" },
+          { "from": "acl", "to": "ss", "label": "drop any stale ones", "reply": true },
+          { "from": "ss", "to": "user", "label": "results", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "The Search Service",
+      "script": [
+        "The **Search Service** sits behind the load balancer with the other APIs. It handles prefix autocomplete on titles and full-text queries, and it ranks by text match, recency, and your relationship to the doc (owned, recently opened, shared with you directly)."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Behind the load balancer**", "detail": "with the other HTTP APIs" },
+          { "text": "**Prefix autocomplete** on titles", "detail": "as you type in the search box" },
+          { "text": "**Full-text queries**", "detail": "over title and body" },
+          { "text": "**Ranked** by match, recency, relationship", "detail": "owned, recently opened, shared with you directly" }
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["cdn", "e_client_cdn", "e_cdn_blob"],
       "title": "Images: references in the doc, bytes in a CDN",
       "script": [
-        "Documents embed images, and an image is megabytes, while our ops are bytes. So image bytes **never go through the OT pipeline**. The document model stores a **reference**, an image ID plus size and layout, and inserting an image is a tiny op carrying that reference.",
-        "Uploading is out of band. The client asks the Doc Service for a **signed upload URL**, uploads the bytes directly to the blob store, and then inserts the reference op. Collaborators receive the op instantly and render a placeholder until the image loads.",
+        "Documents embed images, and an image is megabytes, while our ops are bytes. So image bytes **never go through the OT pipeline**. The document model stores a **reference**, an image ID plus size and layout, and inserting an image is a tiny op carrying that reference."
+      ]
+    },
+    {
+      "title": "Uploading out of band",
+      "script": [
+        "Uploading is out of band. The client asks the Doc Service for a **signed upload URL**, uploads the bytes directly to the blob store, and then inserts the reference op. Collaborators receive the op instantly and render a placeholder until the image loads."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client", "kind": "client" },
+          { "id": "docs", "label": "Doc Service", "kind": "service" },
+          { "id": "blob", "label": "Blob Store", "kind": "data" },
+          { "id": "s", "label": "Collab Session", "kind": "service" },
+          { "id": "others", "label": "Collaborators", "kind": "client" }
+        ],
+        "steps": [
+          { "from": "client", "to": "docs", "label": "upload URL, please" },
+          { "from": "docs", "to": "client", "label": "signed upload URL · image ID", "reply": true },
+          { "from": "client", "to": "blob", "label": "PUT image bytes (MBs)" },
+          { "from": "client", "to": "s", "label": "op: insert image ref (bytes)" },
+          { "from": "s", "to": "others", "label": "op: image ref" },
+          { "note": "collaborators show a placeholder until the image loads", "over": ["s", "others"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "scene": "main",
+      "focus": ["client", "cdn", "blob", "e_client_cdn", "e_cdn_blob"],
+      "title": "Served through a CDN, with signed URLs",
+      "script": [
         "Images are served through a **CDN**. They're immutable, since editing an image creates a new ID, so they cache forever and the CDN's hit rate is excellent. The catch is that an image inherits its doc's permissions, so it can't be public. The client gets **short-lived signed URLs** for the images in a doc when it opens the doc, and the CDN validates the signature before serving or pulling from the origin.",
         "The same blob store already holds snapshots, and keeping both there means one durable, replicated, cheap tier for anything large."
       ]
@@ -467,21 +1437,135 @@
       "add": ["local", "e_client_local"],
       "title": "Offline editing, and why OT rather than CRDTs",
       "script": [
-        "For **offline** support, the client keeps a **local store** in IndexedDB on the web, or a local database on mobile: a snapshot of each doc you've made available offline, plus the pending ops queue. Losing the connection just means the buffer keeps growing. Everything you type is persisted locally, so closing the laptop loses nothing.",
-        "On reconnect, the client sends its pending ops with their old base revision, and the server transforms them against everything that happened in the meantime. That's the *same algorithm* as normal editing with a very long round trip. It converges, but after hours apart the merge can be semantically surprising, such as two people rewriting the same paragraph. That's what version history is for. The server also re-checks permissions, so if you lost edit access while offline, your edits are rejected and kept as a local copy instead.",
-        "This is where it's fair to ask about **CRDTs**, the main alternative to OT, used by Yjs, Automerge and Figma-style systems. A CRDT gives every character a unique ID and defines ops that **commute**, so replicas converge in any order with **no central server**. That's great for peer-to-peer and heavy offline use. The costs are per-character metadata and tombstones for deleted text (modern CRDTs have shrunk these a lot), and rich-text semantics are harder to get right, especially intent-preserving formatting.",
-        "For Google Docs, I'd still choose **OT with a central server**. OT's main weakness is that it needs a central sequencer, but we have one anyway for permissions, durability and history. OT keeps the document compact, and it's proven at this scale. If the product were local-first or peer-to-peer, I'd choose a CRDT."
+        "For **offline** support, the client keeps a **local store** in IndexedDB on the web, or a local database on mobile: a snapshot of each doc you've made available offline, plus the pending ops queue. Losing the connection just means the buffer keeps growing. Everything you type is persisted locally, so closing the laptop loses nothing."
       ]
+    },
+    {
+      "title": "Reconnecting after hours offline",
+      "script": [
+        "On reconnect, the client sends its pending ops with their old base revision, and the server transforms them against everything that happened in the meantime. That's the *same algorithm* as normal editing with a very long round trip. It converges, but after hours apart the merge can be semantically surprising, such as two people rewriting the same paragraph. That's what version history is for. The server also re-checks permissions, so if you lost edit access while offline, your edits are rejected and kept as a local copy instead."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "local", "label": "Local Store", "kind": "data", "sub": "snapshot · pending ops" },
+          { "id": "client", "label": "Client", "kind": "client" },
+          { "id": "s", "label": "Collab Session", "kind": "service" },
+          { "id": "acl", "label": "ACL Service", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "client", "to": "local", "label": "offline: persist every op" },
+          { "note": "hours later: back online", "over": ["local", "acl"] },
+          { "from": "local", "to": "client", "label": "pending ops · base rev 812", "reply": true },
+          { "from": "client", "to": "s", "label": "pending ops · base rev 812" },
+          { "from": "s", "to": "acl", "label": "still an editor?" },
+          { "from": "acl", "to": "s", "label": "yes (else: keep as a local copy)", "reply": true },
+          { "from": "s", "to": "s", "label": "transform past revs 813…1,540" },
+          { "from": "s", "to": "client", "label": "acks · missed ops", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "CRDTs: the alternative",
+      "script": [
+        "This is where it's fair to ask about **CRDTs**, the main alternative to OT, used by Yjs, Automerge and Figma-style systems. A CRDT gives every character a unique ID and defines ops that **commute**, so replicas converge in any order with **no central server**. That's great for peer-to-peer and heavy offline use. The costs are per-character metadata and tombstones for deleted text (modern CRDTs have shrunk these a lot), and rich-text semantics are harder to get right, especially intent-preserving formatting."
+      ],
+      "bullets": {
+        "heading": "CRDTs (Yjs, Automerge, Figma-style)",
+        "items": [
+          { "text": "Every character gets a **unique ID**", "detail": "positions are IDs, not offsets" },
+          { "text": "Ops **commute**", "detail": "replicas converge in any order, with no central server" },
+          { "text": "Great for **peer-to-peer and offline**", "detail": "no sequencer to reach" },
+          { "text": "Cost: **metadata and tombstones**", "detail": "per character; modern CRDTs have shrunk these a lot" },
+          { "text": "**Rich text is harder**", "detail": "especially intent-preserving formatting" }
+        ]
+      }
+    },
+    {
+      "title": "OT vs. CRDTs",
+      "script": [
+        "For Google Docs, I'd still choose **OT with a central server**. OT's main weakness is that it needs a central sequencer, but we have one anyway for permissions, durability and history. OT keeps the document compact, and it's proven at this scale. If the product were local-first or peer-to-peer, I'd choose a CRDT."
+      ],
+      "table": {
+        "columns": ["", "OT + central server", "CRDT"],
+        "rows": [
+          ["**Needs a server**", "yes, but we have one anyway", "no"],
+          ["**Document size**", "compact", "per-character IDs, tombstones"],
+          ["**Rich text**", "proven at this scale", "harder to get right"],
+          ["**Best for**", "Google Docs", "local-first, peer-to-peer"]
+        ],
+        "highlight": 0
+      }
     },
     {
       "scene": "main",
       "add": ["regions", "e_blob_regions"],
       "title": "Going global: home regions and replication",
       "script": [
-        "Finally, the system runs in **many regions**, which raises the question of where a doc's single sequencer lives. Each doc's session runs in one **home region**, usually the one closest to its owner or most of its editors. A collaborator on another continent connects to their **nearest gateway**, which forwards ops over the private backbone to the home region. They pay one cross-ocean round trip, around 100 to 150 ms, for remote edits. Their own typing stays instant because it's local-first. If the editor mix shifts, the directory can **migrate** a doc's home region at a quiet moment.",
-        "**Replication** is what makes \"never lose an acked edit\" true even if a whole region is lost. Spanner replicates metadata synchronously across regions with Paxos. The op log write is acknowledged only once it's committed in more than one failure domain. That adds some milliseconds to the ack, but the ack isn't on the typing path. Snapshots and images replicate asynchronously, which is fine, because the log can always rebuild a snapshot.",
-        "If the home region fails, its leases expire, the directory reassigns its docs to the next region, sessions rebuild from the replicated log, and clients reconnect and resend unacked ops. Users see seconds of \"reconnecting,\" and no data is lost, which meets the 99.99% target."
+        "Finally, the system runs in **many regions**, which raises the question of where a doc's single sequencer lives. Each doc's session runs in one **home region**, usually the one closest to its owner or most of its editors."
       ]
+    },
+    {
+      "title": "A collaborator far away",
+      "script": [
+        "A collaborator on another continent connects to their **nearest gateway**, which forwards ops over the private backbone to the home region. They pay one cross-ocean round trip, around 100 to 150 ms, for remote edits. Their own typing stays instant because it's local-first. If the editor mix shifts, the directory can **migrate** a doc's home region at a quiet moment."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "bob", "label": "Bob", "kind": "client", "sub": "Tokyo" },
+          { "id": "gw", "label": "WS Gateway", "kind": "infra", "sub": "Tokyo" },
+          { "id": "s", "label": "Collab Session", "kind": "service", "sub": "home region: US" },
+          { "id": "alice", "label": "Alice", "kind": "client", "sub": "New York" }
+        ],
+        "steps": [
+          { "from": "bob", "to": "bob", "label": "apply locally: instant" },
+          { "from": "bob", "to": "gw", "label": "op" },
+          { "from": "gw", "to": "s", "label": "backbone · ~100–150 ms" },
+          { "from": "s", "to": "alice", "label": "Bob's op" },
+          { "from": "s", "to": "gw", "label": "ack", "reply": true },
+          { "from": "gw", "to": "bob", "label": "ack", "reply": true },
+          { "note": "editors shift to Asia? migrate the home region at a quiet moment", "over": ["bob", "alice"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "What replicates, and how",
+      "script": [
+        "**Replication** is what makes \"never lose an acked edit\" true even if a whole region is lost. Spanner replicates metadata synchronously across regions with Paxos. The op log write is acknowledged only once it's committed in more than one failure domain. That adds some milliseconds to the ack, but the ack isn't on the typing path. Snapshots and images replicate asynchronously, which is fine, because the log can always rebuild a snapshot."
+      ],
+      "table": {
+        "columns": ["Store", "Replication", "Why that's enough"],
+        "rows": [
+          ["**Metadata** (Spanner)", "synchronous, Paxos across regions", "strongly consistent everywhere"],
+          ["**Op log**", "ack after commit in 2+ failure domains", "an acked edit survives a region"],
+          ["**Snapshots, images**", "asynchronous", "the log can rebuild a snapshot"]
+        ]
+      }
+    },
+    {
+      "title": "Losing a whole region",
+      "script": [
+        "If the home region fails, its leases expire, the directory reassigns its docs to the next region, sessions rebuild from the replicated log, and clients reconnect and resend unacked ops. Users see seconds of \"reconnecting,\" and no data is lost, which meets the 99.99% target."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Clients", "kind": "client" },
+          { "id": "dir", "label": "Session Directory", "kind": "infra" },
+          { "id": "s", "label": "Session", "kind": "service", "sub": "next region" },
+          { "id": "log", "label": "Op Log", "kind": "data", "sub": "replicated" }
+        ],
+        "steps": [
+          { "note": "home region fails", "over": ["client", "log"] },
+          { "from": "dir", "to": "dir", "label": "its leases expire" },
+          { "from": "dir", "to": "s", "label": "you own these docs now" },
+          { "from": "s", "to": "log", "label": "snapshot + log tail" },
+          { "from": "log", "to": "s", "label": "every acked op", "reply": true },
+          { "from": "client", "to": "s", "label": "reconnect · resend unacked ops" },
+          { "from": "s", "to": "client", "label": "acks · seconds of \"reconnecting\"", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
