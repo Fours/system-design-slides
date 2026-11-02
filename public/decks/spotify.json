@@ -308,9 +308,53 @@
       "add": ["client", "server", "e_client_server"],
       "title": "Start simple: one client, one server",
       "script": [
-        "Let's start with the most naive thing that works: **a client app and a single server**. The server holds a list of tracks and the MP3 files on its local disk. The client asks for the track list, the user taps one, and the client does an HTTP GET for the file. With HTTP range requests, it can even start playing before the download finishes and seek by asking for a different byte range.",
-        "That really is a working music streaming service, and it's worth naming exactly why it falls over, because each problem becomes a slide:",
-        "**Storage:** 1.5 petabytes doesn't fit on one machine's disk. **Bandwidth:** a beefy server might push 25 to 100 Gbps, and we need more than 1.6 Tbps, so we're short by more than an order of magnitude even before we think about geography. **Latency:** a user in Sydney fetching bytes from a server in Virginia pays 200+ milliseconds per round trip. **Availability:** one box is a single point of failure. **Coupling:** tiny metadata lookups and huge audio transfers compete for the same resources, even though they have completely different shapes.",
+        "Let's start with the most naive thing that works: **a client app and a single server**. The server holds a list of tracks and the MP3 files on its local disk."
+      ]
+    },
+    {
+      "title": "Streaming a file with range requests",
+      "script": [
+        "The client asks for the track list, the user taps one, and the client does an HTTP GET for the file. With HTTP range requests, it can even start playing before the download finishes and seek by asking for a different byte range.",
+        "That really is a working music streaming service, and it's worth naming exactly why it falls over, because each problem becomes a slide."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client App", "kind": "client" },
+          { "id": "server", "label": "App Server", "kind": "service", "sub": "MP3s on disk" }
+        ],
+        "steps": [
+          { "from": "client", "to": "server", "label": "GET /tracks" },
+          { "from": "server", "to": "client", "label": "track list", "reply": true },
+          { "from": "client", "to": "server", "label": "GET /tracks/42.mp3  Range: bytes=0-" },
+          { "from": "server", "to": "client", "label": "206 Partial Content (first bytes)", "reply": true },
+          { "note": "playback starts early", "over": ["client"] },
+          { "from": "client", "to": "server", "label": "seek: Range: bytes=2400000-" },
+          { "from": "server", "to": "client", "label": "206 Partial Content", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Why one server falls over",
+      "script": [
+        "**Storage:** 1.5 petabytes doesn't fit on one machine's disk. **Bandwidth:** a beefy server might push 25 to 100 Gbps, and we need more than 1.6 Tbps, so we're short by more than an order of magnitude even before we think about geography. **Latency:** a user in Sydney fetching bytes from a server in Virginia pays 200+ milliseconds per round trip. **Availability:** one box is a single point of failure."
+      ],
+      "table": {
+        "columns": ["Problem", "The numbers", "Fixed by"],
+        "rows": [
+          ["**Storage**", "1.5 PB vs one machine's disk", "a blob store"],
+          ["**Bandwidth**", "25–100 Gbps vs 1.6+ Tbps", "a CDN"],
+          ["**Latency**", "200+ ms Sydney → Virginia", "edges near users"],
+          ["**Availability**", "one box, one failure away", "replicas and regions"]
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "focus": ["server"],
+      "title": "Coupling: two workloads on one box",
+      "script": [
+        "**Coupling:** tiny metadata lookups and huge audio transfers compete for the same resources, even though they have completely different shapes.",
         "The rest of this walkthrough is about fixing those one at a time, starting with that last one."
       ]
     },
@@ -320,11 +364,81 @@
       "title": "Separate metadata from audio bytes",
       "script": [
         "The first split is between **metadata** and **audio bytes**, because they have nothing in common besides a track ID.",
-        "Metadata covers artists, albums, tracks, credits, release dates, which countries a track is available in, and which audio files exist for it. It's small, highly structured, relational (an album has many tracks, a track has many artists), and queried in lots of ways. It goes into a **Catalog DB**. I'd start with a relational database like Postgres. A hundred million tracks with their relations is a few terabytes at most, which fits comfortably with read replicas, and the write rate is low because it only changes when labels deliver content. A wide-column store would also work, but we'd give up joins and constraints for a scale problem we don't have on the write side.",
-        "Audio files are large, **immutable once written**, and read sequentially. They go into an **object/blob store** like S3 or GCS: effectively unlimited capacity, eleven nines of durability through replication or erasure coding, and cheap per gigabyte. Each file is keyed by something like *track_id/encoding*, or better, by a content hash.",
-        "The server no longer streams bytes itself. When a user hits play, it looks up the track in the catalog and returns a **short-lived signed URL**, and the client downloads directly from the blob store. That takes our app server out of the bandwidth path entirely.",
-        "The fact that audio is immutable is the most important property in this design. It means the bytes can be cached anywhere, forever, with no invalidation problem. That sets up the next step."
+        "Metadata covers artists, albums, tracks, credits, release dates, which countries a track is available in, and which audio files exist for it. It's small, highly structured, relational (an album has many tracks, a track has many artists), and queried in lots of ways."
       ]
+    },
+    {
+      "title": "The catalog data model",
+      "script": [
+        "It goes into a **Catalog DB**. I'd start with a relational database like Postgres. A hundred million tracks with their relations is a few terabytes at most, which fits comfortably with read replicas, and the write rate is low because it only changes when labels deliver content. A wide-column store would also work, but we'd give up joins and constraints for a scale problem we don't have on the write side."
+      ],
+      "entities": {
+        "items": [
+          { "id": "artist", "name": "Artist", "kind": "data", "fields": ["id: uuid  PK", "name: text", "aliases: text[]"] },
+          { "id": "album", "name": "Album", "kind": "data", "fields": ["id: uuid  PK", "title: text", "release_date: date", "label: text"] },
+          { "id": "track", "name": "Track", "kind": "data", "fields": ["id: uuid  PK", "album_id: uuid  FK", "title: text", "duration_ms: int", "available_in: country[]"] },
+          { "id": "file", "name": "AudioFile", "kind": "data", "fields": ["track_id: uuid  FK", "encoding: enum", "bitrate_kbps: int", "blob_key: content hash"] }
+        ],
+        "relations": [
+          { "from": "artist", "to": "album", "label": "* — *" },
+          { "from": "album", "to": "track", "label": "1 — *" },
+          { "from": "track", "to": "file", "label": "1 — *" }
+        ]
+      }
+    },
+    {
+      "title": "Two kinds of data",
+      "script": [
+        "Audio files are large, **immutable once written**, and read sequentially. They go into an **object/blob store** like S3 or GCS: effectively unlimited capacity, eleven nines of durability through replication or erasure coding, and cheap per gigabyte. Each file is keyed by something like *track_id/encoding*, or better, by a content hash."
+      ],
+      "table": {
+        "columns": ["", "Metadata", "Audio bytes"],
+        "rows": [
+          ["**Size**", "a few TB in total", "1.5 PB, MBs per file"],
+          ["**Shape**", "relational, many queries", "opaque, read sequentially"],
+          ["**Changes**", "when labels deliver", "never: immutable"],
+          ["**Store**", "Catalog DB (Postgres)", "blob store (S3 / GCS)"]
+        ],
+        "highlight": 3
+      }
+    },
+    {
+      "title": "Play through a signed URL",
+      "script": [
+        "The server no longer streams bytes itself. When a user hits play, it looks up the track in the catalog and returns a **short-lived signed URL**, and the client downloads directly from the blob store. That takes our app server out of the bandwidth path entirely."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client App", "kind": "client" },
+          { "id": "server", "label": "App Server", "kind": "service" },
+          { "id": "db", "label": "Catalog DB", "kind": "data" },
+          { "id": "blob", "label": "Audio Blob Store", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "client", "to": "server", "label": "play track 42" },
+          { "from": "server", "to": "db", "label": "which files exist?" },
+          { "from": "db", "to": "server", "label": "42/320k.ogg", "reply": true },
+          { "from": "server", "to": "client", "label": "signed URL (expires in minutes)", "reply": true },
+          { "from": "client", "to": "blob", "label": "GET signed URL" },
+          { "from": "blob", "to": "client", "label": "audio bytes", "reply": true },
+          { "note": "the app server never touches the bytes", "over": ["server", "db"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Immutable audio",
+      "script": [
+        "The fact that audio is immutable is the most important property in this design. It means the bytes can be cached anywhere, forever, with no invalidation problem. That sets up the next step."
+      ],
+      "bullets": {
+        "heading": "Audio is immutable, so…",
+        "items": [
+          { "text": "Bytes never change once written", "detail": "a new version is a new file with a new key" },
+          { "text": "They can be **cached anywhere**", "detail": "device, edge, ISP, origin" },
+          { "text": "…and **forever**", "detail": "no invalidation problem, very long TTLs" }
+        ]
+      }
     },
     {
       "scene": "main",
@@ -332,10 +446,75 @@
       "remove": ["e_blob_client"],
       "title": "Put a CDN in front of the audio",
       "script": [
-        "Serving 1.6 Tbps straight from a blob store in one region is slow for distant users and very expensive, since cloud egress is the single biggest line item in this system. So we put a **CDN** in front of the blob store. The client fetches audio from an edge PoP near them; on a miss, the edge pulls from origin and keeps a copy.",
-        "This works especially well for music because **popularity follows a power law**. A small fraction of the catalog (new releases, current hits, all-time classics) accounts for the large majority of plays, so edges can hit well above 90% for audio bytes. The long tail of the 100 million tracks will miss more, and that's fine: misses go to origin, and that traffic is a small slice of the total.",
-        "Because files are immutable and content-addressed, there's **no cache invalidation**. If a label re-delivers a remastered track, it gets a new file and a new key. We can set very long TTLs. Access control moves to the edge: the signed URL or token is validated by the CDN, so someone can't just share a link.",
-        "A few trade-offs are worth mentioning. At this scale you'd typically use **multiple CDN vendors** for cost negotiation and failover, and possibly your own edge caches inside ISPs for the hottest content, the way Netflix does. As an alternative, early Spotify actually used **peer-to-peer** delivery between desktop clients to save bandwidth. They dropped it once CDN costs fell and mobile became dominant, since phones are bad peers. Finally, the client keeps its own **on-device cache** of recently played audio, which serves a surprisingly large share of plays because people replay the same songs constantly. It's the cheapest CDN there is."
+        "Serving 1.6 Tbps straight from a blob store in one region is slow for distant users and very expensive, since cloud egress is the single biggest line item in this system. So we put a **CDN** in front of the blob store. The client fetches audio from an edge PoP near them; on a miss, the edge pulls from origin and keeps a copy."
+      ]
+    },
+    {
+      "title": "Hits and misses at the edge",
+      "script": [
+        "This works especially well for music because **popularity follows a power law**. A small fraction of the catalog (new releases, current hits, all-time classics) accounts for the large majority of plays, so edges can hit well above 90% for audio bytes. The long tail of the 100 million tracks will miss more, and that's fine: misses go to origin, and that traffic is a small slice of the total."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client App", "kind": "client" },
+          { "id": "cdn", "label": "CDN Edge", "kind": "infra", "sub": "PoP near the user" },
+          { "id": "blob", "label": "Audio Blob Store", "kind": "data", "sub": "origin" }
+        ],
+        "steps": [
+          { "from": "client", "to": "cdn", "label": "GET today's #1 hit" },
+          { "from": "cdn", "to": "client", "label": "bytes from edge cache (hit)", "reply": true },
+          { "note": "power law: well over 90% of bytes hit", "over": ["client", "cdn"] },
+          { "from": "client", "to": "cdn", "label": "GET a long-tail track" },
+          { "from": "cdn", "to": "blob", "label": "origin pull (miss)" },
+          { "from": "blob", "to": "cdn", "label": "bytes", "reply": true },
+          { "from": "cdn", "to": "cdn", "label": "keep a copy" },
+          { "from": "cdn", "to": "client", "label": "bytes", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "No invalidation, access checked at the edge",
+      "script": [
+        "Because files are immutable and content-addressed, there's **no cache invalidation**. If a label re-delivers a remastered track, it gets a new file and a new key. We can set very long TTLs. Access control moves to the edge: the signed URL or token is validated by the CDN, so someone can't just share a link."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client App", "kind": "client" },
+          { "id": "other", "label": "Someone Else", "kind": "client ghost", "sub": "has a shared link" },
+          { "id": "cdn", "label": "CDN Edge", "kind": "infra" }
+        ],
+        "steps": [
+          { "from": "client", "to": "cdn", "label": "GET /a1b2c3.ogg?token=…" },
+          { "from": "cdn", "to": "cdn", "label": "verify signature + expiry" },
+          { "from": "cdn", "to": "client", "label": "audio bytes", "reply": true },
+          { "from": "other", "to": "cdn", "label": "GET same link, an hour later" },
+          { "from": "cdn", "to": "other", "label": "403: token expired", "reply": true },
+          { "note": "content-addressed keys: a remaster is a new key, TTLs can be very long", "over": ["client", "cdn"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Delivery options at scale",
+      "script": [
+        "A few trade-offs are worth mentioning. At this scale you'd typically use **multiple CDN vendors** for cost negotiation and failover, and possibly your own edge caches inside ISPs for the hottest content, the way Netflix does. As an alternative, early Spotify actually used **peer-to-peer** delivery between desktop clients to save bandwidth. They dropped it once CDN costs fell and mobile became dominant, since phones are bad peers."
+      ],
+      "table": {
+        "columns": ["Option", "Win", "Cost"],
+        "rows": [
+          ["**Multiple CDN vendors**", "price leverage, failover", "more integration work"],
+          ["**Own caches in ISPs**", "cheapest bytes for hits", "hardware to run"],
+          ["**Peer-to-peer**", "clients serve each other", "phones are bad peers"]
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "focus": ["client", "cdn", "e_cdn_client"],
+      "title": "The cheapest CDN: the device",
+      "script": [
+        "Finally, the client keeps its own **on-device cache** of recently played audio, which serves a surprisingly large share of plays because people replay the same songs constantly. It's the cheapest CDN there is."
       ]
     },
     {
@@ -344,11 +523,48 @@
       "remove": ["server", "e_client_server", "e_server_catalogdb"],
       "title": "An API gateway and the first services",
       "script": [
-        "With the bytes handled by the CDN, the \"app server\" is now purely the **metadata and control plane**, and it's doing too many unrelated jobs. So we break it apart and put an **API gateway** in front.",
-        "The gateway is the single front door for clients. It terminates TLS, **validates the auth token** on every request so individual services don't each re-implement that, applies **rate limiting**, and routes to the right backend service. It can also act as a backend-for-frontend, assembling responses shaped for each client. A phone on a cellular connection wants one compact response for the home screen, not ten round trips.",
-        "Behind it, the first two services are a **User/Auth service** with a **User DB** and the **Catalog service**. The user service owns accounts, login and token issuance (OAuth-style), plus two attributes that matter everywhere downstream: the **subscription tier**, which governs audio quality and offline downloads, and the **country**, which governs licensing. The catalog service serves album, artist and track pages. It's read-heavy and stateless, so we run many instances behind a load balancer and autoscale.",
-        "Why split into services at all? They have **very different scaling profiles and SLOs**, they can be deployed independently, and they map to team ownership; Spotify famously organizes around autonomous squads. The cost is real: more network hops, harder debugging, and the need for service discovery, tracing and good timeouts. I think it's clearly worth it at this scale, but I wouldn't start a startup this way."
+        "With the bytes handled by the CDN, the \"app server\" is now purely the **metadata and control plane**, and it's doing too many unrelated jobs. So we break it apart and put an **API gateway** in front."
       ]
+    },
+    {
+      "title": "What the gateway does",
+      "script": [
+        "The gateway is the single front door for clients. It terminates TLS, **validates the auth token** on every request so individual services don't each re-implement that, applies **rate limiting**, and routes to the right backend service. It can also act as a backend-for-frontend, assembling responses shaped for each client. A phone on a cellular connection wants one compact response for the home screen, not ten round trips."
+      ],
+      "bullets": {
+        "heading": "The API gateway: one front door",
+        "items": [
+          "**Terminates TLS**",
+          { "text": "**Validates the auth token** on every request", "detail": "so services don't each re-implement it" },
+          "Applies **rate limiting**",
+          "**Routes** to the right backend service",
+          { "text": "Acts as a **backend-for-frontend**", "detail": "one compact home-screen response, not ten round trips" }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "focus": ["auth", "userdb", "catalog", "catalogdb", "e_auth_userdb", "e_catalog_catalogdb"],
+      "title": "User/Auth and Catalog services",
+      "script": [
+        "Behind it, the first two services are a **User/Auth service** with a **User DB** and the **Catalog service**. The user service owns accounts, login and token issuance (OAuth-style), plus two attributes that matter everywhere downstream: the **subscription tier**, which governs audio quality and offline downloads, and the **country**, which governs licensing. The catalog service serves album, artist and track pages. It's read-heavy and stateless, so we run many instances behind a load balancer and autoscale."
+      ]
+    },
+    {
+      "title": "Why split into services?",
+      "script": [
+        "Why split into services at all? They have **very different scaling profiles and SLOs**, they can be deployed independently, and they map to team ownership; Spotify famously organizes around autonomous squads. The cost is real: more network hops, harder debugging, and the need for service discovery, tracing and good timeouts. I think it's clearly worth it at this scale, but I wouldn't start a startup this way."
+      ],
+      "table": {
+        "columns": ["", "One app server", "Services"],
+        "rows": [
+          ["**Scaling**", "one profile for everything", "each scales on its own"],
+          ["**SLOs**", "slowest part sets the bar", "strict where it matters"],
+          ["**Deploys**", "one big release", "independent"],
+          ["**Ownership**", "everyone, so no one", "one squad per service"],
+          ["**Cost**", "simple to run and debug", "hops, tracing, discovery"]
+        ]
+      }
     },
     {
       "scene": "main",
@@ -356,10 +572,65 @@
       "title": "The playback service: the critical path",
       "script": [
         "The most important request in the whole system is **\"play track X\"**, so it gets its own **Playback service** with the strictest SLO.",
-        "When a client asks to play a track, the playback service does several things. First, it checks **entitlement**: is this user's tier allowed this quality, and can they play on demand at all? Second, it checks **licensing** against the **Rights store**. Music rights are granted per territory and per time window, so a track might be available in the US but not Japan, or only from Friday at midnight local time, or pulled because of a takedown. If it isn't playable, we may **relink** to an equivalent version that is, like the same song on a different compilation. Third, it asks the catalog which encoded files exist, and finally it returns **signed CDN URLs** for the right ones.",
-        "Why separate this from the catalog service? Because it's on the **critical path** with a four-nines target, and I want to keep its dependency list as short as possible. A slow artist-bio query should never be able to make play slow. Its data is also very cacheable. Rights and file manifests change rarely, so the service can serve almost entirely from memory.",
-        "On latency, our 200 ms first-audio budget is roughly one resolve call of 30 to 50 ms plus the first chunk from a nearby edge. We cut that further with **prefetching**. While track N is playing, the client resolves track N+1 in the queue and starts buffering it. That's what makes skips feel instant and enables gapless playback and crossfade. In practice most plays never wait on this service at all."
+        "When a client asks to play a track, the playback service does several things."
       ]
+    },
+    {
+      "title": "Resolving \"play track X\"",
+      "script": [
+        "First, it checks **entitlement**: is this user's tier allowed this quality, and can they play on demand at all? Second, it checks **licensing** against the **Rights store**. Music rights are granted per territory and per time window, so a track might be available in the US but not Japan, or only from Friday at midnight local time, or pulled because of a takedown. If it isn't playable, we may **relink** to an equivalent version that is, like the same song on a different compilation. Third, it asks the catalog which encoded files exist, and finally it returns **signed CDN URLs** for the right ones."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client App", "kind": "client" },
+          { "id": "playback", "label": "Playback Service", "kind": "service" },
+          { "id": "rights", "label": "Rights & Keys", "kind": "data" },
+          { "id": "catalog", "label": "Catalog Service", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "client", "to": "playback", "label": "play track X (user in JP)" },
+          { "from": "playback", "to": "playback", "label": "entitlement: tier allows this?" },
+          { "from": "playback", "to": "rights", "label": "X licensed in JP right now?" },
+          { "from": "rights", "to": "playback", "label": "no → relink to X′ (compilation)", "reply": true },
+          { "from": "playback", "to": "catalog", "label": "which encodings exist for X′?" },
+          { "from": "catalog", "to": "playback", "label": "96 · 160 · 320 kbps", "reply": true },
+          { "from": "playback", "to": "client", "label": "signed CDN URLs", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "scene": "main",
+      "focus": ["playback", "rights", "catalog", "e_playback_rights", "e_playback_catalog"],
+      "title": "Keep the critical path short",
+      "script": [
+        "Why separate this from the catalog service? Because it's on the **critical path** with a four-nines target, and I want to keep its dependency list as short as possible. A slow artist-bio query should never be able to make play slow. Its data is also very cacheable. Rights and file manifests change rarely, so the service can serve almost entirely from memory."
+      ]
+    },
+    {
+      "title": "The latency budget and prefetching",
+      "script": [
+        "On latency, our 200 ms first-audio budget is roughly one resolve call of 30 to 50 ms plus the first chunk from a nearby edge. We cut that further with **prefetching**. While track N is playing, the client resolves track N+1 in the queue and starts buffering it. That's what makes skips feel instant and enables gapless playback and crossfade. In practice most plays never wait on this service at all."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client App", "kind": "client" },
+          { "id": "playback", "label": "Playback Service", "kind": "service" },
+          { "id": "cdn", "label": "CDN Edge", "kind": "infra" }
+        ],
+        "steps": [
+          { "from": "client", "to": "playback", "label": "resolve track N" },
+          { "from": "playback", "to": "client", "label": "URLs (30–50 ms)", "reply": true },
+          { "from": "client", "to": "cdn", "label": "first chunk" },
+          { "from": "cdn", "to": "client", "label": "audio: first sound < 200 ms", "reply": true },
+          { "note": "while track N plays…", "over": ["client", "cdn"] },
+          { "from": "client", "to": "playback", "label": "resolve track N+1" },
+          { "from": "playback", "to": "client", "label": "URLs", "reply": true },
+          { "from": "client", "to": "cdn", "label": "buffer N+1" },
+          { "note": "skip feels instant · gapless · crossfade", "over": ["client", "cdn"] }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
@@ -368,53 +639,355 @@
       "title": "Adaptive streaming and the audio player",
       "script": [
         "So far we've treated a track as one file. In reality, every track is **transcoded into several encodings**, for example roughly 24 kbps for very poor networks, 96 for \"low\", 160 for \"normal\" and 320 for Premium \"very high\", in Ogg Vorbis and AAC for device compatibility, plus a lossless tier.",
-        "The client has a dedicated **audio player** component that decides which encoding to fetch, and it does **adaptive bitrate** (ABR) selection. We split audio into **chunks** of a few seconds each. Either we store them as separate segments with a manifest, like HLS or DASH, or we keep one file per encoding and use byte-range requests with an index of chunk offsets. Both are fine. Range requests mean fewer objects; segments are friendlier to some CDNs. The player measures download throughput and buffer health and picks the encoding for the next chunk, so a train going into a tunnel drops to low quality instead of stuttering.",
-        "For a **fast start**, the first chunk is small and might be fetched at a lower bitrate, then the player ramps up. Unlike video, audio is cheap enough that a healthy buffer of 30 seconds or more is easy, so ABR switches are rare on decent connections.",
-        "The player also owns the **on-device cache** (an LRU of recently played chunks), **prefetching** of the next track, **loudness normalization** using per-track gain values computed at ingest so a quiet folk song doesn't follow a brick-walled pop track at triple the volume, and, as we'll see next, **decryption**."
+        "The client has a dedicated **audio player** component that decides which encoding to fetch, and it does **adaptive bitrate** (ABR) selection."
       ]
+    },
+    {
+      "title": "Chunks: segments or byte ranges",
+      "script": [
+        "We split audio into **chunks** of a few seconds each. Either we store them as separate segments with a manifest, like HLS or DASH, or we keep one file per encoding and use byte-range requests with an index of chunk offsets. Both are fine. Range requests mean fewer objects; segments are friendlier to some CDNs."
+      ],
+      "table": {
+        "columns": ["Approach", "How", "Trade-off"],
+        "rows": [
+          ["**Segments + manifest**", "HLS / DASH, one object per chunk", "friendlier to some CDNs"],
+          ["**One file + byte ranges**", "index of chunk offsets per encoding", "far fewer objects"]
+        ]
+      }
+    },
+    {
+      "title": "Adaptive bitrate in action",
+      "script": [
+        "The player measures download throughput and buffer health and picks the encoding for the next chunk, so a train going into a tunnel drops to low quality instead of stuttering.",
+        "For a **fast start**, the first chunk is small and might be fetched at a lower bitrate, then the player ramps up. Unlike video, audio is cheap enough that a healthy buffer of 30 seconds or more is easy, so ABR switches are rare on decent connections."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "player", "label": "Audio Player", "kind": "client", "sub": "ABR · buffer" },
+          { "id": "cdn", "label": "CDN Edge", "kind": "infra" }
+        ],
+        "steps": [
+          { "from": "player", "to": "cdn", "label": "chunk 1 @ 96 kbps (small: fast start)" },
+          { "from": "cdn", "to": "player", "label": "audio", "reply": true },
+          { "from": "player", "to": "player", "label": "throughput high, buffer growing" },
+          { "from": "player", "to": "cdn", "label": "chunks 2…8 @ 320 kbps" },
+          { "note": "train enters a tunnel", "over": ["player", "cdn"] },
+          { "from": "player", "to": "player", "label": "throughput drops, buffer draining" },
+          { "from": "player", "to": "cdn", "label": "chunk 9 @ 24 kbps" },
+          { "from": "cdn", "to": "player", "label": "audio: lower quality, no stutter", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "What else the player owns",
+      "script": [
+        "The player also owns the **on-device cache** (an LRU of recently played chunks), **prefetching** of the next track, **loudness normalization** using per-track gain values computed at ingest so a quiet folk song doesn't follow a brick-walled pop track at triple the volume, and, as we'll see next, **decryption**."
+      ],
+      "bullets": {
+        "heading": "The audio player also owns…",
+        "items": [
+          { "text": "The **on-device cache**", "detail": "an LRU of recently played chunks" },
+          { "text": "**Prefetching** of the next track" },
+          { "text": "**Loudness normalization**", "detail": "per-track gain computed at ingest" },
+          { "text": "**Decryption**", "detail": "next slide" }
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["offline", "e_client_offline"],
       "title": "DRM and offline downloads",
       "script": [
-        "Labels license us their catalog on the condition that it's **protected**, so audio files are **encrypted at rest** with per-track content keys. The CDN only ever stores and serves ciphertext. That's a nice property: a compromised edge or a leaked URL yields nothing playable, and we don't need to trust every CDN vendor.",
-        "The keys live in the **Rights & Keys** store, backed by a key management system. When the playback service authorizes a play, it returns a **license** along with the URLs: the decryption key, wrapped so only that device's player can unwrap it, plus rules like expiry. Bundling the license into the play-resolve response avoids an extra round trip on the critical path.",
-        "**Offline downloads** are the same mechanism stretched over time. A Premium user downloads encrypted files into **offline storage** on the device along with a **persistent license**. That license expires, and the device must come online, typically at least every 30 days, to renew it. That check-in lets us enforce that the subscription is still active, enforce limits such as a maximum number of devices and downloads per account, and revoke content a label has pulled.",
-        "One subtle requirement: **offline plays still have to be counted** for royalties. The client logs them locally and uploads them on the next sync, sometimes weeks later. Keep that in mind; it matters when we design event processing. The trade-off with DRM generally is complexity and some latency for key handling, but it's a contractual requirement, so the design goal is just to keep it off the hot path."
+        "Labels license us their catalog on the condition that it's **protected**, so audio files are **encrypted at rest** with per-track content keys. The CDN only ever stores and serves ciphertext. That's a nice property: a compromised edge or a leaked URL yields nothing playable, and we don't need to trust every CDN vendor."
       ]
+    },
+    {
+      "title": "A license with every play",
+      "script": [
+        "The keys live in the **Rights & Keys** store, backed by a key management system. When the playback service authorizes a play, it returns a **license** along with the URLs: the decryption key, wrapped so only that device's player can unwrap it, plus rules like expiry. Bundling the license into the play-resolve response avoids an extra round trip on the critical path."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "player", "label": "Audio Player", "kind": "client" },
+          { "id": "playback", "label": "Playback Service", "kind": "service" },
+          { "id": "rights", "label": "Rights & Keys", "kind": "data", "sub": "backed by a KMS" },
+          { "id": "cdn", "label": "CDN Edge", "kind": "infra" }
+        ],
+        "steps": [
+          { "from": "player", "to": "playback", "label": "play X (device public key)" },
+          { "from": "playback", "to": "rights", "label": "content key for X" },
+          { "from": "rights", "to": "playback", "label": "key", "reply": true },
+          { "from": "playback", "to": "playback", "label": "wrap key for this device" },
+          { "from": "playback", "to": "player", "label": "URLs + license (wrapped key, expiry)", "reply": true },
+          { "from": "player", "to": "cdn", "label": "GET chunks" },
+          { "from": "cdn", "to": "player", "label": "ciphertext only", "reply": true },
+          { "from": "player", "to": "player", "label": "unwrap key, decrypt, play" }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Offline downloads and check-ins",
+      "script": [
+        "**Offline downloads** are the same mechanism stretched over time. A Premium user downloads encrypted files into **offline storage** on the device along with a **persistent license**. That license expires, and the device must come online, typically at least every 30 days, to renew it. That check-in lets us enforce that the subscription is still active, enforce limits such as a maximum number of devices and downloads per account, and revoke content a label has pulled."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "store", "label": "Offline Storage", "kind": "client" },
+          { "id": "client", "label": "Client App", "kind": "client" },
+          { "id": "playback", "label": "Playback Service", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "client", "to": "playback", "label": "download album (Premium)" },
+          { "from": "playback", "to": "client", "label": "URLs + persistent license", "reply": true },
+          { "from": "client", "to": "store", "label": "encrypted files + license" },
+          { "note": "plays offline, license good for ~30 days", "over": ["store", "client"] },
+          { "from": "client", "to": "playback", "label": "check-in: renew licenses" },
+          { "note": "checks: still subscribed? device limits? takedowns?", "over": ["client", "playback"] },
+          { "from": "playback", "to": "client", "label": "renewed, minus revoked tracks", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Offline plays still count",
+      "script": [
+        "One subtle requirement: **offline plays still have to be counted** for royalties. The client logs them locally and uploads them on the next sync, sometimes weeks later. Keep that in mind; it matters when we design event processing. The trade-off with DRM generally is complexity and some latency for key handling, but it's a contractual requirement, so the design goal is just to keep it off the hot path."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "Offline plays still owe **royalties**", "detail": "logged locally, uploaded on the next sync" },
+          { "text": "Uploads can arrive **weeks late**", "detail": "event processing has to handle that" },
+          { "text": "DRM costs **complexity** and key-handling latency" },
+          { "text": "It's contractual, so keep it **off the hot path**" }
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["label", "ingest", "transcoders", "kafka", "e_label_ingest", "e_ingest_blob", "e_blob_transcoders", "e_ingest_transcoders", "e_transcoders_kafka"],
       "title": "Content ingestion and transcoding",
       "script": [
-        "Where do tracks come from? The **supply side**: labels and distributors deliver **lossless masters** plus metadata. In the industry, that's usually standardized DDEX feeds, and smaller artists use a web portal. That's on the order of 100K+ new tracks a day, arriving in big bursts around Friday release cycles.",
-        "The **ingestion service** validates the delivery and checks metadata quality. It **deduplicates** using audio fingerprinting, since the same recording gets delivered many times on different releases. It stores the raw master in the blob store, on a colder, cheaper storage tier because it's rarely read, and writes a draft entry into the catalog. Then it enqueues **transcode jobs**.",
-        "**Transcoders** are an autoscaled worker fleet, a good fit for cheap spot or preemptible instances, since every job is independent and can simply be retried. Each job reads a master, produces every encoding, computes loudness normalization values, encrypts the outputs with a fresh content key, and writes them back to the blob store. Jobs are **idempotent**, keyed on master hash plus encoding profile, so retries are safe.",
-        "Why a queue rather than a synchronous call? Ingest is bursty and slow (minutes per track), so the queue **absorbs bursts**, gives us retries, and decouples the label-facing API from the compute fleet.",
-        "When a track is ready, the transcoder publishes a **TrackReady** event to an **event bus**, Kafka. This is the first appearance of what becomes the system's backbone. The catalog consumes it to mark the track live at its release time (embargoes are often midnight local time per country). Search and recommendations will consume the same event, without the ingestion pipeline knowing they exist."
+        "Where do tracks come from? The **supply side**: labels and distributors deliver **lossless masters** plus metadata. In the industry, that's usually standardized DDEX feeds, and smaller artists use a web portal. That's on the order of 100K+ new tracks a day, arriving in big bursts around Friday release cycles."
       ]
+    },
+    {
+      "title": "Ingesting a delivery",
+      "script": [
+        "The **ingestion service** validates the delivery and checks metadata quality. It **deduplicates** using audio fingerprinting, since the same recording gets delivered many times on different releases. It stores the raw master in the blob store, on a colder, cheaper storage tier because it's rarely read, and writes a draft entry into the catalog. Then it enqueues **transcode jobs**."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "label", "label": "Labels / Artists", "kind": "client" },
+          { "id": "ingest", "label": "Ingestion Service", "kind": "service" },
+          { "id": "blob", "label": "Audio Blob Store", "kind": "data" },
+          { "id": "catalog", "label": "Catalog DB", "kind": "data" },
+          { "id": "queue", "label": "Transcode Queue", "kind": "stream" }
+        ],
+        "steps": [
+          { "from": "label", "to": "ingest", "label": "DDEX: master + metadata" },
+          { "from": "ingest", "to": "ingest", "label": "validate, check metadata" },
+          { "from": "ingest", "to": "ingest", "label": "fingerprint: duplicate?" },
+          { "from": "ingest", "to": "blob", "label": "raw master (cold tier)" },
+          { "from": "ingest", "to": "catalog", "label": "draft track entry" },
+          { "from": "ingest", "to": "queue", "label": "transcode jobs" },
+          { "from": "ingest", "to": "label", "label": "accepted", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Transcode jobs on a queue",
+      "script": [
+        "**Transcoders** are an autoscaled worker fleet, a good fit for cheap spot or preemptible instances, since every job is independent and can simply be retried. Each job reads a master, produces every encoding, computes loudness normalization values, encrypts the outputs with a fresh content key, and writes them back to the blob store. Jobs are **idempotent**, keyed on master hash plus encoding profile, so retries are safe.",
+        "Why a queue rather than a synchronous call? Ingest is bursty and slow (minutes per track), so the queue **absorbs bursts**, gives us retries, and decouples the label-facing API from the compute fleet."
+      ],
+      "bullets": {
+        "heading": "A transcode job",
+        "items": [
+          { "text": "Reads a master, produces **every encoding**", "detail": "24 · 96 · 160 · 320 kbps, Vorbis and AAC, lossless" },
+          { "text": "Computes **loudness** gain values" },
+          { "text": "**Encrypts** each output with a fresh content key" },
+          { "text": "Is **idempotent**", "detail": "keyed on master hash + encoding profile, so retries are safe" },
+          { "text": "Runs on **spot instances** behind a **queue**", "detail": "absorbs Friday bursts, retries, decouples the label API" }
+        ]
+      }
+    },
+    {
+      "title": "TrackReady fans out",
+      "script": [
+        "When a track is ready, the transcoder publishes a **TrackReady** event to an **event bus**, Kafka. This is the first appearance of what becomes the system's backbone. The catalog consumes it to mark the track live at its release time (embargoes are often midnight local time per country). Search and recommendations will consume the same event, without the ingestion pipeline knowing they exist."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "trans", "label": "Transcoders", "kind": "service" },
+          { "id": "kafka", "label": "Event Bus", "kind": "stream", "sub": "Kafka" },
+          { "id": "catalog", "label": "Catalog Service", "kind": "service" },
+          { "id": "search", "label": "Search", "kind": "service ghost", "sub": "coming up" },
+          { "id": "recs", "label": "Recommendations", "kind": "service ghost", "sub": "coming up" }
+        ],
+        "steps": [
+          { "from": "trans", "to": "kafka", "label": "TrackReady(track, encodings)" },
+          { "from": "kafka", "to": "catalog", "label": "TrackReady" },
+          { "from": "catalog", "to": "catalog", "label": "go live at release time" },
+          { "from": "kafka", "to": "search", "label": "TrackReady" },
+          { "from": "kafka", "to": "recs", "label": "TrackReady" },
+          { "note": "the producer doesn't know who consumes", "over": ["trans", "kafka"] }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
       "add": ["search", "searchidx", "e_search_searchidx", "e_cdc_search"],
       "title": "Search",
       "script": [
-        "Search is a separate problem from catalog lookup. A SQL *LIKE* query won't give us full-text matching, **typo tolerance**, autocomplete, or **relevance ranking**, so we add a dedicated **Search service** backed by an **inverted index**, such as Elasticsearch or a custom Lucene-based system.",
-        "The index holds documents for tracks, artists, albums, and playlists, with normalized names, aliases, transliterations (so \"Beyonce\" finds \"Beyoncé\" and a Latin query finds a Japanese artist), and **edge n-grams** for prefix matching. It's kept in sync with the catalog through **change data capture**. Changes in the Catalog DB stream through Kafka to an indexer that updates the index. The index is eventually consistent, with a new release appearing within seconds to minutes, which is completely fine.",
-        "Ranking is where search gets good. Text relevance alone is bad: there are thousands of songs called \"Hello\". So we blend text match with **popularity**, **personalization** (boost artists this user already listens to), and **locale**. The search service orchestrates query understanding, the index query, and a re-ranking step.",
-        "On load: autocomplete fires on nearly every keystroke, so search QPS is a multiple of user searches. We debounce on the client, cache results for popular prefixes (a huge share of queries are the same few thousand prefixes), and shard and replicate the index. Sharding is for size, replication is for QPS. It's also a good example of graceful degradation: if search is down, you can still play your library."
+        "Search is a separate problem from catalog lookup. A SQL *LIKE* query won't give us full-text matching, **typo tolerance**, autocomplete, or **relevance ranking**, so we add a dedicated **Search service** backed by an **inverted index**, such as Elasticsearch or a custom Lucene-based system."
       ]
+    },
+    {
+      "title": "Keeping the index fresh with CDC",
+      "script": [
+        "The index holds documents for tracks, artists, albums, and playlists, with normalized names, aliases, transliterations (so \"Beyonce\" finds \"Beyoncé\" and a Latin query finds a Japanese artist), and **edge n-grams** for prefix matching. It's kept in sync with the catalog through **change data capture**. Changes in the Catalog DB stream through Kafka to an indexer that updates the index. The index is eventually consistent, with a new release appearing within seconds to minutes, which is completely fine."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "db", "label": "Catalog DB", "kind": "data" },
+          { "id": "kafka", "label": "Kafka", "kind": "stream", "sub": "change stream" },
+          { "id": "indexer", "label": "Indexer", "kind": "service" },
+          { "id": "idx", "label": "Search Index", "kind": "data", "sub": "Elasticsearch" }
+        ],
+        "steps": [
+          { "from": "db", "to": "kafka", "label": "row changed (CDC)" },
+          { "from": "kafka", "to": "indexer", "label": "change event" },
+          { "from": "indexer", "to": "indexer", "label": "normalize, aliases, transliterate" },
+          { "from": "indexer", "to": "indexer", "label": "edge n-grams for prefixes" },
+          { "from": "indexer", "to": "idx", "label": "upsert document" },
+          { "note": "eventually consistent: seconds to minutes", "over": ["db", "idx"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Ranking a search",
+      "script": [
+        "Ranking is where search gets good. Text relevance alone is bad: there are thousands of songs called \"Hello\". So we blend text match with **popularity**, **personalization** (boost artists this user already listens to), and **locale**. The search service orchestrates query understanding, the index query, and a re-ranking step."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client App", "kind": "client" },
+          { "id": "search", "label": "Search Service", "kind": "service" },
+          { "id": "idx", "label": "Search Index", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "client", "to": "search", "label": "q = \"hello\"" },
+          { "from": "search", "to": "search", "label": "query understanding" },
+          { "from": "search", "to": "idx", "label": "text match" },
+          { "from": "idx", "to": "search", "label": "thousands of songs called \"Hello\"", "reply": true },
+          { "from": "search", "to": "search", "label": "re-rank: popularity · personal · locale" },
+          { "from": "search", "to": "client", "label": "the \"Hello\" this user wants, first", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Search at load",
+      "script": [
+        "On load: autocomplete fires on nearly every keystroke, so search QPS is a multiple of user searches. We debounce on the client, cache results for popular prefixes (a huge share of queries are the same few thousand prefixes), and shard and replicate the index. Sharding is for size, replication is for QPS. It's also a good example of graceful degradation: if search is down, you can still play your library."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "Autocomplete fires on **nearly every keystroke**", "detail": "search QPS is a multiple of user searches" },
+          { "text": "**Debounce** on the client" },
+          { "text": "**Cache** popular prefixes", "detail": "a few thousand prefixes cover a huge share of queries" },
+          { "text": "**Shard** for size, **replicate** for QPS" },
+          { "text": "Search down? Your **library still plays**" }
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["playlist", "playlistdb", "e_playlist_playlistdb"],
       "title": "Playlists and Your Library",
       "script": [
-        "Next is user-generated data: **playlists** and **Your Library**. The scale is very different from the catalog. There are billions of playlists, some with ten thousand tracks, plus every user's saved tracks, albums, and followed artists.",
-        "The access pattern is almost entirely **key-based**: fetch playlist by ID, fetch user's library by user ID, append or move a track. There are no joins, the writes are steady, and the volume is enormous, which is a great fit for a **wide-column store like Cassandra**. Partition by playlist ID, cluster by position, replicate three ways for durability, and it scales horizontally across many data centers. Spotify does in fact run a lot of Cassandra.",
-        "Consistency is where it gets interesting. Our requirement was **read-your-writes**: if I add a song and refresh, it has to be there. We get that with quorum reads and writes within a region, or by pinning a user's reads to where they just wrote. For **collaborative playlists**, where two people edit at once, we don't store \"the list\" as a blob that gets overwritten. We store a **revision history of operations** (insert at position, move, remove), and each client sends edits against the revision it saw. The server rebases concurrent edits, much like a lightweight version of collaborative text editing. This also makes **offline sync** cheap, since a device just asks \"what changed since revision 412?\"",
+        "Next is user-generated data: **playlists** and **Your Library**. The scale is very different from the catalog. There are billions of playlists, some with ten thousand tracks, plus every user's saved tracks, albums, and followed artists."
+      ]
+    },
+    {
+      "title": "Key-based data in Cassandra",
+      "script": [
+        "The access pattern is almost entirely **key-based**: fetch playlist by ID, fetch user's library by user ID, append or move a track. There are no joins, the writes are steady, and the volume is enormous, which is a great fit for a **wide-column store like Cassandra**. Partition by playlist ID, cluster by position, replicate three ways for durability, and it scales horizontally across many data centers. Spotify does in fact run a lot of Cassandra."
+      ],
+      "entities": {
+        "items": [
+          { "id": "playlist", "name": "Playlist", "kind": "data", "fields": ["playlist_id: uuid  PARTITION", "owner_id: uuid", "name: text", "revision: int", "collaborative: bool"] },
+          { "id": "entry", "name": "PlaylistEntry", "kind": "data", "fields": ["playlist_id: uuid  PARTITION", "position: int  CLUSTER", "track_id: uuid", "added_by: uuid", "added_at: timestamp"] },
+          { "id": "library", "name": "LibraryItem", "kind": "data", "fields": ["user_id: uuid  PARTITION", "item_type: enum  CLUSTER", "item_id: uuid  CLUSTER", "saved_at: timestamp"] }
+        ],
+        "relations": [
+          { "from": "playlist", "to": "entry", "label": "1 — *" }
+        ]
+      }
+    },
+    {
+      "title": "Read-your-writes with quorums",
+      "script": [
+        "Consistency is where it gets interesting. Our requirement was **read-your-writes**: if I add a song and refresh, it has to be there. We get that with quorum reads and writes within a region, or by pinning a user's reads to where they just wrote."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client App", "kind": "client" },
+          { "id": "svc", "label": "Playlist & Library", "kind": "service" },
+          { "id": "a", "label": "Replica A", "kind": "data" },
+          { "id": "b", "label": "Replica B", "kind": "data" },
+          { "id": "c", "label": "Replica C", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "client", "to": "svc", "label": "add track" },
+          { "from": "svc", "to": "a", "label": "write rev 413" },
+          { "from": "svc", "to": "b", "label": "write rev 413" },
+          { "note": "2 of 3 acked: write quorum", "over": ["a", "b"] },
+          { "from": "svc", "to": "client", "label": "ok", "reply": true },
+          { "from": "client", "to": "svc", "label": "refresh" },
+          { "from": "svc", "to": "b", "label": "read" },
+          { "from": "svc", "to": "c", "label": "read" },
+          { "from": "c", "to": "svc", "label": "rev 412 (stale)", "reply": true },
+          { "from": "b", "to": "svc", "label": "rev 413", "reply": true },
+          { "from": "svc", "to": "client", "label": "newest wins: the song is there", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Collaborative edits as operations",
+      "script": [
+        "For **collaborative playlists**, where two people edit at once, we don't store \"the list\" as a blob that gets overwritten. We store a **revision history of operations** (insert at position, move, remove), and each client sends edits against the revision it saw. The server rebases concurrent edits, much like a lightweight version of collaborative text editing. This also makes **offline sync** cheap, since a device just asks \"what changed since revision 412?\""
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "ana", "label": "Ana's Phone", "kind": "client" },
+          { "id": "svc", "label": "Playlist & Library", "kind": "service" },
+          { "id": "ben", "label": "Ben's Laptop", "kind": "client" },
+          { "id": "tablet", "label": "Ana's Tablet", "kind": "client", "sub": "was offline" }
+        ],
+        "steps": [
+          { "from": "ana", "to": "svc", "label": "@rev 412: insert A at 3" },
+          { "from": "ben", "to": "svc", "label": "@rev 412: remove track 5" },
+          { "from": "svc", "to": "svc", "label": "rebase: Ben's remove → track 6" },
+          { "from": "svc", "to": "ana", "label": "now rev 414", "reply": true },
+          { "from": "svc", "to": "ben", "label": "now rev 414", "reply": true },
+          { "from": "tablet", "to": "svc", "label": "what changed since rev 412?" },
+          { "from": "svc", "to": "tablet", "label": "2 ops", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "scene": "main",
+      "focus": ["playlist", "playlistdb", "e_playlist_playlistdb"],
+      "title": "Hot keys",
+      "script": [
         "Finally, **hot keys**. An editorial playlist like Today's Top Hits has tens of millions of followers and gets read constantly. That's one Cassandra partition getting hammered, which leads directly to the next slide."
       ]
     },
@@ -423,21 +996,184 @@
       "add": ["cache"],
       "title": "A caching tier",
       "script": [
-        "We estimated about 300K metadata QPS on average, and maybe a million at peak, and almost all of it is reads of data that rarely changes. That's the textbook case for a **distributed cache**, Redis or Memcached, sitting between the services and their databases.",
-        "We use the **cache-aside** pattern: a service checks the cache, falls back to the database on a miss, and populates the cache. For catalog data, the cache is invalidated by the same **CDC events** that feed search, so we're not relying only on TTLs. If 95% of reads hit the cache, a million QPS becomes 50K at the databases, which is the difference between a manageable cluster and a heroic one.",
-        "Hot keys need extra care. When a huge album drops at midnight, millions of clients request the same few keys at the same moment. Three techniques help. First, **request coalescing** (single-flight), so only one request per key goes to the database on a miss rather than a thundering herd. Second, a small **in-process cache** in each service instance for the very hottest keys. Third, **replicating hot keys** across cache shards. We can also pre-warm caches for scheduled releases, because we know exactly when they'll go live.",
-        "It's worth stepping back to see the full stack of caches: the **on-device cache**, the **CDN** (which also serves cover art and even static, public metadata responses), the **gateway** response cache, this **service cache**, and finally the database's own buffer pool. The trade-off is always staleness versus load. I'd use short TTLs for anything entitlement-related, like subscription status, and long TTLs for catalog data."
+        "We estimated about 300K metadata QPS on average, and maybe a million at peak, and almost all of it is reads of data that rarely changes. That's the textbook case for a **distributed cache**, Redis or Memcached, sitting between the services and their databases."
       ]
+    },
+    {
+      "title": "Cache-aside, invalidated by CDC",
+      "script": [
+        "We use the **cache-aside** pattern: a service checks the cache, falls back to the database on a miss, and populates the cache. For catalog data, the cache is invalidated by the same **CDC events** that feed search, so we're not relying only on TTLs. If 95% of reads hit the cache, a million QPS becomes 50K at the databases, which is the difference between a manageable cluster and a heroic one."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "svc", "label": "Catalog Service", "kind": "service" },
+          { "id": "cache", "label": "Cache Tier", "kind": "data", "sub": "Redis / Memcached" },
+          { "id": "db", "label": "Catalog DB", "kind": "data" },
+          { "id": "cdc", "label": "CDC Stream", "kind": "stream" }
+        ],
+        "steps": [
+          { "from": "svc", "to": "cache", "label": "GET album:42" },
+          { "from": "cache", "to": "svc", "label": "miss", "reply": true },
+          { "from": "svc", "to": "db", "label": "SELECT album 42" },
+          { "from": "db", "to": "svc", "label": "row", "reply": true },
+          { "from": "svc", "to": "cache", "label": "SET album:42" },
+          { "note": "95% hits: 1M QPS becomes 50K at the DB", "over": ["svc", "db"] },
+          { "from": "db", "to": "cdc", "label": "album 42 changed" },
+          { "from": "cdc", "to": "cache", "label": "invalidate album:42" }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "A midnight drop: request coalescing",
+      "script": [
+        "Hot keys need extra care. When a huge album drops at midnight, millions of clients request the same few keys at the same moment. Three techniques help. First, **request coalescing** (single-flight), so only one request per key goes to the database on a miss rather than a thundering herd."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "clients", "label": "Millions of Clients", "kind": "client" },
+          { "id": "svc", "label": "Catalog Service", "kind": "service" },
+          { "id": "cache", "label": "Cache Tier", "kind": "data" },
+          { "id": "db", "label": "Catalog DB", "kind": "data" }
+        ],
+        "steps": [
+          { "note": "00:00, a huge album goes live", "over": ["clients", "svc"] },
+          { "from": "clients", "to": "svc", "label": "GET album:new  ×1M" },
+          { "from": "svc", "to": "cache", "label": "GET album:new" },
+          { "from": "cache", "to": "svc", "label": "miss", "reply": true },
+          { "from": "svc", "to": "svc", "label": "single-flight: one fetch, the rest wait" },
+          { "from": "svc", "to": "db", "label": "one query" },
+          { "from": "db", "to": "svc", "label": "row", "reply": true },
+          { "from": "svc", "to": "cache", "label": "SET album:new" },
+          { "from": "svc", "to": "clients", "label": "everyone served", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "More hot-key defenses",
+      "script": [
+        "Second, a small **in-process cache** in each service instance for the very hottest keys. Third, **replicating hot keys** across cache shards. We can also pre-warm caches for scheduled releases, because we know exactly when they'll go live."
+      ],
+      "bullets": {
+        "heading": "Hot-key defenses",
+        "items": [
+          { "text": "**Request coalescing** (single-flight)", "detail": "one database read per key on a miss" },
+          { "text": "A small **in-process cache**", "detail": "in each service instance, for the very hottest keys" },
+          { "text": "**Replicate hot keys** across cache shards" },
+          { "text": "**Pre-warm** for scheduled releases", "detail": "we know exactly when they go live" }
+        ]
+      }
+    },
+    {
+      "title": "The full stack of caches",
+      "script": [
+        "It's worth stepping back to see the full stack of caches: the **on-device cache**, the **CDN** (which also serves cover art and even static, public metadata responses), the **gateway** response cache, this **service cache**, and finally the database's own buffer pool. The trade-off is always staleness versus load. I'd use short TTLs for anything entitlement-related, like subscription status, and long TTLs for catalog data."
+      ],
+      "table": {
+        "columns": ["Layer", "Holds", "Staleness"],
+        "rows": [
+          ["**On-device cache**", "recently played audio", "none: immutable"],
+          ["**CDN**", "audio, cover art, public metadata", "long TTLs"],
+          ["**Gateway**", "whole API responses", "seconds"],
+          ["**Service cache**", "catalog, playlists, entitlements", "long for catalog, short for tier"],
+          ["**DB buffer pool**", "hot pages", "always fresh"]
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["collector", "streamproc", "datalake", "royalties", "e_collector_kafka", "e_kafka_streamproc", "e_streamproc_datalake", "e_datalake_royalties"],
       "title": "Play events, stream processing, and royalties",
       "script": [
-        "Now the third workload: the **event firehose**. Every play, skip, pause, seek, and track completion is an event, around 6 billion plays a day plus many more interaction events. These events drive royalties, charts, artist dashboards, Wrapped, and, critically, recommendations.",
-        "The client **batches** events and sends them to an **Event Collector**, a deliberately dumb, write-only, highly available endpoint whose only job is to accept events and append them to **Kafka**. If the network is down, the client buffers to disk and retries later. That's where the offline plays from earlier come in. Logging is **fully asynchronous**; it must never slow down or break playback.",
-        "Kafka gives us a durable, replicated, partitioned log, partitioned by user ID so a user's events stay in order. Multiple consumers read it independently. A **stream processor** like Flink or Dataflow then does the hard part.",
-        "That hard part is **exactly-once counting**. Clients retry, so delivery is at-least-once. We attach a unique **event ID** on the client and **deduplicate** in the stream processor, which combined with checkpointing gives effectively-once results. The processor applies business rules: a play counts as a **stream** only after 30 seconds. It does **fraud detection** to catch bot farms looping a track to inflate payouts. It uses **event time, not arrival time**, so a play from three weeks ago uploaded today lands in the right reporting period. It also maintains real-time counters for things like play counts on artist pages.",
+        "Now the third workload: the **event firehose**. Every play, skip, pause, seek, and track completion is an event, around 6 billion plays a day plus many more interaction events. These events drive royalties, charts, artist dashboards, Wrapped, and, critically, recommendations."
+      ]
+    },
+    {
+      "title": "Logging without slowing playback",
+      "script": [
+        "The client **batches** events and sends them to an **Event Collector**, a deliberately dumb, write-only, highly available endpoint whose only job is to accept events and append them to **Kafka**. If the network is down, the client buffers to disk and retries later. That's where the offline plays from earlier come in. Logging is **fully asynchronous**; it must never slow down or break playback."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client App", "kind": "client" },
+          { "id": "collector", "label": "Event Collector", "kind": "stream", "sub": "write-only" },
+          { "id": "kafka", "label": "Event Bus", "kind": "stream", "sub": "Kafka" }
+        ],
+        "steps": [
+          { "from": "client", "to": "client", "label": "batch play / skip / seek events" },
+          { "from": "client", "to": "collector", "label": "POST batch" },
+          { "from": "collector", "to": "kafka", "label": "append" },
+          { "from": "collector", "to": "client", "label": "202 accepted", "reply": true },
+          { "note": "network down (or offline for weeks)", "over": ["client", "collector"] },
+          { "from": "client", "to": "client", "label": "buffer to disk" },
+          { "from": "client", "to": "collector", "label": "retry later, offline plays included" },
+          { "note": "async: playback never waits on logging", "over": ["client", "kafka"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "A play event on a partitioned log",
+      "script": [
+        "Kafka gives us a durable, replicated, partitioned log, partitioned by user ID so a user's events stay in order. Multiple consumers read it independently. A **stream processor** like Flink or Dataflow then does the hard part."
+      ],
+      "entities": {
+        "items": [
+          { "id": "event", "name": "PlayEvent", "kind": "stream", "fields": ["event_id: uuid  (dedupe key)", "user_id: uuid  (partition key)", "track_id: uuid", "ms_played: int", "end_reason: skip | done | …", "event_time: timestamp", "device_id: uuid"] },
+          { "id": "topic", "name": "Topic: plays", "kind": "stream", "fields": ["partitioned by: user_id", "replication: 3", "retention: days", "consumers: stream processing, recs, …"] }
+        ],
+        "relations": [
+          { "from": "event", "to": "topic", "label": "appended to" }
+        ]
+      }
+    },
+    {
+      "title": "Effectively-once counting",
+      "script": [
+        "That hard part is **exactly-once counting**. Clients retry, so delivery is at-least-once. We attach a unique **event ID** on the client and **deduplicate** in the stream processor, which combined with checkpointing gives effectively-once results."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client App", "kind": "client" },
+          { "id": "collector", "label": "Event Collector", "kind": "stream" },
+          { "id": "kafka", "label": "Event Bus", "kind": "stream", "sub": "Kafka" },
+          { "id": "proc", "label": "Stream Processing", "kind": "stream" }
+        ],
+        "steps": [
+          { "from": "client", "to": "collector", "label": "play e-91" },
+          { "from": "collector", "to": "kafka", "label": "append e-91" },
+          { "from": "collector", "to": "client", "label": "ack lost (timeout)", "reply": true },
+          { "from": "client", "to": "collector", "label": "retry e-91" },
+          { "from": "collector", "to": "kafka", "label": "append e-91 again" },
+          { "from": "kafka", "to": "proc", "label": "e-91" },
+          { "from": "kafka", "to": "proc", "label": "e-91" },
+          { "from": "proc", "to": "proc", "label": "seen e-91: drop duplicate" },
+          { "note": "dedupe + checkpoints = counted once", "over": ["kafka", "proc"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Business rules in the stream processor",
+      "script": [
+        "The processor applies business rules: a play counts as a **stream** only after 30 seconds. It does **fraud detection** to catch bot farms looping a track to inflate payouts. It uses **event time, not arrival time**, so a play from three weeks ago uploaded today lands in the right reporting period. It also maintains real-time counters for things like play counts on artist pages."
+      ],
+      "bullets": {
+        "heading": "The stream processor",
+        "items": [
+          { "text": "A play is a **stream** only after 30 seconds" },
+          { "text": "**Fraud detection**", "detail": "bot farms looping a track to inflate payouts" },
+          { "text": "**Event time, not arrival time**", "detail": "a play from three weeks ago lands in the right period" },
+          { "text": "**Real-time counters**", "detail": "play counts on artist pages" }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "focus": ["streamproc", "datalake", "royalties", "e_streamproc_datalake", "e_datalake_royalties"],
+      "title": "The data lake and royalties",
+      "script": [
         "Everything lands in a **data lake / warehouse** as the immutable source of truth. **Royalty reporting** runs as batch jobs over it, and it's the foundation for the recommendation system we'll build shortly."
       ]
     },
@@ -446,48 +1182,295 @@
       "add": ["realtime", "connect", "session", "e_player_realtime", "e_realtime_connect", "e_connect_session"],
       "title": "Cross-device playback and Spotify Connect",
       "script": [
-        "Cross-device playback is a different kind of problem. Everything so far was request/response, but \"tap the speaker icon on your phone and music moves to the living-room speaker\" needs the server to **push** commands to a device in real time.",
-        "So every online device keeps a **persistent connection**, a WebSocket, to a **Realtime Gateway** tier. That's tens of millions of concurrent connections. A well-tuned node can hold a few hundred thousand mostly idle connections, so we need a fleet of a couple hundred nodes. A **connection registry** records which gateway node holds which device.",
-        "The **Connect service** owns each user's **player state**: the list of their online devices, which one is active, the current track, position, and queue. It's stored in a fast **session store** like Redis, keyed by user. When I tap \"play on Living Room\", my phone sends that command; the Connect service updates the state, looks up the speaker's connection, and pushes \"play track X at 1:32\" to it. The **speaker then fetches audio itself** from the CDN using the normal playback path. The phone is just a remote control, which is why your phone battery survives a party.",
-        "Concurrency: two devices can issue commands at once, so state updates carry a **monotonic sequence number** and the service applies last-writer-wins on it. Because the state is persisted, \"resume where I left off\" on another device falls out for free.",
-        "Why not polling? Command latency would be poor and it's terrible for battery. WebSockets do make the gateway **stateful**, so when a node dies its clients reconnect with **exponential backoff and jitter** to avoid a reconnection stampede."
+        "Cross-device playback is a different kind of problem. Everything so far was request/response, but \"tap the speaker icon on your phone and music moves to the living-room speaker\" needs the server to **push** commands to a device in real time."
       ]
+    },
+    {
+      "title": "A persistent connection per device",
+      "script": [
+        "So every online device keeps a **persistent connection**, a WebSocket, to a **Realtime Gateway** tier. That's tens of millions of concurrent connections. A well-tuned node can hold a few hundred thousand mostly idle connections, so we need a fleet of a couple hundred nodes. A **connection registry** records which gateway node holds which device."
+      ],
+      "bullets": {
+        "heading": "The realtime gateway",
+        "items": [
+          { "text": "One **WebSocket** per online device" },
+          { "text": "**Tens of millions** of concurrent connections" },
+          { "text": "A tuned node holds **a few hundred thousand**", "detail": "mostly idle" },
+          { "text": "So a fleet of **a couple hundred** nodes" },
+          { "text": "A **connection registry**: device → gateway node" }
+        ]
+      }
+    },
+    {
+      "title": "Player state",
+      "script": [
+        "The **Connect service** owns each user's **player state**: the list of their online devices, which one is active, the current track, position, and queue. It's stored in a fast **session store** like Redis, keyed by user."
+      ],
+      "entities": {
+        "items": [
+          { "id": "state", "name": "PlayerState", "kind": "data", "fields": ["user_id: uuid  KEY", "devices: [device_id, name, online]", "active_device: device_id", "track_id: uuid", "position_ms: int", "queue: track_id[]", "seq: int"] },
+          { "id": "conn", "name": "Connection", "kind": "data", "fields": ["device_id: uuid  KEY", "gateway_node: host", "connected_at: timestamp"] }
+        ],
+        "relations": [
+          { "from": "state", "to": "conn", "label": "1 — * devices" }
+        ]
+      }
+    },
+    {
+      "title": "\"Play on Living Room\"",
+      "script": [
+        "When I tap \"play on Living Room\", my phone sends that command; the Connect service updates the state, looks up the speaker's connection, and pushes \"play track X at 1:32\" to it. The **speaker then fetches audio itself** from the CDN using the normal playback path. The phone is just a remote control, which is why your phone battery survives a party."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "phone", "label": "My Phone", "kind": "client" },
+          { "id": "rt", "label": "Realtime Gateway", "kind": "infra" },
+          { "id": "connect", "label": "Connect Service", "kind": "service" },
+          { "id": "session", "label": "Session Store", "kind": "data" },
+          { "id": "speaker", "label": "Living Room", "kind": "client", "sub": "speaker" },
+          { "id": "cdn", "label": "CDN", "kind": "infra" }
+        ],
+        "steps": [
+          { "from": "phone", "to": "rt", "label": "play on Living Room" },
+          { "from": "rt", "to": "connect", "label": "command" },
+          { "from": "connect", "to": "session", "label": "active = speaker" },
+          { "from": "connect", "to": "rt", "label": "push to speaker's node" },
+          { "from": "rt", "to": "speaker", "label": "play X at 1:32" },
+          { "from": "speaker", "to": "cdn", "label": "fetch audio itself" },
+          { "from": "cdn", "to": "speaker", "label": "audio", "reply": true },
+          { "note": "the phone is just a remote control", "over": ["phone", "rt"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Concurrent commands and resume",
+      "script": [
+        "Concurrency: two devices can issue commands at once, so state updates carry a **monotonic sequence number** and the service applies last-writer-wins on it. Because the state is persisted, \"resume where I left off\" on another device falls out for free."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "phone", "label": "My Phone", "kind": "client" },
+          { "id": "laptop", "label": "My Laptop", "kind": "client" },
+          { "id": "connect", "label": "Connect Service", "kind": "service" },
+          { "id": "car", "label": "My Car", "kind": "client", "sub": "later" }
+        ],
+        "steps": [
+          { "from": "phone", "to": "connect", "label": "pause (seq 41)" },
+          { "from": "laptop", "to": "connect", "label": "next track (seq 42)" },
+          { "from": "connect", "to": "connect", "label": "highest seq wins: next track" },
+          { "from": "connect", "to": "phone", "label": "state @ seq 42", "reply": true },
+          { "from": "connect", "to": "laptop", "label": "state @ seq 42", "reply": true },
+          { "from": "car", "to": "connect", "label": "resume" },
+          { "from": "connect", "to": "car", "label": "track Y at 2:05, same queue", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Why not polling?",
+      "script": [
+        "Why not polling? Command latency would be poor and it's terrible for battery. WebSockets do make the gateway **stateful**, so when a node dies its clients reconnect with **exponential backoff and jitter** to avoid a reconnection stampede."
+      ],
+      "table": {
+        "columns": ["", "Polling", "WebSockets"],
+        "rows": [
+          ["**Command latency**", "up to one poll interval", "instant push"],
+          ["**Battery**", "constant wake-ups", "an idle socket"],
+          ["**Gateway**", "stateless", "stateful"],
+          ["**Node dies**", "nothing to do", "reconnect, backoff + jitter"]
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["recs", "recsstore", "recspipe", "e_recs_recsstore", "e_datalake_recspipe", "e_kafka_recspipe", "e_recspipe_recsstore"],
       "title": "Recommendations: the big picture",
       "script": [
-        "Recommendations power the home feed, Discover Weekly, Daily Mixes, Release Radar, radio, and autoplay. A large share of all listening starts from a recommended surface, so this is a core product system, not a side feature.",
-        "At the highest level there are three new pieces. The **Recs ML Pipeline** reads the full listening history from the data lake, plus fresh signals from Kafka, and produces recommendations. Results are written to a **Recs Store**, a key-value store keyed by user, for example \"user 123 → today's home shelves, this week's Discover Weekly\". The **Recommendation service** serves requests from clients by reading and assembling those results, plus doing some live computation.",
-        "The fundamental design tension is **offline versus online**. We have 600 million users and 100 million tracks. Scoring every track for every user on each request is impossible, so we **precompute** the expensive parts in batch. But some recommendations need to react to what you're doing *right now*, like radio after you skip three ballads in a row, so those need an online path. Most real systems are a hybrid, and ours will be too.",
+        "Recommendations power the home feed, Discover Weekly, Daily Mixes, Release Radar, radio, and autoplay. A large share of all listening starts from a recommended surface, so this is a core product system, not a side feature."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["recspipe", "recsstore", "recs", "datalake", "kafka", "e_datalake_recspipe", "e_kafka_recspipe", "e_recspipe_recsstore", "e_recs_recsstore"],
+      "title": "Pipeline, store, service",
+      "script": [
+        "At the highest level there are three new pieces. The **Recs ML Pipeline** reads the full listening history from the data lake, plus fresh signals from Kafka, and produces recommendations. Results are written to a **Recs Store**, a key-value store keyed by user, for example \"user 123 → today's home shelves, this week's Discover Weekly\". The **Recommendation service** serves requests from clients by reading and assembling those results, plus doing some live computation."
+      ]
+    },
+    {
+      "title": "Offline versus online",
+      "script": [
+        "The fundamental design tension is **offline versus online**. We have 600 million users and 100 million tracks. Scoring every track for every user on each request is impossible, so we **precompute** the expensive parts in batch. But some recommendations need to react to what you're doing *right now*, like radio after you skip three ballads in a row, so those need an online path. Most real systems are a hybrid, and ours will be too."
+      ],
+      "table": {
+        "columns": ["Path", "Good at", "Weak at"],
+        "rows": [
+          ["**Offline (batch)**", "heavy compute, cheap reads", "stale, no context"],
+          ["**Online**", "reacts to right now", "tight latency budget"],
+          ["**Hybrid**", "batch does the heavy lifting", "two paths to run"]
+        ],
+        "highlight": 2
+      }
+    },
+    {
+      "title": "Recs degrade gracefully",
+      "script": [
         "From an availability standpoint, the Recs service is a perfect example of graceful degradation. If it's slow or down, the home screen falls back to cached results, then to editorial and regional top charts, and playback is unaffected.",
         "That orange \"pipeline\" box is hiding a lot, so for the next several slides let's **zoom into it** and build it up piece by piece."
-      ]
+      ],
+      "bullets": {
+        "heading": "If the Recs service is slow or down…",
+        "items": [
+          { "text": "Home falls back to **cached results**" },
+          { "text": "…then to **editorial and regional top charts**" },
+          { "text": "**Playback is unaffected**" }
+        ]
+      }
     },
     {
       "scene": "recs",
       "add": ["events", "explicit", "playlists", "audio", "text", "featpipe", "featstore", "b_events_feat", "b_explicit_feat", "b_feat_store"],
       "title": "Recs deep dive ①: signals and the feature store",
       "script": [
-        "We're now inside the pipeline. Any recommender is only as good as its **signals**, so let's start there. On the left are the five kinds of raw input we have.",
-        "**Implicit listening events** are the largest by volume. Not just plays but **how** you played: a skip in the first few seconds is a strong negative, a full listen is positive, and repeating a track or seeking back is very positive. Implicit signals are noisy (you might have walked away from your phone), but there are billions of them. **Explicit feedback** is likes, saves, follows, and adding to a playlist. These are rarer but far more trustworthy.",
-        "**User playlists** are Spotify's secret weapon: billions of **human-curated groupings** of tracks that \"go together\", often with descriptive titles like \"rainy Sunday\" or \"gym\". That's an incredibly rich similarity signal. Finally, there's the **audio itself** and **text from the web**. We'll come back to those two for cold start.",
-        "The **feature pipeline** turns raw events into features, both in batch over the data lake and in streaming over Kafka. That includes user features (top genres, recency-weighted artist affinity, typical listening hours), track features (popularity, skip rate, age, momentum), and aggregates of both. These go into a **feature store**.",
-        "Why a feature store rather than ad-hoc queries? Because the **same feature definitions** must be used when training a model and when serving it. If training computes \"skip rate\" one way and serving another, you get **training-serving skew** and models that look great offline and underperform in production. The feature store also provides **point-in-time correct** snapshots for training, so we never leak future data into the past."
+        "We're now inside the pipeline. Any recommender is only as good as its **signals**, so let's start there. On the left are the five kinds of raw input we have."
       ]
+    },
+    {
+      "title": "Implicit and explicit signals",
+      "script": [
+        "**Implicit listening events** are the largest by volume. Not just plays but **how** you played: a skip in the first few seconds is a strong negative, a full listen is positive, and repeating a track or seeking back is very positive. Implicit signals are noisy (you might have walked away from your phone), but there are billions of them. **Explicit feedback** is likes, saves, follows, and adding to a playlist. These are rarer but far more trustworthy."
+      ],
+      "table": {
+        "columns": ["Signal", "Kind", "Reads as"],
+        "rows": [
+          ["**Skip** in the first seconds", "implicit · billions", "strong negative"],
+          ["**Full listen**", "implicit · billions", "positive"],
+          ["**Repeat** or seek back", "implicit", "very positive"],
+          ["**Like · save · follow · add**", "explicit · rarer", "far more trustworthy"]
+        ]
+      }
+    },
+    {
+      "scene": "recs",
+      "focus": ["playlists", "audio", "text"],
+      "title": "Playlists, audio, and text",
+      "script": [
+        "**User playlists** are Spotify's secret weapon: billions of **human-curated groupings** of tracks that \"go together\", often with descriptive titles like \"rainy Sunday\" or \"gym\". That's an incredibly rich similarity signal. Finally, there's the **audio itself** and **text from the web**. We'll come back to those two for cold start."
+      ]
+    },
+    {
+      "title": "What's in the feature store",
+      "script": [
+        "The **feature pipeline** turns raw events into features, both in batch over the data lake and in streaming over Kafka. That includes user features (top genres, recency-weighted artist affinity, typical listening hours), track features (popularity, skip rate, age, momentum), and aggregates of both. These go into a **feature store**."
+      ],
+      "entities": {
+        "items": [
+          { "id": "user", "name": "UserFeatures", "kind": "ml", "fields": ["user_id  KEY", "top_genres", "artist_affinity (recency-weighted)", "listening_hours"] },
+          { "id": "track", "name": "TrackFeatures", "kind": "ml", "fields": ["track_id  KEY", "popularity", "skip_rate", "age_days", "momentum"] },
+          { "id": "cross", "name": "UserArtistFeatures", "kind": "ml", "fields": ["user_id, artist_id  KEY", "plays_30d", "saves", "last_played"] }
+        ]
+      }
+    },
+    {
+      "title": "One definition for training and serving",
+      "script": [
+        "Why a feature store rather than ad-hoc queries? Because the **same feature definitions** must be used when training a model and when serving it. If training computes \"skip rate\" one way and serving another, you get **training-serving skew** and models that look great offline and underperform in production. The feature store also provides **point-in-time correct** snapshots for training, so we never leak future data into the past."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "pipe", "label": "Feature Pipeline", "kind": "ml" },
+          { "id": "store", "label": "Feature Store", "kind": "data" },
+          { "id": "train", "label": "Model Training", "kind": "ml", "sub": "offline" },
+          { "id": "serve", "label": "Ranking", "kind": "service", "sub": "online" }
+        ],
+        "steps": [
+          { "from": "pipe", "to": "store", "label": "skip_rate: one definition" },
+          { "from": "train", "to": "store", "label": "features as of each label's time" },
+          { "from": "store", "to": "train", "label": "point-in-time snapshot", "reply": true },
+          { "note": "no future data leaks into the past", "over": ["store", "train"] },
+          { "from": "serve", "to": "store", "label": "features for this user, now" },
+          { "from": "store", "to": "serve", "label": "same definition", "reply": true },
+          { "note": "no training-serving skew", "over": ["pipe", "serve"] }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "recs",
       "add": ["cf", "embed", "b_events_cf", "b_explicit_cf", "b_playlists_cf", "b_cf_embed"],
       "title": "Recs deep dive ②: collaborative filtering and embeddings",
       "script": [
-        "The workhorse of music recommendation is **collaborative filtering**: \"people who listen to what you listen to also listen to this.\" It doesn't need to know anything about the music itself, only about behavior.",
-        "Conceptually, picture a giant matrix with 600 million users as rows, 100 million tracks as columns, and each cell a listening strength. It's overwhelmingly empty. We **factorize** it into two sets of dense vectors, called **embeddings**, of maybe 100 to 200 dimensions: one per user, one per track, chosen so that a user's vector dotted with a track's vector predicts how much they'd like it. Because our data is implicit, we use **implicit-feedback matrix factorization** (ALS with confidence weights), where repeated listens increase confidence rather than being treated like a star rating.",
-        "The second technique is the playlist one. Treat each **playlist as a \"sentence\"** and each **track as a \"word\"**, and train a word2vec-style model. Tracks that appear in the same playlists end up close together in vector space. This captures fine-grained \"goes-together\" similarity that pure play counts miss. The same trick works for artists.",
-        "All these vectors go into an **embedding store**. Training runs on a big distributed compute cluster, typically weekly for track vectors. User vectors can be refreshed much more often, because given fixed track vectors, recomputing one user's vector from their recent history is cheap. This is called **fold-in**.",
-        "CF has two well-known weaknesses. First, **cold start**: a track released this morning has no listening data, so it has no meaningful vector. Second, **popularity bias**: it keeps recommending what's already popular. The next slide fixes the first one."
+        "The workhorse of music recommendation is **collaborative filtering**: \"people who listen to what you listen to also listen to this.\" It doesn't need to know anything about the music itself, only about behavior."
       ]
+    },
+    {
+      "title": "Factorizing the listening matrix",
+      "script": [
+        "Conceptually, picture a giant matrix with 600 million users as rows, 100 million tracks as columns, and each cell a listening strength. It's overwhelmingly empty. We **factorize** it into two sets of dense vectors, called **embeddings**, of maybe 100 to 200 dimensions: one per user, one per track, chosen so that a user's vector dotted with a track's vector predicts how much they'd like it. Because our data is implicit, we use **implicit-feedback matrix factorization** (ALS with confidence weights), where repeated listens increase confidence rather than being treated like a star rating."
+      ],
+      "entities": {
+        "items": [
+          { "id": "r", "name": "Listening matrix R", "kind": "data", "fields": ["600M users × 100M tracks", "cell: listening strength", "overwhelmingly empty", "repeats raise confidence"] },
+          { "id": "u", "name": "User embeddings U", "kind": "ml", "fields": ["600M × ~128 floats", "one vector per user"] },
+          { "id": "v", "name": "Track embeddings V", "kind": "ml", "fields": ["100M × ~128 floats", "one vector per track"] }
+        ],
+        "relations": [
+          { "from": "r", "to": "u", "label": "R ≈ U" },
+          { "from": "u", "to": "v", "label": "· Vᵀ" }
+        ]
+      }
+    },
+    {
+      "title": "Playlists as sentences",
+      "script": [
+        "The second technique is the playlist one. Treat each **playlist as a \"sentence\"** and each **track as a \"word\"**, and train a word2vec-style model. Tracks that appear in the same playlists end up close together in vector space. This captures fine-grained \"goes-together\" similarity that pure play counts miss. The same trick works for artists."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "A **playlist** is a sentence, a **track** is a word" },
+          { "text": "Train a **word2vec**-style model" },
+          { "text": "Tracks in the same playlists land **close together**" },
+          { "text": "Catches **\"goes together\"** that play counts miss" },
+          { "text": "Works for **artists** too" }
+        ]
+      }
+    },
+    {
+      "title": "Weekly training, frequent fold-in",
+      "script": [
+        "All these vectors go into an **embedding store**. Training runs on a big distributed compute cluster, typically weekly for track vectors. User vectors can be refreshed much more often, because given fixed track vectors, recomputing one user's vector from their recent history is cheap. This is called **fold-in**."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "train", "label": "Training Cluster", "kind": "ml" },
+          { "id": "fold", "label": "Fold-in Job", "kind": "ml" },
+          { "id": "store", "label": "Embedding Store", "kind": "data" }
+        ],
+        "steps": [
+          { "note": "weekly", "over": ["train", "store"] },
+          { "from": "train", "to": "train", "label": "ALS + playlist model, full history" },
+          { "from": "train", "to": "store", "label": "track and user vectors" },
+          { "note": "daily or faster", "over": ["store", "fold"] },
+          { "from": "fold", "to": "store", "label": "read fixed track vectors" },
+          { "from": "fold", "to": "fold", "label": "solve one user's vector from recent plays" },
+          { "from": "fold", "to": "store", "label": "fresh user vector" }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "CF's two weaknesses",
+      "script": [
+        "CF has two well-known weaknesses. First, **cold start**: a track released this morning has no listening data, so it has no meaningful vector. Second, **popularity bias**: it keeps recommending what's already popular. The next slide fixes the first one."
+      ],
+      "table": {
+        "columns": ["Weakness", "Why", "Fixed by"],
+        "rows": [
+          ["**Cold start**", "a new track has no listening data", "content models (next)"],
+          ["**Popularity bias**", "hits keep getting recommended", "exploration (later)"]
+        ]
+      }
     },
     {
       "scene": "recs",
@@ -495,56 +1478,404 @@
       "title": "Recs deep dive ③: content models and cold start",
       "script": [
         "To recommend a track nobody has heard yet, we need to understand the **content**, so we add two content-based models.",
-        "The **audio model** is a convolutional neural network that runs on **mel-spectrograms** of the audio, essentially images of the sound. The clever part is how we train it. We take the millions of tracks that already have good CF embeddings and train the CNN to **predict the CF embedding from the audio alone**. Then for a brand-new track, the CNN produces a vector that lands in roughly the same place in \"taste space\" as similar-sounding tracks, so it can be recommended on day one. The same model also predicts descriptive attributes like tempo, energy, danceability, mood, acousticness, and genre, which are useful as ranking features and for building mood playlists. This runs off the **TrackReady** event from ingestion.",
-        "The **NLP model** works on text: music reviews, blogs, and articles crawled from the web, plus the titles and descriptions of user playlists. That yields \"cultural\" descriptors for artists and tracks, like \"lo-fi\", \"90s nostalgia\", or \"Brazilian funk\". It helps with new artists who already have press coverage, and with mapping a request like \"focus music\" to the right region of the catalog.",
-        "The outputs feed the same **embedding store**. In practice, you either learn a single shared space or keep a few spaces and blend them. The trade-off is that **sounding similar is not the same as being liked by the same people**. Two tracks can have near-identical tempo and timbre but totally different audiences. So we weight the content-based signal heavily when a track has little data, and lean on CF as listening data accumulates."
+        "The **audio model** is a convolutional neural network that runs on **mel-spectrograms** of the audio, essentially images of the sound."
       ]
+    },
+    {
+      "title": "Teaching audio to predict taste",
+      "script": [
+        "The clever part is how we train it. We take the millions of tracks that already have good CF embeddings and train the CNN to **predict the CF embedding from the audio alone**. Then for a brand-new track, the CNN produces a vector that lands in roughly the same place in \"taste space\" as similar-sounding tracks, so it can be recommended on day one."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "embed", "label": "Embedding Store", "kind": "data", "sub": "CF vectors" },
+          { "id": "cnn", "label": "Audio Model", "kind": "ml", "sub": "CNN" },
+          { "id": "track", "label": "Brand-new Track", "kind": "data", "sub": "zero plays" }
+        ],
+        "steps": [
+          { "from": "embed", "to": "cnn", "label": "CF vectors of millions of known tracks" },
+          { "from": "cnn", "to": "cnn", "label": "learn: spectrogram → CF vector" },
+          { "note": "release day", "over": ["cnn", "track"] },
+          { "from": "track", "to": "cnn", "label": "mel-spectrogram" },
+          { "from": "cnn", "to": "embed", "label": "predicted vector, near similar-sounding tracks" },
+          { "note": "recommendable on day one", "over": ["embed", "cnn"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "What else the audio model predicts",
+      "script": [
+        "The same model also predicts descriptive attributes like tempo, energy, danceability, mood, acousticness, and genre, which are useful as ranking features and for building mood playlists. This runs off the **TrackReady** event from ingestion."
+      ],
+      "bullets": {
+        "heading": "The audio model also predicts…",
+        "items": [
+          { "text": "**Tempo**, **energy**, **danceability**" },
+          { "text": "**Mood**, **acousticness**, **genre**" },
+          { "text": "Used as **ranking features**", "detail": "and for building mood playlists" },
+          { "text": "Triggered by **TrackReady**", "detail": "the event from ingestion" }
+        ]
+      }
+    },
+    {
+      "scene": "recs",
+      "focus": ["text", "nlp", "embed", "b_text_nlp", "b_nlp_embed"],
+      "title": "The NLP model",
+      "script": [
+        "The **NLP model** works on text: music reviews, blogs, and articles crawled from the web, plus the titles and descriptions of user playlists. That yields \"cultural\" descriptors for artists and tracks, like \"lo-fi\", \"90s nostalgia\", or \"Brazilian funk\". It helps with new artists who already have press coverage, and with mapping a request like \"focus music\" to the right region of the catalog."
+      ]
+    },
+    {
+      "title": "Blending content and CF",
+      "script": [
+        "The outputs feed the same **embedding store**. In practice, you either learn a single shared space or keep a few spaces and blend them. The trade-off is that **sounding similar is not the same as being liked by the same people**. Two tracks can have near-identical tempo and timbre but totally different audiences. So we weight the content-based signal heavily when a track has little data, and lean on CF as listening data accumulates."
+      ],
+      "table": {
+        "columns": ["Track", "Content signal", "Collaborative filtering"],
+        "rows": [
+          ["**Released today**", "heavy", "none yet"],
+          ["**A few thousand plays**", "blended", "growing"],
+          ["**Established**", "light", "heavy"]
+        ]
+      }
     },
     {
       "scene": "recs",
       "add": ["ann", "other", "candgen", "b_embed_ann", "b_ann_cand", "b_other_cand"],
       "title": "Recs deep dive ④: candidate generation",
       "script": [
-        "We now have good vectors for users and tracks. We still can't score 100 million tracks per user, so recommendation is a **two-stage funnel**. First, **candidate generation** cheaply narrows millions of tracks down to a few thousand plausible ones. Second, **ranking** scores those few thousand carefully. This is the standard architecture for large-scale recommenders, and the split is fundamentally about where to spend compute.",
-        "The main retrieval tool is an **approximate nearest neighbor (ANN) index** over the track embeddings. Given a query vector, such as a user's taste vector or a seed track for radio, it returns the top few hundred closest tracks in a few milliseconds. Exact search over 100 million vectors would be far too slow, so we accept slightly approximate results using graph-based methods like **HNSW**. Spotify actually open-sourced two libraries for exactly this, Annoy and later Voyager.",
-        "But we never rely on one source. **Other candidate sources** include the **artist graph** (related artists of ones you love), **new releases** from artists you follow, your **recent heavy rotation**, **editorial pools** curated by humans, and what's **trending in your region**. Each source is tuned for **recall, not precision**. Its job is to make sure good options make it into the pool, and the ranker decides which are best. Multiple sources also protect against any single model's blind spots.",
-        "The candidate generator unions and deduplicates these, and applies cheap **hard filters** early. Remove tracks unavailable in the user's country, and for something like Discover Weekly, remove anything the user has already heard, since the whole point is discovery."
+        "We now have good vectors for users and tracks. We still can't score 100 million tracks per user, so recommendation is a **two-stage funnel**."
       ]
+    },
+    {
+      "title": "A two-stage funnel",
+      "script": [
+        "First, **candidate generation** cheaply narrows millions of tracks down to a few thousand plausible ones. Second, **ranking** scores those few thousand carefully. This is the standard architecture for large-scale recommenders, and the split is fundamentally about where to spend compute."
+      ],
+      "table": {
+        "columns": ["Stage", "Narrows", "Per item", "Tuned for"],
+        "rows": [
+          ["**Candidate generation**", "100M → ~1–5K", "cheap", "recall"],
+          ["**Ranking**", "~1–5K → a list", "rich model", "precision"]
+        ]
+      }
+    },
+    {
+      "title": "Nearest neighbors in milliseconds",
+      "script": [
+        "The main retrieval tool is an **approximate nearest neighbor (ANN) index** over the track embeddings. Given a query vector, such as a user's taste vector or a seed track for radio, it returns the top few hundred closest tracks in a few milliseconds. Exact search over 100 million vectors would be far too slow, so we accept slightly approximate results using graph-based methods like **HNSW**. Spotify actually open-sourced two libraries for exactly this, Annoy and later Voyager."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "embed", "label": "Embedding Store", "kind": "data" },
+          { "id": "ann", "label": "ANN Index", "kind": "service", "sub": "HNSW" },
+          { "id": "cand", "label": "Candidate Gen", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "embed", "to": "ann", "label": "build index over 100M track vectors" },
+          { "from": "cand", "to": "ann", "label": "query: user's taste vector" },
+          { "from": "ann", "to": "ann", "label": "walk the graph" },
+          { "from": "ann", "to": "cand", "label": "top few hundred tracks, a few ms", "reply": true },
+          { "from": "cand", "to": "ann", "label": "query: radio seed track" },
+          { "from": "ann", "to": "cand", "label": "its nearest neighbors", "reply": true },
+          { "note": "approximate on purpose: exact search is far too slow", "over": ["ann", "cand"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Other candidate sources",
+      "script": [
+        "But we never rely on one source. **Other candidate sources** include the **artist graph** (related artists of ones you love), **new releases** from artists you follow, your **recent heavy rotation**, **editorial pools** curated by humans, and what's **trending in your region**. Each source is tuned for **recall, not precision**. Its job is to make sure good options make it into the pool, and the ranker decides which are best. Multiple sources also protect against any single model's blind spots."
+      ],
+      "bullets": {
+        "heading": "Candidate sources, tuned for recall",
+        "items": [
+          { "text": "**ANN** over embeddings" },
+          { "text": "The **artist graph**", "detail": "related artists of ones you love" },
+          { "text": "**New releases** from artists you follow" },
+          { "text": "Your **recent heavy rotation**" },
+          { "text": "**Editorial pools** curated by humans" },
+          { "text": "**Trending** in your region" }
+        ]
+      }
+    },
+    {
+      "title": "Union, dedupe, hard filters",
+      "script": [
+        "The candidate generator unions and deduplicates these, and applies cheap **hard filters** early. Remove tracks unavailable in the user's country, and for something like Discover Weekly, remove anything the user has already heard, since the whole point is discovery."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "ann", "label": "ANN Index", "kind": "service" },
+          { "id": "other", "label": "Other Sources", "kind": "service" },
+          { "id": "cand", "label": "Candidate Gen", "kind": "service" },
+          { "id": "ranker", "label": "Ranking Model", "kind": "ml ghost", "sub": "next" }
+        ],
+        "steps": [
+          { "from": "ann", "to": "cand", "label": "~500 tracks" },
+          { "from": "other", "to": "cand", "label": "~2,000 tracks" },
+          { "from": "cand", "to": "cand", "label": "union + dedupe" },
+          { "from": "cand", "to": "cand", "label": "drop: unavailable in country" },
+          { "from": "cand", "to": "cand", "label": "drop: already heard (Discover Weekly)" },
+          { "from": "cand", "to": "ranker", "label": "a few thousand candidates" }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "recs",
       "add": ["ranker", "filters", "b_feat_ranker", "b_cand_ranker", "b_ranker_filters"],
       "title": "Recs deep dive ⑤: ranking and business rules",
       "script": [
-        "Now we score the few thousand candidates with a much richer **ranking model**, typically gradient-boosted trees or a deep neural network. Since we only run it on thousands of items rather than millions, it can afford hundreds of features pulled from the **feature store**. Those include user features, track features, **user-track cross features** such as embedding similarity and how much the user plays this artist, and **context**: time of day, device, and what they've been doing this session.",
-        "What does the model predict? This is a product decision as much as an ML one. A single \"will they click\" target produces clickbait-ish results. Instead we use a **multi-task objective**: the probability they'll stream it past 30 seconds, the probability they'll save it, and the probability they'll skip it. These are combined into one utility score, with weights the product team can tune. The labels come from the logged outcomes of past recommendations.",
-        "The ranked list then passes through **rules and filters**. That includes caps such as at most two tracks per artist in a 30-track playlist, **diversity** re-ranking so you don't get ten near-identical songs, respecting the user's explicit-content setting, a final **rights check**, and for playlists, **sequencing** so the energy flows well from track to track.",
-        "Why keep rules separate from the model? They're **hard guarantees** rather than tendencies, product can change them without retraining, and they make the system debuggable. When someone asks why a track showed up, you can point to a score and a rule."
+        "Now we score the few thousand candidates with a much richer **ranking model**, typically gradient-boosted trees or a deep neural network."
       ]
+    },
+    {
+      "title": "Ranking features",
+      "script": [
+        "Since we only run it on thousands of items rather than millions, it can afford hundreds of features pulled from the **feature store**. Those include user features, track features, **user-track cross features** such as embedding similarity and how much the user plays this artist, and **context**: time of day, device, and what they've been doing this session."
+      ],
+      "entities": {
+        "items": [
+          { "id": "user", "name": "User", "kind": "ml", "fields": ["top genres", "artist affinity", "listening hours"] },
+          { "id": "track", "name": "Track", "kind": "ml", "fields": ["popularity", "skip rate", "audio attributes"] },
+          { "id": "cross", "name": "User × Track", "kind": "ml", "fields": ["embedding similarity", "plays of this artist", "saved before?"] },
+          { "id": "ctx", "name": "Context", "kind": "ml", "fields": ["time of day", "device", "this session so far"] }
+        ]
+      }
+    },
+    {
+      "title": "A multi-task objective",
+      "script": [
+        "What does the model predict? This is a product decision as much as an ML one. A single \"will they click\" target produces clickbait-ish results. Instead we use a **multi-task objective**: the probability they'll stream it past 30 seconds, the probability they'll save it, and the probability they'll skip it."
+      ],
+      "table": {
+        "columns": ["Target", "Predicts", "In the utility score"],
+        "rows": [
+          ["*\"Will they click?\"*", "*a single click*", "*clickbait-ish results*"],
+          ["**P(stream)**", "listens past 30 seconds", "+ weight"],
+          ["**P(save)**", "saves it to their library", "+ weight"],
+          ["**P(skip)**", "skips it", "− weight"]
+        ]
+      }
+    },
+    {
+      "title": "Labels from logged outcomes",
+      "script": [
+        "These are combined into one utility score, with weights the product team can tune. The labels come from the logged outcomes of past recommendations."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "ranker", "label": "Ranking Model", "kind": "ml" },
+          { "id": "client", "label": "Client", "kind": "client" },
+          { "id": "logs", "label": "Listening Events", "kind": "stream" },
+          { "id": "train", "label": "Training", "kind": "ml", "sub": "next model" }
+        ],
+        "steps": [
+          { "from": "ranker", "to": "ranker", "label": "utility = w₁·P(stream) + w₂·P(save) − w₃·P(skip)" },
+          { "from": "ranker", "to": "client", "label": "track shown at position 3" },
+          { "from": "client", "to": "logs", "label": "played 2:40, saved" },
+          { "from": "logs", "to": "train", "label": "label: stream = 1, save = 1, skip = 0" },
+          { "note": "product tunes the weights w", "over": ["ranker", "client"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Rules and filters",
+      "script": [
+        "The ranked list then passes through **rules and filters**. That includes caps such as at most two tracks per artist in a 30-track playlist, **diversity** re-ranking so you don't get ten near-identical songs, respecting the user's explicit-content setting, a final **rights check**, and for playlists, **sequencing** so the energy flows well from track to track."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Caps**", "detail": "at most two tracks per artist in a 30-track playlist" },
+          { "text": "**Diversity** re-ranking", "detail": "not ten near-identical songs" },
+          { "text": "The user's **explicit-content** setting" },
+          { "text": "A final **rights check**" },
+          { "text": "**Sequencing**", "detail": "so the energy flows from track to track" }
+        ]
+      }
+    },
+    {
+      "title": "Why rules live outside the model",
+      "script": [
+        "Why keep rules separate from the model? They're **hard guarantees** rather than tendencies, product can change them without retraining, and they make the system debuggable. When someone asks why a track showed up, you can point to a score and a rule."
+      ],
+      "table": {
+        "columns": ["", "Model", "Rules"],
+        "rows": [
+          ["**Gives**", "tendencies", "hard guarantees"],
+          ["**To change**", "retrain and test", "edit and ship"],
+          ["**Why did this show up?**", "a score", "a named rule"]
+        ]
+      }
     },
     {
       "scene": "recs",
       "add": ["batch", "recsstore", "b_batch_cand", "b_filters_store"],
       "title": "Recs deep dive ⑥: batch serving (Discover Weekly)",
       "script": [
-        "We have a funnel; now, when do we run it? For many surfaces the answer is **ahead of time, in batch**.",
-        "Discover Weekly is the canonical example. Every week, a **batch job** runs the full funnel for every active user: candidate generation, ranking, and rules. It writes a 30-track playlist to the **Recs Store**, and it's also materialized as a real playlist through the playlist service. The job is sharded by user across a large compute cluster, scheduled over the weekend, and staggered by time zone so everyone's playlist is ready Monday morning local time. Daily Mixes and the home-feed shelves run the same way on a **daily** cadence.",
-        "A quick sanity check on cost: 600 million users times a couple thousand candidates is on the order of a **trillion scoring operations** per run. That sounds enormous, but it's embarrassingly parallel and very feasible for a batch cluster over many hours. We cut waste by **skipping inactive users** and generating their recommendations lazily when they come back.",
-        "The big advantage of batch is that **serving becomes trivial**: a single key-value read, a few milliseconds, extremely cheap. It's also resilient, since if the entire ML infrastructure is down, yesterday's recommendations are still there. That fits our principle that the core experience shouldn't depend on complex systems being healthy.",
-        "The disadvantages are **staleness** and **no context**. Batch results can't react to the album you started obsessing over an hour ago, or the fact that it's Saturday night instead of Monday morning. That's what the online path is for."
+        "We have a funnel; now, when do we run it? For many surfaces the answer is **ahead of time, in batch**."
       ]
+    },
+    {
+      "title": "Discover Weekly, every week",
+      "script": [
+        "Discover Weekly is the canonical example. Every week, a **batch job** runs the full funnel for every active user: candidate generation, ranking, and rules. It writes a 30-track playlist to the **Recs Store**, and it's also materialized as a real playlist through the playlist service. The job is sharded by user across a large compute cluster, scheduled over the weekend, and staggered by time zone so everyone's playlist is ready Monday morning local time. Daily Mixes and the home-feed shelves run the same way on a **daily** cadence."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "batch", "label": "Batch Jobs", "kind": "ml", "sub": "sharded by user" },
+          { "id": "cand", "label": "Candidate Gen", "kind": "service" },
+          { "id": "ranker", "label": "Ranking + Rules", "kind": "ml" },
+          { "id": "store", "label": "Recs Store", "kind": "data" },
+          { "id": "playlist", "label": "Playlist Service", "kind": "service" }
+        ],
+        "steps": [
+          { "note": "weekend, staggered by time zone", "over": ["batch", "cand"] },
+          { "from": "batch", "to": "cand", "label": "user 123" },
+          { "from": "cand", "to": "batch", "label": "a few thousand candidates", "reply": true },
+          { "from": "batch", "to": "ranker", "label": "rank, apply rules" },
+          { "from": "ranker", "to": "batch", "label": "30 tracks", "reply": true },
+          { "from": "batch", "to": "store", "label": "user 123 → Discover Weekly" },
+          { "from": "batch", "to": "playlist", "label": "materialize as a real playlist" },
+          { "note": "ready Monday morning, local time", "over": ["store", "playlist"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "A trillion scores per run",
+      "script": [
+        "A quick sanity check on cost: 600 million users times a couple thousand candidates is on the order of a **trillion scoring operations** per run. That sounds enormous, but it's embarrassingly parallel and very feasible for a batch cluster over many hours. We cut waste by **skipping inactive users** and generating their recommendations lazily when they come back."
+      ],
+      "table": {
+        "columns": ["", "Estimate"],
+        "rows": [
+          ["**Users**", "600 million"],
+          ["**Candidates per user**", "~2,000"],
+          ["**Scores per run**", "~10¹² (a trillion)"],
+          ["**Shape**", "embarrassingly parallel, many hours"],
+          ["**Savings**", "skip inactive users, compute lazily on return"]
+        ]
+      }
+    },
+    {
+      "title": "Serving becomes a key-value read",
+      "script": [
+        "The big advantage of batch is that **serving becomes trivial**: a single key-value read, a few milliseconds, extremely cheap. It's also resilient, since if the entire ML infrastructure is down, yesterday's recommendations are still there. That fits our principle that the core experience shouldn't depend on complex systems being healthy."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client", "kind": "client" },
+          { "id": "svc", "label": "Recommendation Svc", "kind": "service" },
+          { "id": "store", "label": "Recs Store", "kind": "data" },
+          { "id": "ml", "label": "ML Infrastructure", "kind": "ml ghost", "sub": "down" }
+        ],
+        "steps": [
+          { "from": "client", "to": "svc", "label": "open Discover Weekly" },
+          { "from": "svc", "to": "store", "label": "GET user 123" },
+          { "from": "store", "to": "svc", "label": "30 tracks, a few ms", "reply": true },
+          { "from": "svc", "to": "client", "label": "playlist", "reply": true },
+          { "note": "ML infrastructure down? Last run's results are still here", "over": ["svc", "ml"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "What batch can't do",
+      "script": [
+        "The disadvantages are **staleness** and **no context**. Batch results can't react to the album you started obsessing over an hour ago, or the fact that it's Saturday night instead of Monday morning. That's what the online path is for."
+      ],
+      "bullets": {
+        "heading": "Batch results are…",
+        "items": [
+          { "text": "**Stale**", "detail": "can't react to the album you started obsessing over an hour ago" },
+          { "text": "**Context-free**", "detail": "Saturday night looks the same as Monday morning" },
+          { "text": "So some surfaces need an **online path**" }
+        ]
+      }
     },
     {
       "scene": "recs",
       "add": ["session", "recssvc", "client", "b_store_svc", "b_svc_cand", "b_session_svc", "b_svc_client"],
       "title": "Recs deep dive ⑦: online serving and session context",
       "script": [
-        "Some surfaces have to be computed **in the moment**. Radio, autoplay when your album ends, and \"more like this\" depend on a seed track and on what you're doing right now. If you've skipped three ballads in a row, the next track had better not be a ballad.",
-        "So the **Recommendation service** has two modes. For batch surfaces, it reads from the **Recs Store**. For live surfaces, it runs the same funnel online: it calls **candidate generation** with a query vector built from the seed track and the session, then the **ranker**, all inside a tight budget. A plausible breakdown is about 10 ms for the ANN lookup, about 20 ms for feature fetches, and about 30 ms to score a thousand candidates, so we land well under 100 ms. That's achievable because the expensive work of learning embeddings and models was done offline.",
-        "The freshness comes from **session signals**. A streaming job consumes the same Kafka play-event topic we built earlier and maintains features like \"skips in the last ten minutes\" and \"current session vector\" in a low-latency store. That's the real-time half of the feature pipeline.",
-        "The home feed is a **hybrid**. The shelves and their contents are precomputed daily, then lightly **re-ranked online** by context, for example putting the workout mix first at 6 a.m. on a weekday.",
-        "Degradation is layered. If the online path blows its latency budget, fall back to the precomputed list. If that's missing, fall back to popular-in-your-region. The client always gets *something* good rather than an error."
+        "Some surfaces have to be computed **in the moment**. Radio, autoplay when your album ends, and \"more like this\" depend on a seed track and on what you're doing right now. If you've skipped three ballads in a row, the next track had better not be a ballad."
       ]
+    },
+    {
+      "title": "Radio, computed online",
+      "script": [
+        "So the **Recommendation service** has two modes. For batch surfaces, it reads from the **Recs Store**. For live surfaces, it runs the same funnel online: it calls **candidate generation** with a query vector built from the seed track and the session, then the **ranker**, all inside a tight budget. A plausible breakdown is about 10 ms for the ANN lookup, about 20 ms for feature fetches, and about 30 ms to score a thousand candidates, so we land well under 100 ms. That's achievable because the expensive work of learning embeddings and models was done offline."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client", "kind": "client" },
+          { "id": "svc", "label": "Recommendation Svc", "kind": "service" },
+          { "id": "session", "label": "Session Signals", "kind": "stream" },
+          { "id": "cand", "label": "Candidate Gen", "kind": "service" },
+          { "id": "ranker", "label": "Ranking Model", "kind": "ml" }
+        ],
+        "steps": [
+          { "from": "client", "to": "svc", "label": "radio from seed track" },
+          { "from": "svc", "to": "session", "label": "this session" },
+          { "from": "session", "to": "svc", "label": "3 skipped ballads", "reply": true },
+          { "from": "svc", "to": "cand", "label": "query: seed + session" },
+          { "from": "cand", "to": "svc", "label": "~1,000 tracks (~10 ms ANN)", "reply": true },
+          { "from": "svc", "to": "ranker", "label": "score them" },
+          { "from": "ranker", "to": "svc", "label": "~20 ms features + ~30 ms scoring", "reply": true },
+          { "from": "svc", "to": "client", "label": "next tracks, well under 100 ms", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Session signals",
+      "script": [
+        "The freshness comes from **session signals**. A streaming job consumes the same Kafka play-event topic we built earlier and maintains features like \"skips in the last ten minutes\" and \"current session vector\" in a low-latency store. That's the real-time half of the feature pipeline."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client", "kind": "client" },
+          { "id": "kafka", "label": "Kafka", "kind": "stream", "sub": "play events" },
+          { "id": "job", "label": "Streaming Job", "kind": "stream" },
+          { "id": "store", "label": "Session Signals", "kind": "data", "sub": "low-latency store" }
+        ],
+        "steps": [
+          { "from": "client", "to": "kafka", "label": "skip, skip, skip" },
+          { "from": "kafka", "to": "job", "label": "events" },
+          { "from": "job", "to": "job", "label": "skips in the last 10 min = 3" },
+          { "from": "job", "to": "job", "label": "update session vector" },
+          { "from": "job", "to": "store", "label": "write features" },
+          { "note": "the real-time half of the feature pipeline", "over": ["kafka", "store"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "scene": "recs",
+      "focus": ["recsstore", "session", "recssvc", "client", "b_store_svc", "b_session_svc", "b_svc_client"],
+      "title": "The home feed is a hybrid",
+      "script": [
+        "The home feed is a **hybrid**. The shelves and their contents are precomputed daily, then lightly **re-ranked online** by context, for example putting the workout mix first at 6 a.m. on a weekday."
+      ]
+    },
+    {
+      "title": "Layered fallbacks",
+      "script": [
+        "Degradation is layered. If the online path blows its latency budget, fall back to the precomputed list. If that's missing, fall back to popular-in-your-region. The client always gets *something* good rather than an error."
+      ],
+      "bullets": {
+        "heading": "If something is slow or missing…",
+        "items": [
+          { "text": "Online path over budget → **precomputed list**" },
+          { "text": "Precomputed list missing → **popular in your region**" },
+          { "text": "The client always gets **something good**, never an error" }
+        ]
+      }
     },
     {
       "scene": "recs",
@@ -552,9 +1883,89 @@
       "title": "Recs deep dive ⑧: experimentation and the feedback loop",
       "script": [
         "The last piece is how we **know it's working** and how it keeps getting better.",
-        "Offline metrics, like recall or NDCG on held-out listening data, are useful for filtering out bad models, but they're only a proxy. The real test is an **A/B experiment**. The **experimentation platform** deterministically buckets users by hashing their ID, so a user sees a consistent variant, and the recommendation service uses that bucket to pick models and parameters. We measure short-term metrics like streams per recommendation, save rate, and skip rate, but the north star is **long-term engagement and retention**, because it's easy to optimize short-term clicks into a worse product. For comparing rankers, **interleaving** (mixing two rankers' results in one list) detects differences with far less traffic than a classic A/B test.",
-        "The dashed line around the outside is the **feedback loop**. Every recommendation the client shows is logged as an **impression**, with the position and the model version, and joined to what happened next: played, skipped, saved. That becomes training data for the next model. Logging impressions, not just plays, matters because otherwise we only learn from things we already chose to show, and the model collapses into a self-reinforcing popularity loop.",
-        "That's also why we deliberately **explore**. A small fraction of slots uses bandit-style exploration to try less-certain tracks and new artists, trading a little short-term accuracy for better long-term learning, fairness to new artists, and fewer filter bubbles. Brand-new users get a short onboarding to pick a few artists, regional popularity in the meantime, and then fast adaptation as signals arrive.",
+        "Offline metrics, like recall or NDCG on held-out listening data, are useful for filtering out bad models, but they're only a proxy. The real test is an **A/B experiment**."
+      ]
+    },
+    {
+      "title": "Deterministic bucketing",
+      "script": [
+        "The **experimentation platform** deterministically buckets users by hashing their ID, so a user sees a consistent variant, and the recommendation service uses that bucket to pick models and parameters."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client", "kind": "client" },
+          { "id": "svc", "label": "Recommendation Svc", "kind": "service" },
+          { "id": "exp", "label": "Experimentation", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "client", "to": "svc", "label": "home feed for user 123" },
+          { "from": "svc", "to": "exp", "label": "bucket for user 123?" },
+          { "from": "exp", "to": "exp", "label": "hash(user, experiment) → 37" },
+          { "from": "exp", "to": "svc", "label": "variant B: ranker v13", "reply": true },
+          { "from": "svc", "to": "client", "label": "results from ranker v13", "reply": true },
+          { "note": "same user, same variant, every time", "over": ["client", "exp"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "What we measure",
+      "script": [
+        "We measure short-term metrics like streams per recommendation, save rate, and skip rate, but the north star is **long-term engagement and retention**, because it's easy to optimize short-term clicks into a worse product. For comparing rankers, **interleaving** (mixing two rankers' results in one list) detects differences with far less traffic than a classic A/B test."
+      ],
+      "table": {
+        "columns": ["Measure", "Examples", "Role"],
+        "rows": [
+          ["**Offline**", "recall, NDCG on held-out data", "filter out bad models"],
+          ["**Short-term**", "streams per rec, saves, skips", "fast signal"],
+          ["**North star**", "long-term engagement, retention", "what we optimize"],
+          ["**Interleaving**", "two rankers mixed in one list", "far less traffic"]
+        ],
+        "highlight": 2
+      }
+    },
+    {
+      "title": "Logging impressions",
+      "script": [
+        "The dashed line around the outside is the **feedback loop**. Every recommendation the client shows is logged as an **impression**, with the position and the model version, and joined to what happened next: played, skipped, saved. That becomes training data for the next model. Logging impressions, not just plays, matters because otherwise we only learn from things we already chose to show, and the model collapses into a self-reinforcing popularity loop."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "svc", "label": "Recommendation Svc", "kind": "service" },
+          { "id": "client", "label": "Client", "kind": "client" },
+          { "id": "events", "label": "Listening Events", "kind": "stream" },
+          { "id": "train", "label": "Training", "kind": "ml", "sub": "next model" }
+        ],
+        "steps": [
+          { "from": "svc", "to": "client", "label": "shelf from ranker v13" },
+          { "from": "client", "to": "events", "label": "impression: track X, position 3, v13" },
+          { "from": "client", "to": "events", "label": "outcome: skipped after 4 s" },
+          { "from": "events", "to": "events", "label": "join impression + outcome" },
+          { "from": "events", "to": "train", "label": "training example" },
+          { "note": "shown-but-ignored counts too, or popularity feeds itself", "over": ["svc", "train"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Explore on purpose",
+      "script": [
+        "That's also why we deliberately **explore**. A small fraction of slots uses bandit-style exploration to try less-certain tracks and new artists, trading a little short-term accuracy for better long-term learning, fairness to new artists, and fewer filter bubbles. Brand-new users get a short onboarding to pick a few artists, regional popularity in the meantime, and then fast adaptation as signals arrive."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "A small fraction of slots **explores**", "detail": "bandit-style: less-certain tracks, new artists" },
+          { "text": "Costs a little **short-term accuracy**" },
+          { "text": "Buys **learning**, **fairness** to new artists, fewer **filter bubbles**" },
+          { "text": "**New users**: onboarding picks, regional popularity", "detail": "then fast adaptation as signals arrive" }
+        ]
+      }
+    },
+    {
+      "scene": "recs",
+      "focus": ["client", "events", "b_feedback"],
+      "title": "Closing the loop",
+      "script": [
         "That closes the loop: listening generates data, data trains models, models drive listening. Let's zoom back out."
       ]
     },
@@ -563,9 +1974,65 @@
       "add": ["dns", "regions", "e_client_dns", "e_dns_gateway", "e_replication"],
       "title": "Going global: multi-region and failure handling",
       "script": [
-        "Back to the full architecture. Everything we've drawn so far is effectively **one region**. To be global and hit four nines, we run **several regions**, say across the Americas, Europe, and Asia-Pacific, each with the full stack, **active-active**.",
-        "**GeoDNS** (or anycast) sends each user to the nearest healthy region. The stateless services just run everywhere. The real question is always data. The **catalog** is read-mostly with a tiny write rate from ingestion, so it has a single write primary with read replicas in every region. **User data and playlists** live in Cassandra with **multi-datacenter replication**, writing with local quorum for low latency and replicating asynchronously across regions. Our revision-based playlist model handles the rare cross-region conflict. Each region has its own Kafka, mirrored into a central data lake for batch processing.",
-        "Then there's **failure handling**, guided by the principle we set at the start that playback is sacred. Concretely, we use **timeouts and circuit breakers** on every service call so one slow dependency doesn't cascade. We **isolate** the playback path's resources from everything else. Under overload, we **shed load by priority** at the gateway: drop prefetches and analytics before play requests. Each feature has a **fallback**: recs fall back to charts, and search failure still leaves the library playable. If a CDN vendor degrades, we **fail over to another vendor**. And there's **client resilience**: cached tokens, licenses and audio mean a user can keep listening to recently played music even if our backend is completely unreachable for a while.",
+        "Back to the full architecture. Everything we've drawn so far is effectively **one region**. To be global and hit four nines, we run **several regions**, say across the Americas, Europe, and Asia-Pacific, each with the full stack, **active-active**."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["client", "dns", "gateway", "e_client_dns", "e_dns_gateway"],
+      "title": "GeoDNS to the nearest region",
+      "script": [
+        "**GeoDNS** (or anycast) sends each user to the nearest healthy region. The stateless services just run everywhere."
+      ]
+    },
+    {
+      "title": "Where each kind of data lives",
+      "script": [
+        "The real question is always data. The **catalog** is read-mostly with a tiny write rate from ingestion, so it has a single write primary with read replicas in every region. **User data and playlists** live in Cassandra with **multi-datacenter replication**, writing with local quorum for low latency and replicating asynchronously across regions. Our revision-based playlist model handles the rare cross-region conflict. Each region has its own Kafka, mirrored into a central data lake for batch processing."
+      ],
+      "table": {
+        "columns": ["Data", "Across regions", "Why it works"],
+        "rows": [
+          ["**Catalog**", "one write primary, read replicas", "tiny write rate"],
+          ["**Users, playlists**", "Cassandra multi-DC, local quorum", "revisions merge conflicts"],
+          ["**Events**", "Kafka per region", "mirrored to one data lake"]
+        ]
+      }
+    },
+    {
+      "title": "Playback is sacred",
+      "script": [
+        "Then there's **failure handling**, guided by the principle we set at the start that playback is sacred. Concretely, we use **timeouts and circuit breakers** on every service call so one slow dependency doesn't cascade. We **isolate** the playback path's resources from everything else. Under overload, we **shed load by priority** at the gateway: drop prefetches and analytics before play requests."
+      ],
+      "bullets": {
+        "heading": "Containing failures",
+        "items": [
+          { "text": "**Timeouts and circuit breakers** on every call", "detail": "one slow dependency can't cascade" },
+          { "text": "**Isolate** the playback path's resources" },
+          { "text": "**Shed load by priority** at the gateway", "detail": "drop prefetches and analytics before play requests" }
+        ]
+      }
+    },
+    {
+      "title": "Every feature has a fallback",
+      "script": [
+        "Each feature has a **fallback**: recs fall back to charts, and search failure still leaves the library playable. If a CDN vendor degrades, we **fail over to another vendor**. And there's **client resilience**: cached tokens, licenses and audio mean a user can keep listening to recently played music even if our backend is completely unreachable for a while."
+      ],
+      "table": {
+        "columns": ["If this fails…", "…the user still gets"],
+        "rows": [
+          ["**Recommendations**", "editorial and regional charts"],
+          ["**Search**", "their library, fully playable"],
+          ["**A CDN vendor**", "the same audio from another vendor"],
+          ["**Our whole backend**", "cached tokens, licenses, recent audio"]
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "focus": ["regions", "userdb", "e_replication"],
+      "title": "Spare capacity, proven by drills",
+      "script": [
         "To survive losing a whole region, each region runs with enough **spare capacity** to absorb a neighbor's traffic, and we prove it with regular failover drills rather than trusting the diagram."
       ]
     },
