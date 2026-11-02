@@ -259,6 +259,42 @@
         { "id": "e_shared_1", "from": "shared_ch", "to": "shard_1", "pts": [[120, 170], [120, 64]], "label": "?", "async": true },
         { "id": "e_shared_3", "from": "shared_ch", "to": "shard_3", "pts": [[720, 170], [720, 64]], "label": "?", "async": true }
       ]
+    },
+    "queue": {
+      "boxes": [
+        { "id": "q_webapp", "x": 0, "y": 0, "w": 200, "h": 64, "label": "Webapp (API)", "kind": "service", "sub": "enqueues and returns" },
+        { "id": "q_kafka", "x": 280, "y": 0, "w": 200, "h": 64, "label": "Kafka", "kind": "stream", "sub": "durable buffer" },
+        { "id": "q_redis", "x": 560, "y": 0, "w": 200, "h": 64, "label": "Redis", "kind": "data", "sub": "schedules execution" },
+        { "id": "q_workers", "x": 840, "y": 0, "w": 200, "h": 64, "label": "Workers", "kind": "service", "sub": "a fleet · pull jobs" }
+      ],
+      "edges": [
+        { "id": "e_q_webapp_kafka", "from": "q_webapp", "to": "q_kafka", "pts": [[200, 32], [280, 32]], "label": "jobs" },
+        { "id": "e_q_kafka_redis", "from": "q_kafka", "to": "q_redis", "pts": [[480, 32], [560, 32]], "label": "relay", "async": true },
+        { "id": "e_q_redis_workers", "from": "q_redis", "to": "q_workers", "pts": [[760, 32], [840, 32]], "label": "pull", "async": true }
+      ]
+    },
+    "geo": {
+      "boxes": [
+        { "id": "g_client_syd", "x": 0, "y": 0, "w": 180, "h": 54, "label": "Client · Sydney", "kind": "client", "sub": "desktop · mobile" },
+        { "id": "g_edge_syd", "x": 320, "y": 0, "w": 240, "h": 54, "label": "Edge region · Sydney", "kind": "infra", "sub": "Gateway Servers · Edge Cache" },
+        { "id": "g_home_us", "x": 700, "y": 0, "w": 280, "h": 54, "label": "Home region · us-east", "kind": "data", "sub": "shards · files · search index" },
+        { "id": "g_standby_us", "x": 1080, "y": 0, "w": 220, "h": 54, "label": "Standby · us-west", "kind": "ghost", "sub": "replica · failover" },
+        { "id": "g_shared", "x": 700, "y": 100, "w": 280, "h": 54, "label": "Shared channel?", "kind": "ghost", "sub": "#acme-globex · out of scope" },
+        { "id": "g_client_eu", "x": 0, "y": 200, "w": 180, "h": 54, "label": "Client · Berlin", "kind": "client", "sub": "desktop · mobile" },
+        { "id": "g_edge_eu", "x": 320, "y": 200, "w": 240, "h": 54, "label": "Edge region · Frankfurt", "kind": "infra", "sub": "Gateway Servers · Edge Cache" },
+        { "id": "g_home_eu", "x": 700, "y": 200, "w": 280, "h": 54, "label": "Home region · EU", "kind": "data", "sub": "EU data stays in the EU" },
+        { "id": "g_standby_eu", "x": 1080, "y": 200, "w": 220, "h": 54, "label": "Standby · EU (2nd)", "kind": "ghost", "sub": "replica · failover" }
+      ],
+      "edges": [
+        { "id": "e_g_syd_edge", "from": "g_client_syd", "to": "g_edge_syd", "pts": [[180, 27], [320, 27]], "label": "WebSocket", "both": true },
+        { "id": "e_g_syd_home", "from": "g_edge_syd", "to": "g_home_us", "pts": [[560, 27], [700, 27]], "label": "backbone · warm", "both": true },
+        { "id": "e_g_eu_edge", "from": "g_client_eu", "to": "g_edge_eu", "pts": [[180, 227], [320, 227]], "label": "WebSocket", "both": true },
+        { "id": "e_g_eu_home", "from": "g_edge_eu", "to": "g_home_eu", "pts": [[560, 227], [700, 227]], "label": "backbone · warm", "both": true },
+        { "id": "e_g_us_standby", "from": "g_home_us", "to": "g_standby_us", "pts": [[980, 27], [1080, 27]], "label": "replicate", "async": true },
+        { "id": "e_g_eu_standby", "from": "g_home_eu", "to": "g_standby_eu", "pts": [[980, 227], [1080, 227]], "label": "replicate", "async": true },
+        { "id": "e_g_shared_us", "from": "g_shared", "to": "g_home_us", "pts": [[840, 100], [840, 54]], "label": "?", "async": true },
+        { "id": "e_g_shared_eu", "from": "g_shared", "to": "g_home_eu", "pts": [[840, 154], [840, 200]], "label": "?", "async": true }
+      ]
     }
   },
   "slides": [
@@ -775,67 +811,546 @@
     {
       "scene": "main",
       "add": ["presence", "e_gw_presence"],
-      "title": "Presence and typing: ephemeral, high-volume, never stored",
+      "title": "Presence: the highest-volume data in the system",
       "script": [
-        "Next, the green dot. **Presence** looks trivial, but it's the highest-volume data in the system, and its properties are the opposite of messages: it's **ephemeral**, it changes constantly, and losing an update is harmless.",
-        "So it gets its own **presence service**, entirely in memory and sharded by user ID. The gateways are the source of truth for \"is this user connected\": they report when a user's first socket opens or last socket closes. Clients also report active or idle based on input. Presence never touches the database.",
-        "The trick is to **not broadcast it**. If every status change went to every member of every channel the user belongs to, a 100,000-person workspace would melt every morning. Instead, clients **subscribe to presence only for the users currently on screen**, such as the DM list or the members of the channel you're viewing. Gateways pass those subscriptions to the presence service, which pushes changes only to interested gateways. We also **debounce** flapping connections, so a phone hopping from Wi-Fi to cellular doesn't blink offline and back.",
-        "**Typing indicators** are even more ephemeral. The client sends \"typing in #eng\" up its socket, the gateway relays it to that channel's server, and it fans out like a message but is never stored, never retried, and dropped first under load. If one is lost, nobody notices. That's the right trade-off, and it's why typing skips the webapp and the database entirely."
+        "Next, the green dot. **Presence** looks trivial, but it's the highest-volume data in the system, and its properties are the opposite of messages: it's **ephemeral**, it changes constantly, and losing an update is harmless."
       ]
+    },
+    {
+      "title": "Gateways are the source of truth",
+      "script": [
+        "So it gets its own **presence service**, entirely in memory and sharded by user ID. The gateways are the source of truth for \"is this user connected\": they report when a user's first socket opens or last socket closes. Clients also report active or idle based on input. Presence never touches the database."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Slack Clients", "kind": "client" },
+          { "id": "gw", "label": "Gateway Servers", "kind": "infra" },
+          { "id": "presence", "label": "Presence Service", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "client", "to": "gw", "label": "first socket opens" },
+          { "from": "gw", "to": "presence", "label": "user online" },
+          { "from": "client", "to": "gw", "label": "active / idle (from input)" },
+          { "from": "gw", "to": "presence", "label": "user active / idle" },
+          { "from": "client", "to": "gw", "label": "last socket closes" },
+          { "from": "gw", "to": "presence", "label": "user offline" },
+          { "note": "in memory, sharded by user ID: never touches the DB", "over": ["gw", "presence"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Don't broadcast presence",
+      "script": [
+        "The trick is to **not broadcast it**. If every status change went to every member of every channel the user belongs to, a 100,000-person workspace would melt every morning."
+      ],
+      "table": {
+        "columns": ["Strategy", "Who gets a status change", "Cost per change"],
+        "rows": [
+          ["**Broadcast to channel members**", "everyone who shares a channel", "up to ~100k pushes"],
+          ["**Subscribe to who's on screen**", "only clients showing that user", "a handful of pushes"]
+        ],
+        "highlight": 1
+      }
+    },
+    {
+      "title": "Subscribe to who's on screen",
+      "script": [
+        "Instead, clients **subscribe to presence only for the users currently on screen**, such as the DM list or the members of the channel you're viewing. Gateways pass those subscriptions to the presence service, which pushes changes only to interested gateways."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "viewer", "label": "Viewer's client", "kind": "client" },
+          { "id": "vgw", "label": "Viewer's gateway", "kind": "infra" },
+          { "id": "presence", "label": "Presence Service", "kind": "service" },
+          { "id": "agw", "label": "Alice's gateway", "kind": "infra" },
+          { "id": "alice", "label": "Alice's client", "kind": "client" }
+        ],
+        "steps": [
+          { "from": "viewer", "to": "vgw", "label": "subscribe [alice, bob]" },
+          { "from": "vgw", "to": "presence", "label": "subscribe [alice, bob]" },
+          { "from": "alice", "to": "agw", "label": "idle" },
+          { "from": "agw", "to": "presence", "label": "alice: away" },
+          { "from": "presence", "to": "vgw", "label": "alice: away" },
+          { "from": "vgw", "to": "viewer", "label": "alice: away" },
+          { "note": "only subscribed gateways hear about Alice", "over": ["vgw", "presence"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Debounce flapping connections",
+      "script": [
+        "We also **debounce** flapping connections, so a phone hopping from Wi-Fi to cellular doesn't blink offline and back."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "phone", "label": "Phone", "kind": "client" },
+          { "id": "gw", "label": "Gateway Servers", "kind": "infra" },
+          { "id": "presence", "label": "Presence Service", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "phone", "to": "gw", "label": "Wi-Fi drops: last socket closes" },
+          { "from": "gw", "to": "presence", "label": "user disconnected" },
+          { "note": "wait a few seconds before marking offline", "over": ["gw", "presence"] },
+          { "from": "phone", "to": "gw", "label": "reconnect over cellular" },
+          { "from": "gw", "to": "presence", "label": "user connected" },
+          { "note": "never went offline: no change sent", "over": ["gw", "presence"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "scene": "main",
+      "focus": ["client", "gw", "cs", "e_client_gw", "e_gw_cs"],
+      "title": "Typing: fan-out without storage",
+      "script": [
+        "**Typing indicators** are even more ephemeral. The client sends \"typing in #eng\" up its socket, the gateway relays it to that channel's server, and it fans out like a message but is never stored, never retried, and dropped first under load."
+      ]
+    },
+    {
+      "title": "Three kinds of real-time data",
+      "script": [
+        "If one is lost, nobody notices. That's the right trade-off, and it's why typing skips the webapp and the database entirely. Side by side, the three kinds of real-time data compare like this."
+      ],
+      "table": {
+        "columns": ["Data", "Stored", "Delivery", "Under load"],
+        "rows": [
+          ["**Message**", "Vitess, forever", "push + ts-based catch-up", "never dropped"],
+          ["**Presence**", "in memory only", "subscribers only, debounced", "safe to lose"],
+          ["**Typing**", "never", "best effort, no retry", "dropped first"]
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["queue", "e_webapp_queue"],
       "title": "Take slow work off the send path: the job queue",
       "script": [
-        "Look at what happens synchronously on a send today: write to the database, then publish to the channel server. Both are needed before the sender sees \"sent\" and online members see the message. But a message also triggers plenty of work that **nobody is waiting for**: push notifications, email digests, search indexing, link previews, bot and webhook integrations, analytics.",
-        "Doing that inline would make sending slow and fragile. A slow link-preview fetch shouldn't delay delivery. So the webapp **enqueues jobs** on a durable **job queue** and returns. Slack's version puts **Kafka** in front as a durable buffer, with **Redis** scheduling execution, and a fleet of workers pulls from it.",
-        "Three properties matter. It's **durable**, so a crashed worker doesn't lose a job. It's **at-least-once**, so every worker has to be idempotent, keyed by message ID, or a retry sends two notifications. And it's **partitioned and rate-limited per tenant**, so one workspace doing a huge import can't starve everyone else's notifications. That's the multi-tenant requirement showing up in the async path.",
+        "Look at what happens synchronously on a send today: write to the database, then publish to the channel server. Both are needed before the sender sees \"sent\" and online members see the message. But a message also triggers plenty of work that **nobody is waiting for**: push notifications, email digests, search indexing, link previews, bot and webhook integrations, analytics."
+      ]
+    },
+    {
+      "title": "Enqueue and return",
+      "script": [
+        "Doing that inline would make sending slow and fragile. A slow link-preview fetch shouldn't delay delivery. So the webapp **enqueues jobs** on a durable **job queue** and returns."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Slack Clients", "kind": "client" },
+          { "id": "webapp", "label": "Webapp (API)", "kind": "service" },
+          { "id": "vitess", "label": "Vitess (MySQL)", "kind": "data" },
+          { "id": "cs", "label": "Channel Servers", "kind": "service" },
+          { "id": "queue", "label": "Job Queue", "kind": "stream" }
+        ],
+        "steps": [
+          { "from": "client", "to": "webapp", "label": "send message" },
+          { "from": "webapp", "to": "vitess", "label": "INSERT message" },
+          { "from": "webapp", "to": "cs", "label": "publish" },
+          { "from": "webapp", "to": "queue", "label": "enqueue jobs" },
+          { "from": "webapp", "to": "client", "label": "sent", "reply": true },
+          { "note": "push, search, previews, integrations… run later", "over": ["cs", "queue"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "scene": "queue",
+      "add": ["q_webapp", "q_kafka", "e_q_webapp_kafka", "q_redis", "e_q_kafka_redis", "q_workers", "e_q_redis_workers"],
+      "title": "Inside the job queue: Kafka + Redis",
+      "script": [
+        "Slack's version puts **Kafka** in front as a durable buffer, with **Redis** scheduling execution, and a fleet of workers pulls from it."
+      ]
+    },
+    {
+      "title": "At-least-once, so workers are idempotent",
+      "script": [
+        "Three properties matter. It's **durable**, so a crashed worker doesn't lose a job. It's **at-least-once**, so every worker has to be idempotent, keyed by message ID, or a retry sends two notifications."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "queue", "label": "Job Queue", "kind": "stream" },
+          { "id": "w1", "label": "Worker 1", "kind": "service" },
+          { "id": "w2", "label": "Worker 2", "kind": "service" },
+          { "id": "redis", "label": "Redis", "kind": "data" },
+          { "id": "push", "label": "APNs / FCM", "kind": "ghost" }
+        ],
+        "steps": [
+          { "from": "queue", "to": "w1", "label": "job: notify msg 42" },
+          { "from": "w1", "to": "redis", "label": "SETNX sent:42 → ok" },
+          { "from": "w1", "to": "push", "label": "push" },
+          { "note": "Worker 1 crashes before it acks", "over": ["w1", "w2"] },
+          { "from": "queue", "to": "w2", "label": "redeliver: notify msg 42" },
+          { "from": "w2", "to": "redis", "label": "SETNX sent:42 → exists" },
+          { "note": "already sent: skip the push", "over": ["w2", "redis"] },
+          { "from": "w2", "to": "queue", "label": "ack: job done", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Partition and rate-limit per tenant",
+      "script": [
+        "And it's **partitioned and rate-limited per tenant**, so one workspace doing a huge import can't starve everyone else's notifications. That's the multi-tenant requirement showing up in the async path."
+      ],
+      "table": {
+        "columns": ["Queue", "A huge import in one workspace", "Everyone else's notifications"],
+        "rows": [
+          ["**One shared FIFO**", "its jobs line up ahead of everyone", "delayed"],
+          ["**Partitioned, limited per tenant**", "drains at its own rate", "unaffected"]
+        ],
+        "highlight": 1
+      }
+    },
+    {
+      "scene": "main",
+      "focus": ["client", "lb", "webapp", "vitess", "cs", "gw", "e_client_lb", "e_webapp_vitess", "e_webapp_cs", "e_gw_cs", "e_client_gw"],
+      "title": "Bursts stretch the queue, not delivery",
+      "script": [
         "The queue also **absorbs bursts**. If traffic triples at 9 a.m., the queue gets longer for a few minutes, while real-time delivery, which never touches the queue, stays fast. That's the general shape of the design: keep the latency-critical path as short as possible and make everything else asynchronous."
       ]
     },
     {
       "scene": "main",
-      "add": ["notif", "push", "e_queue_notif", "e_notif_push"],
-      "title": "Notifications: deciding who to bother, and when",
+      "add": ["notif", "e_queue_notif"],
+      "title": "Notifications: the queue's first consumer",
       "script": [
-        "The first consumer of the queue is **notifications**. For every new message, the notification workers decide whether and how to notify each member. A lot of product complexity lives here, so it's worth walking through the decision.",
-        "You're notified if the message is a DM, mentions you, mentions a group you're in (@here, @channel, a user group), matches one of your keywords, or is in a channel you follow closely. It's suppressed if you've muted the channel, turned on Do Not Disturb, are outside your notification schedule, or **already saw it**. That last one matters most: if you're active in the desktop app, your phone shouldn't buzz. So the workers check **presence** and your **read cursor**, and they usually wait a short delay before a mobile push in case another device reads the message first.",
-        "Delivery goes to **APNs and FCM** for mobile push and to an email provider for digests. They're third parties, so they're drawn as ghosts. The workers **dedupe** by message and device, retry with backoff, and prune dead device tokens.",
-        "Notice the big-channel problem coming back. An *@channel* in a 100,000-person channel is 100,000 decisions. Because it's an async job, it can be split into batches across many workers. The last phone might buzz a few seconds later, which is fine for push. Real-time delivery to everyone online already happened through the channel servers."
+        "The first consumer of the queue is **notifications**. For every new message, the notification workers decide whether and how to notify each member. A lot of product complexity lives here, so it's worth walking through the decision."
+      ]
+    },
+    {
+      "title": "Notify, or suppress?",
+      "script": [
+        "You're notified if the message is a DM, mentions you, mentions a group you're in (@here, @channel, a user group), matches one of your keywords, or is in a channel you follow closely. It's suppressed if you've muted the channel, turned on Do Not Disturb, are outside your notification schedule, or **already saw it**."
+      ],
+      "table": {
+        "columns": ["Notify if…", "Suppress if…"],
+        "rows": [
+          ["it's a **DM**", "you **muted** the channel"],
+          ["it **mentions you**", "**Do Not Disturb** is on"],
+          ["it mentions **@here, @channel** or your group", "you're **outside your schedule**"],
+          ["it matches one of your **keywords**", "you **already saw it**"],
+          ["it's in a channel you **follow closely**", ""]
+        ]
+      }
+    },
+    {
+      "title": "Already seen? Then don't buzz",
+      "script": [
+        "That last one matters most: if you're active in the desktop app, your phone shouldn't buzz. So the workers check **presence** and your **read cursor**, and they usually wait a short delay before a mobile push in case another device reads the message first."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "queue", "label": "Job Queue", "kind": "stream" },
+          { "id": "notif", "label": "Notification Workers", "kind": "service" },
+          { "id": "presence", "label": "Presence Service", "kind": "service" },
+          { "id": "vitess", "label": "Vitess (MySQL)", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "queue", "to": "notif", "label": "notify Bob: msg 42" },
+          { "from": "notif", "to": "presence", "label": "is Bob active?" },
+          { "from": "presence", "to": "notif", "label": "active on desktop", "reply": true },
+          { "note": "wait a short delay before a mobile push", "over": ["notif", "presence"] },
+          { "from": "notif", "to": "vitess", "label": "Bob's read cursor?" },
+          { "from": "vitess", "to": "notif", "label": "already read msg 42", "reply": true },
+          { "note": "already seen: no mobile push", "over": ["notif", "vitess"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "scene": "main",
+      "add": ["push", "e_notif_push"],
+      "title": "Delivery: APNs, FCM and email",
+      "script": [
+        "Delivery goes to **APNs and FCM** for mobile push and to an email provider for digests. They're third parties, so they're drawn as ghosts. The workers **dedupe** by message and device, retry with backoff, and prune dead device tokens."
+      ]
+    },
+    {
+      "title": "@channel in a 100,000-person channel",
+      "script": [
+        "Notice the big-channel problem coming back. An *@channel* in a 100,000-person channel is 100,000 decisions. Because it's an async job, it can be split into batches across many workers."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "queue", "label": "Job Queue", "kind": "stream" },
+          { "id": "notif", "label": "Notification Workers", "kind": "service" },
+          { "id": "w1", "label": "Worker 1", "kind": "service" },
+          { "id": "w2", "label": "Worker 2", "kind": "service" },
+          { "id": "w3", "label": "Worker 3", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "queue", "to": "notif", "label": "@channel in #all (100k)" },
+          { "from": "notif", "to": "queue", "label": "enqueue 100 batches × 1,000" },
+          { "from": "queue", "to": "w1", "label": "batch 1" },
+          { "from": "queue", "to": "w2", "label": "batch 2" },
+          { "from": "queue", "to": "w3", "label": "batch 3 …" },
+          { "note": "batches run in parallel", "over": ["w1", "w3"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "scene": "main",
+      "focus": ["webapp", "cs", "gw", "client", "queue", "notif", "push", "e_webapp_cs", "e_gw_cs", "e_client_gw", "e_webapp_queue", "e_queue_notif", "e_notif_push"],
+      "title": "Two paths, two deadlines",
+      "script": [
+        "The last phone might buzz a few seconds later, which is fine for push. Real-time delivery to everyone online already happened through the channel servers."
       ]
     },
     {
       "scene": "main",
-      "add": ["search", "searchidx", "indexer", "e_search_idx", "e_queue_indexer", "e_indexer_idx"],
+      "add": ["search"],
       "title": "Search that respects permissions",
       "script": [
-        "Search comes next, and Slack's has a twist most search systems don't: **results must respect permissions**. You must never see a hit from a private channel you're not in, not even a snippet or a count.",
-        "The pipeline: the **search indexer** consumes message jobs (new messages, edits, deletes) from the queue, tokenizes them, and writes them to a **search index**, an inverted index on Solr or Elasticsearch. The index is **partitioned by workspace**, so a query only touches its own tenant's shards, and the biggest enterprises can get dedicated ones. Indexing is asynchronous, so a brand-new message may take a few seconds to become searchable, which users accept.",
-        "The **search service** answers queries. Each indexed message carries its *channel_id*, and every query is filtered to the channels the user can read. Enforcing access at query time, rather than storing an access list per user per document, means nothing in the index changes when someone joins or leaves a channel. For people in thousands of channels, we cache their channel set and filter efficiently.",
-        "Ranking goes beyond text match: recency, whether you're in the channel, whether the author is someone you work with, and engagement like replies and reactions. The other piece to get right is **deletion**. When a message is deleted or a retention policy expires it, the delete has to reach the index promptly. A deleted message still showing up in search is a trust problem, not just a bug."
+        "Search comes next, and Slack's has a twist most search systems don't: **results must respect permissions**. You must never see a hit from a private channel you're not in, not even a snippet or a count."
       ]
     },
     {
       "scene": "main",
-      "add": ["file", "blob", "cdn", "e_file_blob", "e_cdn_client", "e_cdn_blob"],
-      "title": "Files: blob storage, signed URLs and a CDN",
+      "add": ["searchidx", "indexer", "e_search_idx", "e_queue_indexer", "e_indexer_idx"],
+      "title": "The indexing pipeline",
       "script": [
-        "Files get shared constantly: screenshots, PDFs, logs. They're **large, immutable and read many times**, which is exactly what a relational database is bad at, so they never go in MySQL.",
-        "The **file service** owns metadata and permissions. To upload, the client asks for an upload slot and gets back a **pre-signed URL**, then sends the bytes directly to the **blob store** (S3-style object storage), so big uploads don't tie up webapp servers. When the upload finishes, the file service records the metadata (owner, channel, size, type) and posts a message that references the file. Async workers then generate **thumbnails and previews** and scan for malware.",
-        "Downloads go through the **CDN**. The subtlety is that these files are **private**: a public CDN link to a confidential PDF is a data leak. So the file service hands out **short-lived signed URLs**, and only after checking that the requester can see the channel the file was shared in. The CDN caches the bytes, and the signature limits who can fetch them and for how long.",
-        "Files are also by far the biggest storage cost, far more than message text. Lifecycle rules move older files to cheaper storage tiers, and workspace retention settings can delete them entirely. A delete has to cascade to thumbnails, CDN caches and the search index."
+        "The pipeline: the **search indexer** consumes message jobs (new messages, edits, deletes) from the queue, tokenizes them, and writes them to a **search index**, an inverted index on Solr or Elasticsearch."
+      ]
+    },
+    {
+      "title": "Partitioned by workspace, indexed async",
+      "script": [
+        "The index is **partitioned by workspace**, so a query only touches its own tenant's shards, and the biggest enterprises can get dedicated ones. Indexing is asynchronous, so a brand-new message may take a few seconds to become searchable, which users accept."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "webapp", "label": "Webapp (API)", "kind": "service" },
+          { "id": "queue", "label": "Job Queue", "kind": "stream" },
+          { "id": "indexer", "label": "Search Indexer", "kind": "service" },
+          { "id": "searchidx", "label": "Search Index", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "webapp", "to": "queue", "label": "index msg 42 (Acme)" },
+          { "from": "queue", "to": "indexer", "label": "job" },
+          { "from": "indexer", "to": "indexer", "label": "tokenize" },
+          { "from": "indexer", "to": "searchidx", "label": "write to Acme's partition" },
+          { "note": "searchable a few seconds after send", "over": ["indexer", "searchidx"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Every query filtered by channel",
+      "script": [
+        "The **search service** answers queries. Each indexed message carries its *channel_id*, and every query is filtered to the channels the user can read."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Slack Clients", "kind": "client" },
+          { "id": "search", "label": "Search Service", "kind": "service" },
+          { "id": "vitess", "label": "Vitess (MySQL)", "kind": "data" },
+          { "id": "searchidx", "label": "Search Index", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "client", "to": "search", "label": "search \"deploy\"" },
+          { "from": "search", "to": "vitess", "label": "Bob's channels?" },
+          { "from": "vitess", "to": "search", "label": "[C1, C7, …]", "reply": true },
+          { "from": "search", "to": "searchidx", "label": "deploy AND channel_id IN [C1, C7, …]" },
+          { "from": "searchidx", "to": "search", "label": "hits", "reply": true },
+          { "from": "search", "to": "client", "label": "results", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Filter at query time, not per document",
+      "script": [
+        "Enforcing access at query time, rather than storing an access list per user per document, means nothing in the index changes when someone joins or leaves a channel. For people in thousands of channels, we cache their channel set and filter efficiently."
+      ],
+      "table": {
+        "columns": ["Approach", "Stored per message", "Someone joins or leaves", "Per query"],
+        "rows": [
+          ["**Filter by channel at query time**", "one channel_id", "nothing re-indexed", "filter by cached channel set"],
+          ["**ACL per user per document**", "every reader's ID", "rewrite the channel's messages", "simple lookup"]
+        ],
+        "highlight": 0
+      }
+    },
+    {
+      "title": "Ranking beyond text match",
+      "script": [
+        "Ranking goes beyond text match: recency, whether you're in the channel, whether the author is someone you work with, and engagement like replies and reactions."
+      ],
+      "bullets": {
+        "heading": "Ranking signals",
+        "items": [
+          "**Text match**",
+          "**Recency**",
+          "**Membership**: you're in the channel",
+          "**Author**: someone you work with",
+          "**Engagement**: replies and reactions"
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "focus": ["webapp", "queue", "indexer", "searchidx", "e_webapp_queue", "e_queue_indexer", "e_indexer_idx"],
+      "title": "Deletes must reach the index",
+      "script": [
+        "The other piece to get right is **deletion**. When a message is deleted or a retention policy expires it, the delete has to reach the index promptly. A deleted message still showing up in search is a trust problem, not just a bug."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["file", "blob", "e_file_blob"],
+      "title": "Files never go in MySQL",
+      "script": [
+        "Files get shared constantly: screenshots, PDFs, logs. They're **large, immutable and read many times**, which is exactly what a relational database is bad at, so they never go in MySQL."
+      ]
+    },
+    {
+      "title": "Upload straight to the blob store",
+      "script": [
+        "The **file service** owns metadata and permissions. To upload, the client asks for an upload slot and gets back a **pre-signed URL**, then sends the bytes directly to the **blob store** (S3-style object storage), so big uploads don't tie up webapp servers."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Slack Clients", "kind": "client" },
+          { "id": "file", "label": "File Service", "kind": "service" },
+          { "id": "blob", "label": "Blob Store", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "client", "to": "file", "label": "request upload slot" },
+          { "from": "file", "to": "client", "label": "pre-signed URL", "reply": true },
+          { "from": "client", "to": "blob", "label": "PUT bytes (direct)" },
+          { "from": "blob", "to": "client", "label": "stored", "reply": true },
+          { "note": "bytes never pass through the webapp", "over": ["file", "blob"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "File metadata, and the message that shares it",
+      "script": [
+        "When the upload finishes, the file service records the metadata (owner, channel, size, type) and posts a message that references the file. Async workers then generate **thumbnails and previews** and scan for malware."
+      ],
+      "entities": {
+        "items": [
+          { "id": "message", "name": "Message", "kind": "data", "fields": ["channel_id: id  PK", "ts: id  PK", "file_id: id  FK"] },
+          { "id": "file", "name": "File", "kind": "data", "fields": ["id: id  PK", "owner_id: id", "channel_id: id", "size: bytes", "type: text", "blob_key: text"] },
+          { "id": "preview", "name": "Preview", "kind": "data", "fields": ["file_id: id  FK", "thumbnail_key: text", "scan_status: enum"] }
+        ],
+        "relations": [
+          { "from": "message", "to": "file", "label": "shares" },
+          { "from": "file", "to": "preview", "label": "1 — *" }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "add": ["cdn", "e_cdn_client", "e_cdn_blob"],
+      "title": "Downloads go through the CDN",
+      "script": [
+        "Downloads go through the **CDN**. The subtlety is that these files are **private**: a public CDN link to a confidential PDF is a data leak."
+      ]
+    },
+    {
+      "title": "Short-lived signed URLs",
+      "script": [
+        "So the file service hands out **short-lived signed URLs**, and only after checking that the requester can see the channel the file was shared in. The CDN caches the bytes, and the signature limits who can fetch them and for how long."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Slack Clients", "kind": "client" },
+          { "id": "file", "label": "File Service", "kind": "service" },
+          { "id": "vitess", "label": "Vitess (MySQL)", "kind": "data" },
+          { "id": "cdn", "label": "CDN", "kind": "infra" },
+          { "id": "blob", "label": "Blob Store", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "client", "to": "file", "label": "download file F" },
+          { "from": "file", "to": "vitess", "label": "can Bob see channel C?" },
+          { "from": "vitess", "to": "file", "label": "yes", "reply": true },
+          { "from": "file", "to": "client", "label": "signed URL (short-lived)", "reply": true },
+          { "from": "client", "to": "cdn", "label": "GET signed URL" },
+          { "from": "cdn", "to": "blob", "label": "origin pull (cache miss)" },
+          { "from": "blob", "to": "cdn", "label": "bytes", "reply": true },
+          { "from": "cdn", "to": "client", "label": "bytes", "reply": true },
+          { "note": "signature limits who and for how long", "over": ["cdn", "blob"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Lifecycle: hot, cold, gone",
+      "script": [
+        "Files are also by far the biggest storage cost, far more than message text. Lifecycle rules move older files to cheaper storage tiers, and workspace retention settings can delete them entirely."
+      ],
+      "table": {
+        "columns": ["Stage", "Where the bytes live", "Moved by"],
+        "rows": [
+          ["**Recent**", "standard blob storage + CDN", "upload"],
+          ["**Older**", "a cheaper storage tier", "lifecycle rule"],
+          ["**Expired**", "deleted", "workspace retention"]
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "focus": ["file", "blob", "cdn", "searchidx"],
+      "title": "Deletes cascade",
+      "script": [
+        "A delete has to cascade to thumbnails, CDN caches and the search index."
       ]
     },
     {
       "scene": "main",
       "add": ["regions", "e_vitess_regions"],
-      "title": "Going global: edge regions and home regions",
+      "title": "Going global",
       "script": [
-        "Last, geography. Two different requirements push us to multiple regions, and they want slightly different things.",
-        "**Latency** wants the connection tier near users. A WebSocket from Sydney to Virginia adds a couple of hundred milliseconds to every event. So we deploy **gateway servers and the edge cache in edge regions** around the world. Clients connect to the nearest one, and the long hop back to the workspace's region runs over our own backbone on connections that are already warm.",
-        "**Data residency** wants data in a specific place: a European customer may require that its messages are stored only in the EU. So every workspace has a **home region** where its shards, files and search index live. This is easy precisely because we shard by tenant and channel. Placement is a property of the workspace, not of individual rows.",
-        "For availability, each home region replicates to a standby in another region (the dashed line), so we can fail a region over, and within a region every tier is spread across availability zones. What we're **not** doing is active-active writes to the same channel in two regions. That would break the single-owner ordering the channel servers give us, and chat users notice out-of-order messages far more than an extra 100 ms.",
+        "Last, geography. Two different requirements push us to multiple regions, and they want slightly different things."
+      ]
+    },
+    {
+      "scene": "geo",
+      "add": ["g_client_syd", "g_edge_syd", "e_g_syd_edge", "g_home_us", "e_g_syd_home"],
+      "title": "Latency: connect at the edge",
+      "script": [
+        "**Latency** wants the connection tier near users. A WebSocket from Sydney to Virginia adds a couple of hundred milliseconds to every event. So we deploy **gateway servers and the edge cache in edge regions** around the world. Clients connect to the nearest one, and the long hop back to the workspace's region runs over our own backbone on connections that are already warm."
+      ]
+    },
+    {
+      "scene": "geo",
+      "add": ["g_client_eu", "g_edge_eu", "e_g_eu_edge", "g_home_eu", "e_g_eu_home"],
+      "title": "Residency: every workspace has a home",
+      "script": [
+        "**Data residency** wants data in a specific place: a European customer may require that its messages are stored only in the EU. So every workspace has a **home region** where its shards, files and search index live. This is easy precisely because we shard by tenant and channel. Placement is a property of the workspace, not of individual rows."
+      ]
+    },
+    {
+      "scene": "geo",
+      "add": ["g_standby_us", "e_g_us_standby", "g_standby_eu", "e_g_eu_standby"],
+      "title": "A standby for every home region",
+      "script": [
+        "For availability, each home region replicates to a standby in another region (the dashed line), so we can fail a region over, and within a region every tier is spread across availability zones."
+      ]
+    },
+    {
+      "title": "Not active-active",
+      "script": [
+        "What we're **not** doing is active-active writes to the same channel in two regions. That would break the single-owner ordering the channel servers give us, and chat users notice out-of-order messages far more than an extra 100 ms."
+      ],
+      "table": {
+        "columns": ["Approach", "Who writes a channel", "Message order", "Cost"],
+        "rows": [
+          ["**One home region + a standby**", "one owner", "preserved", "an extra ~100 ms far away"],
+          ["**Active-active writes**", "two regions at once", "can interleave", "conflicts to resolve"]
+        ],
+        "highlight": 0
+      }
+    },
+    {
+      "scene": "geo",
+      "add": ["g_shared", "e_g_shared_us", "e_g_shared_eu"],
+      "title": "The hard case: Slack Connect",
+      "script": [
         "The hard edge case is a channel shared by two companies with different home regions. That's Slack Connect, which we put out of scope at the start."
       ]
     },
