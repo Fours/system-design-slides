@@ -104,8 +104,7 @@ Ask the user to approve or adjust. **Do not edit anything until they approve.**
      scene-step state carries across them automatically.
    - A focus slide is `{ "scene": "main", "focus": [ids], "title", "script" }`;
      every focused id must already be visible.
-   - Sequences with many steps animate slowly at the default 1000 ms per step; set
-     `"fadeMs": 500` on that slide when there are more than ~6 steps.
+   - Set `"fadeMs": 1000` on every sequence slide.
 2. Run `npm run validate` and fix every error and every warning on the slides you
    touched.
 3. Visually check every new slide at 1440×900. Use the `dev` preview from
