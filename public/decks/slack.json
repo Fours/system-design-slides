@@ -241,33 +241,197 @@
       "add": ["client", "server", "e_client_server"],
       "title": "Start simple: one client, one chat server",
       "script": [
-        "I'll start with the simplest thing that could work: a **Slack client** (desktop, web or mobile) talking to a single **chat server** over HTTPS. To send, the client POSTs the text and a channel ID. To receive, it asks the server \"anything new in this channel since the last message I saw?\"",
-        "Even this toy version forces two decisions that last all the way to the final diagram. First, **everything is a channel**. Public channels, private channels, DMs and group DMs are the same object with different membership rules. A DM is a private channel with exactly two members. That gives us one code path for sending, storing, ordering and fan-out instead of four.",
-        "Second, the client and server talk in terms of **a channel ID plus a position in that channel**. \"Give me everything after position X\" is how the client will catch up after a reconnect, how a second device syncs, and how unread counts are computed. I'll make that position concrete when we get to storage.",
-        "The obvious problems: this server keeps everything in memory, so a restart loses all history. And asking the server whether there's anything new is **polling**, which is either slow or wasteful. Let's fix those one at a time, starting with durability."
+        "I'll start with the simplest thing that could work: a **Slack client** (desktop, web or mobile) talking to a single **chat server** over HTTPS. To send, the client POSTs the text and a channel ID. To receive, it asks the server \"anything new in this channel since the last message I saw?\""
       ]
+    },
+    {
+      "title": "Everything is a channel",
+      "script": [
+        "Even this toy version forces two decisions that last all the way to the final diagram. First, **everything is a channel**. Public channels, private channels, DMs and group DMs are the same object with different membership rules. A DM is a private channel with exactly two members. That gives us one code path for sending, storing, ordering and fan-out instead of four."
+      ],
+      "table": {
+        "columns": ["Kind", "Who can see it", "Members"],
+        "rows": [
+          ["**Public channel**", "anyone in the workspace", "anyone can join"],
+          ["**Private channel**", "members only", "invite only"],
+          ["**DM**", "the two people", "exactly 2"],
+          ["**Group DM**", "the people in it", "3–9"]
+        ]
+      }
+    },
+    {
+      "title": "Channel ID plus a position",
+      "script": [
+        "Second, the client and server talk in terms of **a channel ID plus a position in that channel**. \"Give me everything after position X\" is how the client will catch up after a reconnect, how a second device syncs, and how unread counts are computed. I'll make that position concrete when we get to storage."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Slack Clients", "kind": "client" },
+          { "id": "server", "label": "Chat Server", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "client", "to": "server", "label": "POST send(channel C, text)" },
+          { "from": "server", "to": "client", "label": "ok, position X", "reply": true },
+          { "note": "disconnect, or a second device", "over": ["client", "server"] },
+          { "from": "client", "to": "server", "label": "GET channel C after X" },
+          { "from": "server", "to": "client", "label": "messages after X", "reply": true },
+          { "note": "unread = messages after my last-read position", "over": ["client", "server"] }
+        ]
+      }
+    },
+    {
+      "title": "What breaks first",
+      "script": [
+        "The obvious problems: this server keeps everything in memory, so a restart loses all history. And asking the server whether there's anything new is **polling**, which is either slow or wasteful. Let's fix those one at a time, starting with durability."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**No durability**: history lives in memory", "detail": "a restart loses everything (fix next: a database)" },
+          { "text": "**Polling** for new messages", "detail": "either slow or wasteful (fix later: push)" }
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["db", "e_server_db"],
       "title": "Persist every message in a database",
       "script": [
-        "Messages are the product's core asset. People search back years to find a decision, so **losing an acknowledged message is unacceptable**. The server writes every message to a **relational database**, MySQL here, before it acknowledges the send to the client.",
-        "The central table is simple: *messages(channel_id, ts, user_id, text, thread_ts, …)*. The interesting column is **ts**, a timestamp-like ID that is unique and strictly increasing within a channel and also serves as the message's identity. The primary key is **(channel_id, ts)**, so the most common query, \"the latest 50 messages in this channel\" or \"everything after ts X,\" is a single range scan on a single index.",
-        "The rest of the model hangs off that. A **thread reply** is a message whose *thread_ts* points at its parent. **Reactions** are a small table keyed by message. **Edits and deletes** update the row and are also emitted as events, so clients can patch what they're already showing. For unreads, each user has a **read cursor** per channel, *last_read_ts*. The unread count is \"messages in this channel with ts greater than my cursor,\" and a mention badge is the same query restricted to messages that mention me.",
-        "Why relational, rather than a wide-column store like Cassandra, which many chat systems use? Slack's data is **very relational**: workspaces, channels, memberships, permissions and messages all reference each other, and nearly every lookup is scoped to one workspace. A transactional store with secondary indexes makes those queries easy. That only holds up at scale if we shard it, which we'll get to shortly."
+        "Messages are the product's core asset. People search back years to find a decision, so **losing an acknowledged message is unacceptable**. The server writes every message to a **relational database**, MySQL here, before it acknowledges the send to the client."
       ]
+    },
+    {
+      "title": "The messages table",
+      "script": [
+        "The central table is simple: *messages(channel_id, ts, user_id, text, thread_ts, …)*. The interesting column is **ts**, a timestamp-like ID that is unique and strictly increasing within a channel and also serves as the message's identity. The primary key is **(channel_id, ts)**, so the most common query, \"the latest 50 messages in this channel\" or \"everything after ts X,\" is a single range scan on a single index."
+      ],
+      "entities": {
+        "items": [
+          { "id": "message", "name": "Message", "kind": "data", "fields": ["channel_id: id  PK", "ts: id  PK", "user_id: id", "text: text", "thread_ts: id", "edited_at: timestamp"] }
+        ]
+      }
+    },
+    {
+      "title": "Everything hangs off a message",
+      "script": [
+        "The rest of the model hangs off that. A **thread reply** is a message whose *thread_ts* points at its parent. **Reactions** are a small table keyed by message. **Edits and deletes** update the row and are also emitted as events, so clients can patch what they're already showing."
+      ],
+      "entities": {
+        "items": [
+          { "id": "message", "name": "Message", "kind": "data", "fields": ["channel_id: id  PK", "ts: id  PK", "thread_ts: id", "text: text"] },
+          { "id": "reaction", "name": "Reaction", "kind": "data", "fields": ["channel_id: id  FK", "ts: id  FK", "user_id: id", "emoji: text"] },
+          { "id": "cursor", "name": "ReadCursor", "kind": "data", "fields": ["user_id: id  PK", "channel_id: id  PK", "last_read_ts: id"] }
+        ],
+        "relations": [
+          { "from": "message", "to": "reaction", "label": "1 — *" },
+          { "from": "message", "to": "cursor", "label": "by channel" }
+        ]
+      }
+    },
+    {
+      "title": "Unreads are range queries",
+      "script": [
+        "For unreads, each user has a **read cursor** per channel, *last_read_ts*. The unread count is \"messages in this channel with ts greater than my cursor,\" and a mention badge is the same query restricted to messages that mention me."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Unread count**: messages with ts > last_read_ts", "detail": "one range scan on (channel_id, ts)" },
+          { "text": "**Mention badge**: the same query", "detail": "restricted to messages that mention me" }
+        ]
+      }
+    },
+    {
+      "title": "Why relational?",
+      "script": [
+        "Why relational, rather than a wide-column store like Cassandra, which many chat systems use? Slack's data is **very relational**: workspaces, channels, memberships, permissions and messages all reference each other, and nearly every lookup is scoped to one workspace. A transactional store with secondary indexes makes those queries easy. That only holds up at scale if we shard it, which we'll get to shortly."
+      ],
+      "table": {
+        "columns": ["Option", "Fits Slack because", "Costs"],
+        "rows": [
+          ["**MySQL**", "relational data, transactions, secondary indexes", "must be sharded at scale"],
+          ["**Cassandra**", "huge write throughput, easy scale-out", "no joins, weak secondary indexes"]
+        ],
+        "highlight": 0
+      }
     },
     {
       "scene": "main",
       "add": ["e_client_server_ws"],
       "title": "Real-time delivery: push over a WebSocket",
       "script": [
-        "Polling is the next problem. If 30 million clients poll every channel every few seconds, nearly every request comes back empty. If they poll slowly, messages feel laggy. Neither meets the **500 ms** target.",
-        "So the client opens a **WebSocket**, a long-lived, bidirectional connection, and the server pushes events down it as they happen: new message, edit, reaction, member joined, someone is typing. It's one socket *per device*, not per channel, so a user in 200 channels still holds one connection.",
-        "I'm deliberately keeping **sends on plain HTTPS**, not on the socket. A POST has a clear success or failure, goes through the same auth, rate limiting and validation as every other API call, and carries a **client-generated message ID**, so a retry after a timeout can never create a duplicate. The socket is for the **server-to-client** direction, where push is the whole point.",
-        "This introduces the most important idea in the design: the socket is a **fast path, not the source of truth**. Sockets drop constantly. Laptops sleep, phones switch networks, deploys restart servers. When a client reconnects, it doesn't assume it saw everything. It asks the API for each channel's messages after the last ts it has. Because the database is authoritative and every message has an ordered position, a dropped socket costs a bit of latency and never costs data."
+        "Polling is the next problem. If 30 million clients poll every channel every few seconds, nearly every request comes back empty. If they poll slowly, messages feel laggy. Neither meets the **500 ms** target."
       ]
+    },
+    {
+      "title": "One socket per device",
+      "script": [
+        "So the client opens a **WebSocket**, a long-lived, bidirectional connection, and the server pushes events down it as they happen: new message, edit, reaction, member joined, someone is typing. It's one socket *per device*, not per channel, so a user in 200 channels still holds one connection."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Slack Clients", "kind": "client" },
+          { "id": "server", "label": "Chat Server", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "client", "to": "server", "label": "open WebSocket" },
+          { "from": "server", "to": "client", "label": "message.new" },
+          { "from": "server", "to": "client", "label": "message.edited" },
+          { "from": "server", "to": "client", "label": "reaction.added" },
+          { "from": "server", "to": "client", "label": "member.joined" },
+          { "from": "server", "to": "client", "label": "user.typing" },
+          { "note": "one socket per device, not per channel", "over": ["client", "server"] }
+        ]
+      },
+      "fadeMs": 500
+    },
+    {
+      "title": "Sends on HTTPS, push on the socket",
+      "script": [
+        "I'm deliberately keeping **sends on plain HTTPS**, not on the socket. A POST has a clear success or failure, goes through the same auth, rate limiting and validation as every other API call, and carries a **client-generated message ID**, so a retry after a timeout can never create a duplicate. The socket is for the **server-to-client** direction, where push is the whole point."
+      ],
+      "table": {
+        "columns": ["Direction", "Transport", "Why"],
+        "rows": [
+          ["**Client → server** (send)", "HTTPS POST", "clear result, shared auth and rate limits, safe retries"],
+          ["**Server → client** (events)", "WebSocket", "push is the whole point"]
+        ]
+      }
+    },
+    {
+      "title": "A fast path, not the source of truth",
+      "script": [
+        "This introduces the most important idea in the design: the socket is a **fast path, not the source of truth**. Sockets drop constantly. Laptops sleep, phones switch networks, deploys restart servers."
+      ],
+      "bullets": {
+        "heading": "Sockets drop constantly",
+        "items": [
+          "**Laptops sleep**",
+          "**Phones switch networks**",
+          "**Deploys restart servers**"
+        ]
+      }
+    },
+    {
+      "title": "Reconnect and catch up",
+      "script": [
+        "When a client reconnects, it doesn't assume it saw everything. It asks the API for each channel's messages after the last ts it has. Because the database is authoritative and every message has an ordered position, a dropped socket costs a bit of latency and never costs data."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Slack Clients", "kind": "client" },
+          { "id": "server", "label": "Chat Server", "kind": "service" },
+          { "id": "db", "label": "Database", "kind": "data" }
+        ],
+        "steps": [
+          { "note": "socket drops", "over": ["client", "server"] },
+          { "from": "client", "to": "server", "label": "reconnect WebSocket" },
+          { "from": "client", "to": "server", "label": "GET channel C after last ts" },
+          { "from": "server", "to": "db", "label": "SELECT … ts > last ts" },
+          { "from": "db", "to": "server", "label": "missed messages", "reply": true },
+          { "from": "server", "to": "client", "label": "messages after ts", "reply": true },
+          { "note": "costs latency, never data", "over": ["client", "db"] }
+        ]
+      },
+      "fadeMs": 500
     },
     {
       "scene": "main",
