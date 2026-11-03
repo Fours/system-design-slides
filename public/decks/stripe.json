@@ -1,0 +1,471 @@
+{
+  "title": "Design Stripe",
+  "topic": "System Design: Stripe",
+  "requirements": {
+    "functional": {
+      "intro": {
+        "title": "Functional requirements",
+        "script": [
+          "Before drawing anything, I want to agree on **what Stripe does** for this design. There are two parties here: the **merchant**, who integrates with our API and wants to get paid, and the merchant's **customer**, who types a card number into a checkout page. Our job is to sit between them and the banking system and move money correctly.",
+          "I'll scope this to the core of the business, **card payments**: taking a payment, moving it through its lifecycle, and getting the money to the merchant."
+        ]
+      },
+      "cards": [
+        {
+          "title": "Accept a payment",
+          "lines": ["Merchant creates a payment", "(amount, currency), customer confirms"],
+          "script": [
+            "The heart of the product: a merchant creates a **payment** with an amount and a currency, and the customer **confirms** it with a card. Stripe models this as a *PaymentIntent*, an object that tracks one attempt to collect money through every state it goes through."
+          ]
+        },
+        {
+          "title": "Card tokenization",
+          "lines": ["Card numbers go browser → Stripe", "never through merchant servers"],
+          "script": [
+            "Card numbers go **straight from the customer's browser to Stripe**, and the merchant only ever sees an opaque **token**. That's a feature in its own right: it keeps the merchant out of most of the PCI compliance burden, which is a big reason merchants pick Stripe."
+          ]
+        },
+        {
+          "title": "Authorize & capture",
+          "lines": ["Hold funds now, capture later", "or capture immediately, or cancel"],
+          "script": [
+            "Card payments are two steps. **Authorization** asks the issuing bank to put a hold on the funds; **capture** actually moves them. Many merchants do both at once, but a hotel or a shop that ships later will authorize now and capture days later, or **cancel** the hold."
+          ]
+        },
+        {
+          "title": "Refunds",
+          "lines": ["Full or partial", "against a captured payment"],
+          "script": [
+            "Merchants can **refund** a captured payment, fully or partially, possibly several times, as long as the total doesn't exceed what was captured."
+          ]
+        },
+        {
+          "title": "Idempotent API",
+          "lines": ["Retries never charge twice", "Idempotency-Key on every write"],
+          "script": [
+            "Every write accepts an **idempotency key**. Merchants' networks fail, their servers time out and retry, and a retried \"charge $50\" must **never become two charges**. I'm listing this as a functional requirement because it's part of the API contract, not just an internal property."
+          ]
+        },
+        {
+          "title": "Webhooks",
+          "lines": ["Notify the merchant of", "every state change"],
+          "script": [
+            "Lots of what happens to a payment is **asynchronous**: a capture settles, a refund completes, a customer disputes a charge weeks later. We tell merchants through **webhooks**, HTTP callbacks to a URL they register, delivered reliably."
+          ]
+        },
+        {
+          "title": "Fraud screening",
+          "lines": ["Risk score on every payment", "before it reaches the network"],
+          "script": [
+            "Every payment gets a **fraud risk score** before we send it to the card network, and high-risk payments are blocked or challenged. Stripe calls this Radar."
+          ]
+        },
+        {
+          "title": "Balances & payouts",
+          "lines": ["Track what each merchant is owed", "Pay out to their bank daily"],
+          "script": [
+            "We track each merchant's **balance**: what they've earned, minus our fees, refunds and disputes. On a schedule, usually daily, we **pay out** that balance to the merchant's bank account."
+          ]
+        },
+        {
+          "title": "Dashboard & reports",
+          "lines": ["Search payments, balances,", "payouts; export reports"],
+          "script": [
+            "And merchants get a **dashboard**: search payments, look at balances and payouts, and export reports for their accountants."
+          ]
+        }
+      ],
+      "outOfScope": {
+        "title": "Out of scope",
+        "script": [
+          "I'm leaving out the rest of Stripe's product line: **subscriptions and invoicing**, **Connect** for marketplaces, Issuing, Tax, and currency conversion. I'm also skipping **merchant onboarding and KYC**, which is a big compliance system of its own.",
+          "And I'm **not designing the card networks or the banks**. Visa, Mastercard, the acquiring banks and the issuing banks are external systems we talk to. They're slow, they're occasionally down, and they're the reason a lot of this design looks the way it does."
+        ],
+        "lines": [
+          "Subscriptions & invoicing  ·  Connect / marketplaces  ·  Issuing  ·  Tax  ·  Currency conversion  ·  Merchant onboarding & KYC",
+          "Card networks, acquirers and issuing banks (external systems we call)"
+        ]
+      }
+    },
+    "nonFunctional": {
+      "intro": {
+        "title": "Non-functional requirements",
+        "script": [
+          "Now the qualities. For a payments company, the non-functional requirements are really the product. Merchants pick a processor because it's **always up and never wrong about money**."
+        ]
+      },
+      "cards": [
+        {
+          "title": "Scale",
+          "lines": ["~50M payments/day", "~10 API calls per payment"],
+          "script": [
+            "For **scale** I'll assume about **50 million payments a day**, and about ten API calls per payment once you count creates, confirms, retrieves, refunds and list calls."
+          ]
+        },
+        {
+          "title": "Latency",
+          "lines": ["Our overhead < 100 ms p99", "Bank round trip: 0.5–2 s"],
+          "script": [
+            "On **latency**, an authorization has to go to the bank and back, which takes anywhere from half a second to a couple of seconds and is out of our control. What we control is **our own overhead**, which should be under 100 milliseconds at p99. The customer is staring at a spinner on a checkout page."
+          ]
+        },
+        {
+          "title": "99.999% available",
+          "lines": ["The payment path", "Downtime = lost sales"],
+          "script": [
+            "The payment path needs **five nines**, about five minutes of downtime a year. When we're down, our merchants can't sell anything, and they'll notice in minutes."
+          ]
+        },
+        {
+          "title": "Exactly-once money",
+          "lines": ["Never charge twice", "Never lose a charge"],
+          "script": [
+            "This is the one I care about most: **exactly-once** movement of money. We must never charge a customer twice, and never lose track of a charge the bank actually made. Everything that touches money has to be **safe to retry**."
+          ]
+        },
+        {
+          "title": "Durability",
+          "lines": ["Payments and ledger never lost", "Auditable for 7+ years"],
+          "script": [
+            "Payments and the **ledger** of money movements are **never lost**, and they're **auditable**: regulators and auditors can ask why a balance is what it is, years later."
+          ]
+        },
+        {
+          "title": "Consistency",
+          "lines": ["Strong: payment state, balances", "Eventual: dashboard, analytics"],
+          "script": [
+            "**Consistency is split.** A payment's state and a merchant's balance must be **strongly consistent**: we can't capture a payment twice or pay out money that isn't there. The dashboard and analytics can be **eventually consistent**; a report a few seconds behind is fine."
+          ]
+        },
+        {
+          "title": "PCI-DSS security",
+          "lines": ["Card numbers isolated", "in a small, audited zone"],
+          "script": [
+            "We're bound by **PCI-DSS**. Raw card numbers must live in a **small, isolated, heavily audited zone**, and the less of our system that can see them, the smaller the attack surface and the cheaper the audit."
+          ]
+        },
+        {
+          "title": "Spiky traffic",
+          "lines": ["Black Friday, flash sales", "~10× normal peak"],
+          "script": [
+            "Traffic is **spiky**. Black Friday and Cyber Monday run at **ten times** a normal day, and a single merchant's flash sale can spike far beyond its usual volume."
+          ]
+        },
+        {
+          "title": "Flaky dependencies",
+          "lines": ["Banks time out and fail", "Outcomes can be unknown"],
+          "script": [
+            "And our most important dependencies are **flaky**. Acquirers and banks time out, go down for maintenance, and sometimes we send an authorization and **never learn whether it succeeded**. The design has to treat \"unknown\" as a real state."
+          ]
+        }
+      ],
+      "estimates": {
+        "title": "Back-of-the-envelope estimates",
+        "script": [
+          "The numbers. **50 million payments a day** is about **600 a second** on average; with daily peaks and Black Friday, call it **6,000 a second** at peak. At ten API calls per payment, the API sees around **60,000 requests a second** at peak.",
+          "Each payment produces four to six **ledger entries** (charge, fee, refund, payout, and so on), so roughly **300 million ledger rows a day**. Payment records with their event history are a few KB each, about **100 GB a day**. And at about three webhooks per payment, we deliver **150 million webhooks a day**."
+        ],
+        "rows": [
+          ["Payments", ["50M/day ≈ 600/s average", "~6K/s at peak (Black Friday)"]],
+          ["API requests", ["~10 per payment", "≈ 6K/s average, ~60K/s peak"]],
+          ["Ledger", ["~6 entries per payment", "≈ 300M rows/day"]],
+          ["Storage", ["~2 KB × 50M ≈ 100 GB/day", "≈ 35 TB/yr, kept for years"]],
+          ["Webhooks", ["~3 per payment ≈ 150M/day"]]
+        ]
+      },
+      "takeaway": {
+        "title": "Takeaway: correctness, not throughput",
+        "script": [
+          "So the takeaway: **this isn't a big-throughput problem.** 6,000 payments a second is a lot of money, but it's not a lot of requests compared to a social network. What makes payments hard is **correctness**: every dollar must be accounted for exactly once, while our most important dependencies are slow and unreliable. Most of the design is about making every step **idempotent, recorded and reconcilable**."
+        ],
+        "heading": "Takeaway: modest throughput, zero tolerance for errors",
+        "lines": [
+          "~6K payments/s fits comfortably on a sharded SQL database; the hard part is exactly-once money, not scale",
+          "Banks are slow and flaky → idempotency everywhere, an explicit \"unknown\" state, and a ledger we reconcile against the banks"
+        ]
+      }
+    }
+  },
+  "scenes": {
+    "main": {
+      "boxes": [
+        { "id": "customer", "x": 40, "y": 40, "w": 170, "h": 54, "label": "Customer Browser", "kind": "client", "sub": "Stripe.js · Elements" },
+        { "id": "merchant", "x": 40, "y": 160, "w": 170, "h": 124, "label": "Merchant Server", "kind": "client", "sub": "secret API key" },
+        { "id": "dashuser", "x": 40, "y": 460, "w": 170, "h": 54, "label": "Merchant Dashboard", "kind": "client", "sub": "web app" },
+
+        { "id": "apigw", "x": 290, "y": 40, "w": 180, "h": 244, "label": "API Gateway", "kind": "infra", "sub": "TLS · API keys · rate limits" },
+
+        { "id": "vault", "x": 550, "y": 40, "w": 190, "h": 54, "label": "Card Vault", "kind": "data", "sub": "PCI zone · PAN → token" },
+        { "id": "server", "x": 550, "y": 160, "w": 190, "h": 124, "label": "API Server", "kind": "service", "sub": "one service does it all" },
+        { "id": "payments", "x": 550, "y": 160, "w": 190, "h": 124, "label": "Payment Service", "kind": "service", "sub": "PaymentIntent state machine" },
+        { "id": "risk", "x": 550, "y": 320, "w": 190, "h": 54, "label": "Risk Engine", "kind": "ml", "sub": "fraud score · < 50 ms" },
+        { "id": "webhooks", "x": 550, "y": 390, "w": 190, "h": 54, "label": "Webhook Service", "kind": "service", "sub": "signed · retries w/ backoff" },
+        { "id": "dashapi", "x": 550, "y": 460, "w": 190, "h": 54, "label": "Dashboard API", "kind": "service", "sub": "search · reports" },
+
+        { "id": "idem", "x": 830, "y": 90, "w": 180, "h": 54, "label": "Idempotency Store", "kind": "data", "sub": "key → saved response" },
+        { "id": "db", "x": 830, "y": 210, "w": 180, "h": 74, "label": "Database", "kind": "data", "sub": "PostgreSQL · one primary" },
+        { "id": "paydb", "x": 830, "y": 210, "w": 180, "h": 74, "label": "Payments DB", "kind": "data", "sub": "sharded by merchant" },
+        { "id": "kafka", "x": 830, "y": 320, "w": 180, "h": 194, "label": "Event Bus", "kind": "stream", "sub": "Kafka · payment events" },
+
+        { "id": "router", "x": 1090, "y": 153, "w": 190, "h": 54, "label": "Processor Router", "kind": "service", "sub": "acquirer adapters" },
+        { "id": "sweeper", "x": 1090, "y": 230, "w": 190, "h": 54, "label": "Status Sweeper", "kind": "service", "sub": "resolves unknown auths" },
+        { "id": "ledger", "x": 1090, "y": 320, "w": 190, "h": 54, "label": "Ledger", "kind": "data", "sub": "double-entry · append-only" },
+        { "id": "warehouse", "x": 1090, "y": 460, "w": 190, "h": 54, "label": "Data Warehouse", "kind": "ml", "sub": "reports · model training" },
+
+        { "id": "regions", "x": 1360, "y": 40, "w": 190, "h": 54, "label": "Other Regions ×N", "kind": "ghost", "sub": "same stack · failover" },
+        { "id": "acq", "x": 1360, "y": 153, "w": 190, "h": 54, "label": "Acquirers / Networks", "kind": "ghost", "sub": "Visa · Mastercard · issuers" },
+        { "id": "recon", "x": 1360, "y": 320, "w": 190, "h": 54, "label": "Reconciliation", "kind": "service", "sub": "ledger vs. bank files" },
+        { "id": "payouts", "x": 1360, "y": 410, "w": 190, "h": 54, "label": "Payout Service", "kind": "service", "sub": "daily settlement" },
+        { "id": "bank", "x": 1360, "y": 530, "w": 190, "h": 54, "label": "Merchant Bank", "kind": "ghost", "sub": "ACH · SEPA · wires" }
+      ],
+      "edges": [
+        { "id": "e_merchant_server", "from": "merchant", "to": "server", "pts": [[210, 222], [550, 222]], "label": "create · confirm", "both": true },
+        { "id": "e_server_acq", "from": "server", "to": "acq", "pts": [[740, 180], [1360, 180]], "label": "authorize · capture", "both": true },
+        { "id": "e_server_db", "from": "server", "to": "db", "pts": [[740, 247], [830, 247]], "label": "SQL", "both": true },
+        { "id": "e_customer_merchant", "from": "customer", "to": "merchant", "pts": [[125, 94], [125, 160]], "label": "checkout" },
+        { "id": "e_customer_vault", "from": "customer", "to": "vault", "pts": [[210, 67], [550, 67]], "label": "card number → token" },
+        { "id": "e_server_vault", "from": "server", "to": "vault", "pts": [[645, 160], [645, 94]], "label": "detokenize" },
+        { "id": "e_server_idem", "from": "server", "to": "idem", "pts": [[720, 160], [720, 117], [830, 117]], "label": "dedupe", "both": true },
+
+        { "id": "e_customer_apigw", "from": "customer", "to": "apigw", "pts": [[210, 67], [290, 67]], "label": "card" },
+        { "id": "e_merchant_apigw", "from": "merchant", "to": "apigw", "pts": [[210, 222], [290, 222]], "label": "API key", "both": true },
+
+        { "id": "e_payments_db", "from": "payments", "to": "db", "pts": [[740, 247], [830, 247]], "label": "SQL", "both": true },
+        { "id": "e_payments_idem", "from": "payments", "to": "idem", "pts": [[720, 160], [720, 117], [830, 117]], "label": "dedupe", "both": true },
+        { "id": "e_payments_router", "from": "payments", "to": "router", "pts": [[740, 180], [1090, 180]], "label": "authorize · capture · refund", "both": true },
+        { "id": "e_router_acq", "from": "router", "to": "acq", "pts": [[1280, 180], [1360, 180]], "label": "ISO 8583", "both": true },
+        { "id": "e_router_vault", "from": "router", "to": "vault", "pts": [[1150, 153], [1150, 67], [740, 67]], "label": "fetch PAN for token" },
+        { "id": "e_payments_risk", "from": "payments", "to": "risk", "pts": [[645, 284], [645, 320]], "label": "score" },
+        { "id": "e_payments_paydb", "from": "payments", "to": "paydb", "pts": [[740, 247], [830, 247]], "label": "txn", "both": true },
+        { "id": "e_sweeper_paydb", "from": "sweeper", "to": "paydb", "pts": [[1090, 257], [1010, 257]], "label": "stuck?" },
+        { "id": "e_sweeper_router", "from": "sweeper", "to": "router", "pts": [[1185, 230], [1185, 207]], "label": "query status" },
+        { "id": "e_paydb_kafka", "from": "paydb", "to": "kafka", "pts": [[920, 284], [920, 320]], "label": "outbox" },
+        { "id": "e_kafka_webhooks", "from": "kafka", "to": "webhooks", "pts": [[830, 417], [740, 417]], "label": "events", "lp": [796, 410, "middle"] },
+        { "id": "e_webhooks_merchant", "from": "webhooks", "to": "merchant", "pts": [[550, 417], [125, 417], [125, 284]], "label": "POST /webhook (signed)" },
+        { "id": "e_kafka_ledger", "from": "kafka", "to": "ledger", "pts": [[1010, 347], [1090, 347]], "label": "entries" },
+        { "id": "e_acq_recon", "from": "acq", "to": "recon", "pts": [[1455, 207], [1455, 320]], "label": "settlement files", "async": true },
+        { "id": "e_recon_ledger", "from": "recon", "to": "ledger", "pts": [[1360, 340], [1280, 340]], "label": "match" },
+        { "id": "e_ledger_payouts", "from": "ledger", "to": "payouts", "pts": [[1280, 362], [1320, 362], [1320, 437], [1360, 437]], "label": "balance", "lp": [1326, 404, "start"] },
+        { "id": "e_payouts_bank", "from": "payouts", "to": "bank", "pts": [[1455, 464], [1455, 530]], "label": "ACH · SEPA" },
+        { "id": "e_kafka_warehouse", "from": "kafka", "to": "warehouse", "pts": [[1010, 487], [1090, 487]], "label": "all events", "async": true },
+        { "id": "e_warehouse_risk", "from": "warehouse", "to": "risk", "pts": [[1090, 500], [1050, 500], [1050, 550], [758, 550], [758, 347], [740, 347]], "label": "retrain daily", "lp": [910, 543, "middle"], "async": true },
+        { "id": "e_dashuser_dashapi", "from": "dashuser", "to": "dashapi", "pts": [[210, 487], [550, 487]], "label": "HTTPS", "both": true },
+        { "id": "e_dashapi_warehouse", "from": "dashapi", "to": "warehouse", "pts": [[645, 514], [645, 580], [1185, 580], [1185, 514]], "label": "reports · search" }
+      ],
+      "bus": { "hub": "apigw", "hubX": 470, "hubY": 145, "x": 510, "members": ["vault", "server", "payments"] }
+    }
+  },
+  "slides": [
+    {
+      "scene": "main",
+      "add": ["merchant", "server", "e_merchant_server"],
+      "title": "Start simple: a merchant and one API server",
+      "script": [
+        "Let's start with the simplest thing that could work: the **merchant's server** talks to **one API server** of ours over HTTPS, authenticated with a secret API key.",
+        "The API has two calls that matter. **Create** a payment: \"I want to collect $50 from this customer\". And **confirm** it: \"here's the card, go get the money\". The server returns the payment's current status. Everything else in the design hangs off this one object and the states it moves through."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["acq", "e_server_acq"],
+      "title": "The banks are an external system",
+      "script": [
+        "On the other side are the **acquirers and card networks**. I'm drawing them dashed because we don't design them; we integrate with them.",
+        "When a payment is confirmed, we send an **authorization request** to an acquiring bank, which routes it over Visa or Mastercard to the customer's **issuing bank**. The issuer checks the balance and fraud rules and says approve or decline. That round trip takes from half a second to a couple of seconds. Later, a **capture** tells the network to actually move the held funds, and the money settles to us a day or two later.",
+        "This is the slowest and least reliable thing in the whole system, and it's on the critical path of every payment. Keep that in mind; a lot of what follows exists to cope with it."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["db", "e_server_db"],
+      "title": "A database and a payment state machine",
+      "script": [
+        "The server can't keep payments in memory, so we add a **relational database**. PostgreSQL is a good fit: payments, refunds, customers and merchants reference each other, and we want **transactions** around state changes.",
+        "The key column is the payment's **status**, and I'd model it as an explicit **state machine**: *requires_confirmation*, *processing*, *requires_capture*, *succeeded*, *canceled*, *failed*. Every transition is a guarded update: \"move to *succeeded* **only if** the current state is *requires_capture*\". That conditional write is what stops two concurrent requests from capturing the same payment twice.",
+        "One more rule I'll keep for the whole design: **write before you call the bank**. We record \"about to authorize\" in the database first, then call the acquirer, then record the result. If we crash in between, at least we know we might have charged someone."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["customer", "e_customer_merchant"],
+      "title": "The customer and the checkout page",
+      "script": [
+        "Now the third party: the **customer**, in a browser or mobile app, on the merchant's checkout page.",
+        "The naive integration is the obvious one: the customer types their card number into the merchant's form, it posts to the merchant's server, and the merchant passes it to us. That works, but now the **card number flows through the merchant's servers**. Every merchant would need a full PCI-DSS audit, card numbers would end up in their logs, and every merchant breach would be a card breach. We can do much better."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["vault", "e_customer_vault", "e_server_vault"],
+      "title": "Tokenization: a card vault",
+      "script": [
+        "So the card number takes a different route. The checkout page embeds **Stripe.js**, our script, with card fields served from our domain. When the customer submits, the card number goes **directly from the browser to our Card Vault**, which stores it encrypted and hands back a **token**. The merchant's page passes only the token to the merchant's server, which confirms the payment with it.",
+        "The vault is the only place that holds raw card numbers, the **PAN**. It's a small, isolated service in its own network segment, with keys in hardware security modules, and it's the only part of the system in full **PCI scope**. When the API server needs to send a card to the bank, it **detokenizes** at the last moment.",
+        "This one decision shrinks the PCI blast radius from \"every merchant and all of Stripe\" down to one small, heavily audited box."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["idem", "e_server_idem"],
+      "title": "Idempotency keys",
+      "script": [
+        "Now the most important safety mechanism in the design. Imagine the merchant calls *confirm*, we charge the card, and the response is lost in a network blip. The merchant's code does what all good code does: **it retries**. Without protection, that's a double charge.",
+        "So every write carries an **Idempotency-Key** chosen by the client, usually a UUID per logical operation. The first time we see a key, we **record it, run the request, and save the response** against it. If the same key comes in again, we return the **saved response** without doing anything. If it comes in while the first request is still running, we return a conflict, and the client retries later.",
+        "Keys live in an **Idempotency Store**, scoped to the merchant and kept for about 24 hours. I'd keep it in the same database as the payment, so recording the key and changing the payment commit in one transaction. That way there's no gap where one happened without the other."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["apigw", "e_customer_apigw", "e_merchant_apigw"],
+      "remove": ["e_customer_vault", "e_merchant_server"],
+      "title": "An API gateway at the edge",
+      "script": [
+        "Both kinds of client now come in through an **API Gateway**. It terminates TLS, authenticates **API keys** (secret keys for servers, publishable keys for browsers that can only create tokens), and applies **rate limits** per merchant, so one merchant's runaway script can't hurt everyone else.",
+        "It also routes. Card data goes to the vault and API calls go to the API servers, and the gateway is the place to **load-shed**. On Black Friday, if we're overloaded, we'd much rather reject *list* and *search* requests than *confirm* requests, because a confirm is a sale. The gateway knows which is which and drops the non-critical traffic first."
+      ]
+    },
+    {
+      "scene": "main",
+      "remove": ["server"],
+      "add": ["payments", "e_payments_db", "e_payments_idem", "router", "e_payments_router", "e_router_acq", "e_router_vault"],
+      "title": "Split out a Processor Router",
+      "script": [
+        "Time to split the monolith along its most important seam. The **Payment Service** owns the payment state machine, idempotency, and the API semantics. The **Processor Router** owns everything about talking to banks.",
+        "Stripe doesn't use one bank. It connects to **many acquirers** in different countries, each with its own protocol (ISO 8583 messages or a proprietary API), quirks and error codes. The router has an **adapter per acquirer** that translates our canonical \"authorize $50 on this token\" into that acquirer's format, and maps its responses back to a small set of outcomes: approved, declined, or **unknown**.",
+        "It also **chooses** the acquirer: the one local to the card's country (higher approval rates, lower fees), with failover to another if the first is down. And it's the only service besides the vault that ever touches a raw PAN, which it fetches from the vault just before sending and never stores. That keeps the Payment Service out of PCI scope too."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["risk", "e_payments_risk"],
+      "title": "Fraud scoring before authorization",
+      "script": [
+        "Before a payment goes to the bank, the Payment Service asks the **Risk Engine** for a **fraud score**. It's an ML model over hundreds of features: the card, the device fingerprint from Stripe.js, the IP, the velocity of attempts on this card, and, crucially, what we've seen of this card **across every other merchant** on the network.",
+        "That network effect is a real advantage: a card that was used for fraud at one merchant an hour ago is suspicious at all of them. Based on the score and the merchant's rules, we **allow**, **block**, or **challenge** the payment with 3-D Secure, which bounces the customer to their bank to verify.",
+        "It's synchronous and on the critical path, so it gets a strict budget, around **50 milliseconds**. If it's slow or down, we **fail open** with a simple rule-based fallback rather than block every sale."
+      ]
+    },
+    {
+      "scene": "main",
+      "remove": ["db"],
+      "add": ["paydb", "e_payments_paydb"],
+      "title": "Shard the payments database by merchant",
+      "script": [
+        "At 6,000 payments a second at peak, each with several writes, plus idempotency keys and events, one Postgres primary runs out of headroom. So we **shard the payments database**.",
+        "The shard key is the **merchant**. Nearly every query is scoped to one merchant, either their API calls or their dashboard, and a payment's refunds, events and idempotency keys all live with it, so every state transition stays a **single-shard transaction**. No distributed transactions on the hot path.",
+        "The catch is **hot merchants**: one giant retailer on Black Friday can outgrow a shard. Those get dedicated shards, or are split by a sub-key such as payment ID, at the cost of losing cross-payment transactions for that merchant, which we rarely need. Each shard is a primary with **synchronous replicas** in other availability zones, so a committed payment survives losing a machine or a zone."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["sweeper", "e_sweeper_paydb", "e_sweeper_router"],
+      "title": "The unknown state and the Status Sweeper",
+      "script": [
+        "Now the hardest failure in payments. We send an authorization to an acquirer, and **the connection times out**. Did the bank approve it? We **don't know**. Retrying blindly could charge twice; marking it failed could mean the customer was charged and the merchant thinks they weren't.",
+        "So *unknown* is a **first-class state**. The payment stays in *processing*, and the API tells the merchant so. Every request to an acquirer carries **our own unique reference**, so the outcome can be looked up later.",
+        "The **Status Sweeper** periodically scans the database for payments stuck in *processing*. For each one it asks the acquirer, through the router, \"what happened to reference X?\", then moves the payment to the right final state, or **reverses** the authorization if we'd rather not keep it. It's the same idea as the idempotency key, applied to our side of the bank conversation: make the operation identifiable, so a retry can **look up the outcome** instead of repeating the action."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["kafka", "e_paydb_kafka"],
+      "title": "An event bus, fed by an outbox",
+      "script": [
+        "Many things need to react to a payment changing state: webhooks, the ledger, analytics, fraud features. We don't want the Payment Service calling each of them synchronously. So we publish **events** to an **Event Bus**, Kafka, partitioned by merchant so each merchant's events stay in order.",
+        "But publishing has a classic trap: if we commit the database change and then crash before publishing, the event is **lost**; if we publish first and the transaction rolls back, we've announced something that **didn't happen**.",
+        "The fix is the **transactional outbox**. In the **same transaction** that changes the payment, we insert a row into an *outbox* table. A relay, or change data capture on the database log, reads committed outbox rows and publishes them to Kafka. Every committed change produces an event, **at least once**, so every consumer downstream deduplicates by event ID."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["webhooks", "e_kafka_webhooks", "e_webhooks_merchant"],
+      "title": "Webhook delivery",
+      "script": [
+        "The **Webhook Service** consumes payment events and **POSTs** them to each merchant's registered endpoint. Three things matter.",
+        "**Retries with backoff**: merchant endpoints are often down or slow, so we retry for up to three days on an exponential schedule, and one merchant's dead endpoint must never slow anyone else's deliveries. Each merchant gets its own logical queue, with timeouts and concurrency limits per endpoint.",
+        "**Signatures**: every payload is signed with an HMAC using a per-endpoint secret, so merchants can verify it came from us and not an attacker. **At-least-once**: we may deliver the same event twice, so each carries an event ID and merchants are told to deduplicate. Ordering isn't guaranteed across retries, so we tell merchants to treat a webhook as a nudge and **fetch the payment's current state** from the API."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["ledger", "e_kafka_ledger"],
+      "title": "A double-entry ledger",
+      "script": [
+        "Now the money itself. The payment's status says *succeeded*, but how much does each merchant actually have? That's the **Ledger**, and it's built on accounting's oldest idea: **double-entry bookkeeping**.",
+        "Every movement of money is a **transaction of entries that sum to zero**. A $100 charge with a $3 fee might debit *funds receivable from the acquirer* $100, credit the *merchant's balance* $97, and credit *Stripe fee revenue* $3. A **refund** is a new transaction that moves money back; we **never update or delete** an entry. A merchant's balance is the sum of the entries on their account, cached and maintained incrementally.",
+        "The ledger consumes payment events and writes entries **idempotently**, keyed by event ID, so redelivery is harmless. Because it's append-only and always balances, it's **auditable**: any balance can be explained, entry by entry, years later. And if the entries ever don't sum to zero, we know immediately that something is wrong."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["recon", "e_acq_recon", "e_recon_ledger"],
+      "title": "Reconciliation against the banks",
+      "script": [
+        "The ledger records what **we believe** happened. But the truth about money is what the **banks** say happened. Every day, each acquirer sends a **settlement file**: every transaction they cleared, fees they charged, and chargebacks from customers who disputed a payment.",
+        "The **Reconciliation** service matches every line of those files against our ledger, by the reference we attached to each request. Most lines match exactly. The rest are breaks: a charge the bank settled that we think failed (perhaps an unknown state resolved wrongly), an amount that's off by a fee, a dispute we hadn't heard about. Each break becomes an **adjusting entry** in the ledger or a ticket for a human.",
+        "This is the safety net under the whole system. Idempotency and the outbox make errors rare; reconciliation makes sure the ones that slip through are **caught within a day**."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["payouts", "e_ledger_payouts"],
+      "title": "Payouts",
+      "script": [
+        "Once funds have settled from the acquirer, they become **available** in the merchant's balance, typically two days after the charge. The **Payout Service** runs on each merchant's schedule, usually daily: it reads the available balance from the ledger and creates a **payout**.",
+        "Creating the payout is itself a ledger transaction: debit the merchant's available balance, credit *funds in transit to bank*. Writing that entry first means the same money **can't be paid out twice**, even if the job runs twice; the payout ID is the idempotency key. Payouts also respect **reserves**: for a risky merchant, we hold back part of the balance to cover future refunds and chargebacks."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["bank", "e_payouts_bank"],
+      "title": "Moving money to the merchant's bank",
+      "script": [
+        "Finally the money leaves our system, to the **merchant's bank**, over the local bank rail: **ACH** in the US, **SEPA** in Europe, wires for large amounts. These rails are batch systems with cutoff times, and they're slow: a payout can take a day or more to land, and it can **fail** days later if the account details were wrong.",
+        "So a payout has its own state machine (*pending*, *in transit*, *paid*, *failed*), and a failed payout is a ledger transaction that **returns the funds** to the merchant's balance. Payouts are in the bank's settlement files too, so reconciliation checks them the same way."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["warehouse", "e_kafka_warehouse"],
+      "title": "The data warehouse",
+      "script": [
+        "Every event also lands in a **Data Warehouse**, asynchronously. That's where the analytical workloads go: merchant reports, revenue analytics, finance's month-end close, regulatory reporting.",
+        "Keeping this off the payments database matters. A merchant exporting a year of transactions, or an analyst running a giant join, should **never compete** with live authorizations for database capacity. The warehouse is a few minutes behind, which we agreed is fine for anything that isn't the payment itself."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["e_warehouse_risk"],
+      "title": "Closing the fraud loop",
+      "script": [
+        "The warehouse also closes the loop on fraud. The labels for fraud arrive **weeks late**: a customer notices a charge they didn't make and files a **dispute**, and that chargeback comes back through the settlement files.",
+        "Those labels, joined with the features we logged when we scored each payment, are the training data for the **Risk Engine**. We **retrain** the models regularly and ship them back to the online engine, usually in shadow mode first, to compare the new model's decisions against the current one before it starts blocking real payments. Keeping the features we serve online identical to the ones we train on is a real engineering problem; a feature store shared by both sides helps."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["dashuser", "dashapi", "e_dashuser_dashapi", "e_dashapi_warehouse"],
+      "title": "The merchant dashboard",
+      "script": [
+        "Merchants use the **Dashboard** to search payments, look at balances and payouts, issue refunds and download reports. Its backend, the **Dashboard API**, mostly reads from the warehouse and a search index built from the same events, so heavy searches and exports **never load the payments database**.",
+        "There's one subtlety: a merchant who just issued a refund expects to see it immediately, and the warehouse is minutes behind. So actions go through the same public API as everything else, and the dashboard reads **a single payment's current state** from the Payment Service. Searches and reports use the lagging data, and that's fine for them."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["regions"],
+      "title": "Five nines: multiple regions",
+      "script": [
+        "Last, availability. Five nines means surviving the loss of a **whole region**. The stack runs in **several regions**, with each merchant's data having one home region at a time and **synchronous replication** to a standby. If a region fails, we promote the standby and route that merchant's traffic there. That's a brief pause rather than a double charge. Within a region, everything stateless is horizontally scaled, and acquirer connections are spread across regions so losing one doesn't cut us off from a bank."
+      ]
+    },
+    {
+      "scene": "main",
+      "title": "The complete system",
+      "script": [
+        "So, end to end: the customer's card goes straight to the **vault** and becomes a token. The merchant confirms a payment through the **gateway**, with an **idempotency key**. The **Payment Service** scores it for **fraud**, records its intent in a **sharded database**, and the **router** authorizes it with the right **acquirer**, with the **sweeper** cleaning up any unknown outcomes. Every committed change goes through the **outbox** to **Kafka**, which feeds **webhooks**, the double-entry **ledger**, and the **warehouse**. The ledger drives **payouts**, and **reconciliation** checks it against the banks every day.",
+        "The big ideas: **make every step that touches money idempotent and identifiable**, so retries are safe. **Treat \"unknown\" as a real state** and resolve it, rather than guessing. And **never trust a single record of the money**: keep an append-only, double-entry ledger, and reconcile it against the banks' own records."
+      ]
+    }
+  ]
+}

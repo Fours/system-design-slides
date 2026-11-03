@@ -16,6 +16,11 @@
       "description": "Music streaming from a CDN, adaptive playback, royalties from play events, and a deep dive into the recommendation pipeline."
     },
     {
+      "slug": "stripe",
+      "title": "Design Stripe",
+      "description": "Card payments without double charges: tokenization into a PCI vault, idempotency keys, an explicit unknown state, a double-entry ledger, and reconciliation against the banks."
+    },
+    {
       "slug": "ticketmaster",
       "title": "Design Ticketmaster",
       "description": "Selling a small, contested seat inventory to a huge crowd: seat holds without double-booking, exactly-once checkout, and a virtual waiting room."
