@@ -256,19 +256,131 @@
       "add": ["client", "server", "e_client_server"],
       "title": "Start simple: one client, one server",
       "script": [
-        "Let's start with the most naive thing that could work: **client apps talking to one application server** over HTTPS. The API surface is small. *POST /tweets* creates a tweet. *GET /timeline/home* and *GET /users/:id/tweets* read the two kinds of timeline. *POST /follow*, *POST /like* and *GET /search* cover most of the rest.",
-        "The clients are the web app and the iOS and Android apps. One detail worth noting now: timelines are **paginated with a cursor**, not page numbers. The client says \"give me 20 tweets older than tweet ID X\". New tweets arrive at the top all the time, so offset pagination would show duplicates and skip items. Cursors stay stable, and they'll map nicely onto the data structures we build later.",
-        "Obviously one server won't handle 200K QPS, but I like to agree on the request/response shape first. Everything we add from here exists to fix a specific problem with this version."
+        "Let's start with the most naive thing that could work: **client apps talking to one application server** over HTTPS. The API surface is small."
       ]
+    },
+    {
+      "title": "The API",
+      "script": [
+        "*POST /tweets* creates a tweet. *GET /timeline/home* and *GET /users/:id/tweets* read the two kinds of timeline. *POST /follow*, *POST /like* and *GET /search* cover most of the rest."
+      ],
+      "table": {
+        "columns": ["Endpoint", "Purpose"],
+        "rows": [
+          ["POST /tweets", "Create a tweet (text, media IDs, reply-to)"],
+          ["GET /timeline/home", "Home timeline: Following or For You"],
+          ["GET /users/:id/tweets", "User timeline: one profile"],
+          ["POST /follow", "Follow or unfollow an account"],
+          ["POST /like", "Like a tweet"],
+          ["GET /search", "Search tweets"]
+        ]
+      }
+    },
+    {
+      "title": "Cursor pagination",
+      "script": [
+        "The clients are the web app and the iOS and Android apps. One detail worth noting now: timelines are **paginated with a cursor**, not page numbers. The client says \"give me 20 tweets older than tweet ID X\". New tweets arrive at the top all the time, so offset pagination would show duplicates and skip items. Cursors stay stable, and they'll map nicely onto the data structures we build later."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client App", "kind": "client" },
+          { "id": "server", "label": "App Server", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "client", "to": "server", "label": "GET /timeline/home?limit=20" },
+          { "from": "server", "to": "client", "label": "20 tweets · cursor = oldest ID (X)", "reply": true },
+          { "note": "new tweets land at the top meanwhile", "over": ["client", "server"] },
+          { "from": "client", "to": "server", "label": "GET /timeline/home?before=X" },
+          { "from": "server", "to": "client", "label": "next 20 older than X · no repeats", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Why start here",
+      "script": [
+        "Obviously one server won't handle 200K QPS, but I like to agree on the request/response shape first. Everything we add from here exists to fix a specific problem with this version."
+      ],
+      "bullets": {
+        "heading": "What this version gets wrong",
+        "items": [
+          { "text": "One box vs **~200K timeline reads/s** at peak", "detail": "no horizontal scale, no redundancy" },
+          { "text": "Nowhere durable to keep tweets yet" },
+          { "text": "Every later box fixes one specific problem" }
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["db", "e_server_db"],
-      "title": "Add a database, and see why the naive timeline breaks",
+      "title": "Add a database",
       "script": [
-        "The server needs somewhere durable to keep things, so let's add a **database** with three core tables. *Users* holds the profile. *Tweets* holds the tweet ID, author ID, text, media references, a reply-to or retweet-of pointer, and a creation time. *Follows* is just a (follower, followee) edge list.",
-        "With that schema the home timeline is one query: find everyone I follow, fetch their tweets, sort by time, and take the top 20. That's a join of *follows* with *tweets*, ordered by *created_at*. For a prototype with a thousand users it's fine.",
-        "At our scale it falls apart for two reasons. First, the **data doesn't fit on one machine**: tens of terabytes of tweets a year, plus indexes. Once we shard it, \"tweets by everyone I follow\" becomes a **scatter-gather** across many shards for every timeline load. Second, it's the **hot path**. 200K timeline loads per second, each touching hundreds of followees, each needing a sort, means tens of millions of row reads per second, all on the latency-critical path.",
+        "The server needs somewhere durable to keep things, so let's add a **database** with three core tables."
+      ]
+    },
+    {
+      "title": "The core tables",
+      "script": [
+        "*Users* holds the profile. *Tweets* holds the tweet ID, author ID, text, media references, a reply-to or retweet-of pointer, and a creation time. *Follows* is just a (follower, followee) edge list."
+      ],
+      "entities": {
+        "items": [
+          { "id": "users", "name": "Users", "kind": "data", "fields": ["user_id: int64  PK", "handle: text", "name · bio · avatar"] },
+          {
+            "id": "tweets",
+            "name": "Tweets",
+            "kind": "data",
+            "fields": ["tweet_id: int64  PK", "author_id: int64  FK", "text: ≤ 280 chars", "media_ids: [id]", "reply_to / retweet_of", "created_at: time"]
+          },
+          { "id": "follows", "name": "Follows", "kind": "data", "fields": ["follower_id: int64", "followee_id: int64", "created_at: time"] }
+        ],
+        "relations": [
+          { "from": "users", "to": "tweets", "label": "1 — * authors" },
+          { "from": "tweets", "to": "follows", "label": "author = followee" }
+        ]
+      }
+    },
+    {
+      "title": "The naive home timeline",
+      "script": [
+        "With that schema the home timeline is one query: find everyone I follow, fetch their tweets, sort by time, and take the top 20. That's a join of *follows* with *tweets*, ordered by *created_at*. For a prototype with a thousand users it's fine."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client App", "kind": "client" },
+          { "id": "server", "label": "App Server", "kind": "service" },
+          { "id": "db", "label": "Database", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "client", "to": "server", "label": "GET /timeline/home" },
+          { "from": "server", "to": "db", "label": "follows ⋈ tweets WHERE follower = me" },
+          { "note": "ORDER BY created_at DESC LIMIT 20", "over": ["db"] },
+          { "from": "db", "to": "server", "label": "20 newest tweets", "reply": true },
+          { "from": "server", "to": "client", "label": "timeline page", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Why the naive timeline breaks",
+      "script": [
+        "At our scale it falls apart for two reasons. First, the **data doesn't fit on one machine**: tens of terabytes of tweets a year, plus indexes. Once we shard it, \"tweets by everyone I follow\" becomes a **scatter-gather** across many shards for every timeline load. Second, it's the **hot path**. 200K timeline loads per second, each touching hundreds of followees, each needing a sort, means tens of millions of row reads per second, all on the latency-critical path."
+      ],
+      "bullets": {
+        "heading": "Why it breaks at our scale",
+        "items": [
+          { "text": "**Too big for one machine**", "detail": "tens of TB of tweets a year, plus indexes" },
+          { "text": "Sharded → **scatter-gather** on every load", "detail": "followees' tweets live on many shards" },
+          { "text": "**It's the hot path**", "detail": "200K loads/s × hundreds of followees × a sort" },
+          { "text": "≈ tens of millions of row reads per second", "detail": "all while a user is waiting" }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "focus": ["server", "db", "e_server_db"],
+      "title": "Split it up by access pattern",
+      "script": [
         "So I'll keep the logical data model but split the system up. Each piece of data gets its own service and store, sized for its own access pattern. Then I'll come back and fix the timeline properly."
       ]
     },
@@ -278,31 +390,190 @@
       "remove": ["server", "db"],
       "title": "An API gateway and the Tweet Service",
       "script": [
-        "First the monolith gets replaced by an **API gateway** in front of separate services. The gateway terminates TLS, authenticates the request, enforces **rate limits** (important for a public API that bots love to hammer), and routes each call to the right service. The services behind it are stateless and scale horizontally.",
-        "The first service is the **Tweet Service**, which owns creating and reading tweets. Its store is a **Tweet Store** sharded by **tweet ID**. Looking up a tweet by ID is the dominant access pattern, and it spreads the load evenly. Sharding by author would put a celebrity's whole history on one hot shard.",
-        "The IDs themselves matter. I'd use **Snowflake-style IDs**: 64-bit integers made of a millisecond timestamp, a machine ID, and a sequence number. Any server can generate them without coordination, and they're **roughly time-ordered**. That means sorting by ID is sorting by time, which gives us the timeline cursor from earlier for free.",
-        "For the store itself, a wide-column store like Cassandra or a sharded MySQL (which is what Twitter actually ran for years) both work. Tweets are immutable apart from deletes, so this data is easy to replicate and cache. Writes go to a quorum of replicas, so an acknowledged tweet is durable."
+        "First the monolith gets replaced by an **API gateway** in front of separate services. The gateway terminates TLS, authenticates the request, enforces **rate limits** (important for a public API that bots love to hammer), and routes each call to the right service. The services behind it are stateless and scale horizontally."
       ]
+    },
+    {
+      "title": "Sharding the Tweet Store",
+      "script": [
+        "The first service is the **Tweet Service**, which owns creating and reading tweets. Its store is a **Tweet Store** sharded by **tweet ID**. Looking up a tweet by ID is the dominant access pattern, and it spreads the load evenly. Sharding by author would put a celebrity's whole history on one hot shard."
+      ],
+      "table": {
+        "heading": "Shard key for the Tweet Store",
+        "columns": ["Shard key", "Lookup by tweet ID", "Load spread"],
+        "rows": [
+          ["**Tweet ID**", "One shard, direct", "Even across shards"],
+          ["Author ID", "Needs a lookup first", "A celebrity's history is one hot shard"]
+        ],
+        "highlight": 0
+      }
+    },
+    {
+      "title": "Snowflake IDs",
+      "script": [
+        "The IDs themselves matter. I'd use **Snowflake-style IDs**: 64-bit integers made of a millisecond timestamp, a machine ID, and a sequence number. Any server can generate them without coordination, and they're **roughly time-ordered**. That means sorting by ID is sorting by time, which gives us the timeline cursor from earlier for free."
+      ],
+      "entities": {
+        "items": [
+          {
+            "id": "snowflake",
+            "name": "Snowflake ID (64 bits)",
+            "kind": "service",
+            "fields": ["sign: 1 bit (always 0)", "timestamp: 41 bits  ms since epoch", "machine ID: 10 bits", "sequence: 12 bits  per ms"]
+          }
+        ]
+      }
+    },
+    {
+      "title": "Choosing the store",
+      "script": [
+        "For the store itself, a wide-column store like Cassandra or a sharded MySQL (which is what Twitter actually ran for years) both work. Tweets are immutable apart from deletes, so this data is easy to replicate and cache. Writes go to a quorum of replicas, so an acknowledged tweet is durable."
+      ],
+      "table": {
+        "heading": "Tweet Store options",
+        "columns": ["Option", "Why it fits"],
+        "rows": [
+          ["Wide-column (Cassandra)", "Built-in sharding, quorum writes, easy scale-out"],
+          ["Sharded MySQL", "What Twitter ran for years, mature tooling"],
+          ["Either way", "Immutable rows → easy to replicate and cache"]
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["graph", "graphdb", "e_graph_graphdb"],
       "title": "The social graph",
       "script": [
-        "Next is the **Graph Service**, which owns follow relationships. The data is simple: an edge from follower to followee. It has to answer two questions quickly, in opposite directions. **Who do I follow?** is needed to build my timeline. **Who follows X?** is needed to deliver X's tweets. So I'd store every edge **twice**, once keyed by follower and once keyed by followee, and shard each copy by its key. The write costs double, but both lookups become a single-partition range scan.",
-        "The follower list for a big account can have a hundred million entries, so it's stored as a paginated list that consumers stream through in chunks, never loaded in one call. Follower and following **counts** are kept as separate counters; counting a hundred million rows on every profile view would be absurd.",
-        "Twitter built a dedicated store for this called FlockDB. A wide-column store, or sharded MySQL with good indexes, works too, since we never need multi-hop graph traversals on the hot path. \"Who to follow\" suggestions would need those, but they run offline."
+        "Next is the **Graph Service**, which owns follow relationships. The data is simple: an edge from follower to followee."
       ]
+    },
+    {
+      "title": "Two questions, opposite directions",
+      "script": [
+        "It has to answer two questions quickly, in opposite directions. **Who do I follow?** is needed to build my timeline. **Who follows X?** is needed to deliver X's tweets."
+      ],
+      "bullets": {
+        "heading": "The graph answers two questions",
+        "items": [
+          { "text": "**Who do I follow?**", "detail": "follower → followees · builds my home timeline" },
+          { "text": "**Who follows X?**", "detail": "followee → followers · delivers X's tweets" }
+        ]
+      }
+    },
+    {
+      "title": "Store every edge twice",
+      "script": [
+        "So I'd store every edge **twice**, once keyed by follower and once keyed by followee, and shard each copy by its key. The write costs double, but both lookups become a single-partition range scan."
+      ],
+      "entities": {
+        "items": [
+          { "id": "following", "name": "following", "kind": "data", "fields": ["follower_id  PK · shard key", "followee_id  sort key", "created_at"] },
+          { "id": "followers", "name": "followers", "kind": "data", "fields": ["followee_id  PK · shard key", "follower_id  sort key", "created_at"] }
+        ],
+        "relations": [{ "from": "following", "to": "followers", "label": "same edge, mirrored" }]
+      }
+    },
+    {
+      "title": "Huge follower lists",
+      "script": [
+        "The follower list for a big account can have a hundred million entries, so it's stored as a paginated list that consumers stream through in chunks, never loaded in one call. Follower and following **counts** are kept as separate counters; counting a hundred million rows on every profile view would be absurd."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "consumer", "label": "Consumer", "kind": "service" },
+          { "id": "graph", "label": "Graph Service", "kind": "service" },
+          { "id": "graphdb", "label": "Social Graph", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "consumer", "to": "graph", "label": "followers(X, cursor=0, limit=5K)" },
+          { "from": "graph", "to": "graphdb", "label": "range scan on followee = X" },
+          { "from": "graph", "to": "consumer", "label": "5K IDs · next cursor", "reply": true },
+          { "from": "consumer", "to": "graph", "label": "followers(X, cursor=…) · repeat" },
+          { "from": "consumer", "to": "graph", "label": "count(X)" },
+          { "from": "graph", "to": "consumer", "label": "stored counter, no scan", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Which store for the graph?",
+      "script": [
+        "Twitter built a dedicated store for this called FlockDB. A wide-column store, or sharded MySQL with good indexes, works too, since we never need multi-hop graph traversals on the hot path. \"Who to follow\" suggestions would need those, but they run offline."
+      ],
+      "table": {
+        "heading": "Social graph store options",
+        "columns": ["Option", "Notes"],
+        "rows": [
+          ["FlockDB", "Twitter's own: adjacency lists over sharded MySQL"],
+          ["Wide-column / sharded MySQL", "Fine: hot path is one-hop range scans only"],
+          ["Graph database", "Multi-hop traversals: only for offline \"who to follow\""]
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["timeline", "e_tl_pull"],
       "title": "Timeline Service, version 1: fan-out on read",
       "script": [
-        "Now the **Timeline Service**, which serves the home and user timelines. The **user timeline** is easy: one author's tweets in ID order. A secondary index on (author, tweet ID) handles it.",
-        "For the **home timeline**, version one is the **pull model**, also called fan-out on read. When you open the app, the service gets the list of accounts you follow from the graph, queries each of their recent tweets, merges the lists, and returns the newest 20.",
-        "Its advantages are real. Writes are trivial: a tweet is stored once. Nothing is wasted on inactive users. A new follow or an unfollow takes effect immediately.",
-        "But look at the read cost. If you follow 300 accounts, that's 300 lookups spread across shards, then a merge, on **every** timeline load, at 200K loads per second. Tail latency also compounds: when you fan out to 300 shards, the request is as slow as the slowest of them. A p99 of 200 milliseconds isn't realistic this way. We're doing the expensive work at the worst moment, while a user is waiting, and repeating it for every refresh even when nothing has changed.",
+        "Now the **Timeline Service**, which serves the home and user timelines. The **user timeline** is easy: one author's tweets in ID order. A secondary index on (author, tweet ID) handles it."
+      ]
+    },
+    {
+      "title": "The pull model",
+      "script": [
+        "For the **home timeline**, version one is the **pull model**, also called fan-out on read. When you open the app, the service gets the list of accounts you follow from the graph, queries each of their recent tweets, merges the lists, and returns the newest 20."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client App", "kind": "client" },
+          { "id": "timeline", "label": "Timeline Service", "kind": "service" },
+          { "id": "graph", "label": "Graph Service", "kind": "service" },
+          { "id": "tweetdb", "label": "Tweet Store", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "client", "to": "timeline", "label": "GET /timeline/home" },
+          { "from": "timeline", "to": "graph", "label": "who do I follow?" },
+          { "from": "graph", "to": "timeline", "label": "~300 followee IDs", "reply": true },
+          { "from": "timeline", "to": "tweetdb", "label": "recent tweets × 300 authors" },
+          { "from": "tweetdb", "to": "timeline", "label": "300 sorted lists", "reply": true },
+          { "from": "timeline", "to": "timeline", "label": "merge · take newest 20" },
+          { "from": "timeline", "to": "client", "label": "timeline page", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "What pull gets right",
+      "script": ["Its advantages are real. Writes are trivial: a tweet is stored once. Nothing is wasted on inactive users. A new follow or an unfollow takes effect immediately."],
+      "bullets": {
+        "heading": "What fan-out on read gets right",
+        "items": [
+          { "text": "**Trivial writes**", "detail": "a tweet is stored once" },
+          { "text": "**No waste**", "detail": "inactive users cost nothing" },
+          { "text": "**Instant graph changes**", "detail": "follow / unfollow apply on the next load" }
+        ]
+      }
+    },
+    {
+      "title": "What pull costs",
+      "script": [
+        "But look at the read cost. If you follow 300 accounts, that's 300 lookups spread across shards, then a merge, on **every** timeline load, at 200K loads per second. Tail latency also compounds: when you fan out to 300 shards, the request is as slow as the slowest of them."
+      ],
+      "bullets": {
+        "heading": "The read cost of fan-out on read",
+        "items": [
+          { "text": "**300 lookups + a merge** per timeline load", "detail": "spread across many tweet shards" },
+          { "text": "× **200K loads per second**" },
+          { "text": "**Tail latency compounds**", "detail": "the request waits for the slowest of 300 shards" }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "focus": ["timeline", "tweetdb", "e_tl_pull"],
+      "title": "Expensive work at the worst moment",
+      "script": [
+        "A p99 of 200 milliseconds isn't realistic this way. We're doing the expensive work at the worst moment, while a user is waiting, and repeating it for every refresh even when nothing has changed.",
         "Reads outnumber writes about a hundred to one, so I'd rather move that work to write time. To do that safely we need a way to react to new tweets asynchronously."
       ]
     },
@@ -311,11 +582,66 @@
       "add": ["kafka", "e_tweet_kafka"],
       "title": "An event bus for everything that happens after a write",
       "script": [
-        "Here's an **event bus**, Kafka. When the Tweet Service has durably stored a tweet, it publishes a **TweetCreated** event and returns success to the client. Everything else that has to happen because of that tweet happens **asynchronously**, off the request path.",
-        "There turns out to be a lot of that work. The tweet has to reach followers' timelines, get indexed for search, count toward trends, trigger mention notifications, and become a training signal for ranking. If the Tweet Service did all of that inline, posting would be slow and fragile: one slow search cluster would make tweeting fail. With a log in the middle, each consumer reads at its own pace, retries on its own, and can be **replayed** after a bug fix. Adding a new consumer later doesn't touch the write path.",
-        "Kafka also absorbs **bursts**. When a goal is scored and tweet volume jumps tenfold, the log buffers it and consumers catch up a few seconds later instead of falling over. I'd partition the topic by **author ID** so each author's events stay in order.",
-        "One subtlety: the database write and the event publish must not diverge. If we store the tweet and then crash before publishing, followers never see it. The standard fix is a **transactional outbox**, or change data capture from the tweet store's log, so that an event is published exactly when the write commits."
+        "Here's an **event bus**, Kafka. When the Tweet Service has durably stored a tweet, it publishes a **TweetCreated** event and returns success to the client. Everything else that has to happen because of that tweet happens **asynchronously**, off the request path."
       ]
+    },
+    {
+      "title": "Who consumes TweetCreated",
+      "script": [
+        "There turns out to be a lot of that work. The tweet has to reach followers' timelines, get indexed for search, count toward trends, trigger mention notifications, and become a training signal for ranking. If the Tweet Service did all of that inline, posting would be slow and fragile: one slow search cluster would make tweeting fail. With a log in the middle, each consumer reads at its own pace, retries on its own, and can be **replayed** after a bug fix. Adding a new consumer later doesn't touch the write path."
+      ],
+      "bullets": {
+        "heading": "Work triggered by one tweet",
+        "items": [
+          "Reach followers' home timelines",
+          "Get indexed for search",
+          "Count toward trends",
+          "Trigger mention notifications",
+          "Become a training signal for ranking",
+          { "text": "**Each consumer**: own pace, own retries, replayable", "detail": "inline, one slow search cluster would fail every post" }
+        ]
+      }
+    },
+    {
+      "title": "The TweetCreated event",
+      "script": [
+        "Kafka also absorbs **bursts**. When a goal is scored and tweet volume jumps tenfold, the log buffers it and consumers catch up a few seconds later instead of falling over. I'd partition the topic by **author ID** so each author's events stay in order."
+      ],
+      "entities": {
+        "items": [
+          {
+            "id": "evt",
+            "name": "TweetCreated",
+            "kind": "stream",
+            "fields": ["author_id: int64  partition key", "tweet_id: Snowflake", "text · hashtags · mentions", "media_ids: [id]", "reply_to / retweet_of", "created_at"]
+          },
+          { "id": "topic", "name": "topic: tweets", "kind": "stream", "fields": ["partitioned by author_id", "per-author ordering", "buffers 10× bursts", "retained for replay"] }
+        ],
+        "relations": [{ "from": "evt", "to": "topic", "label": "appended to" }]
+      }
+    },
+    {
+      "title": "Transactional outbox",
+      "script": [
+        "One subtlety: the database write and the event publish must not diverge. If we store the tweet and then crash before publishing, followers never see it. The standard fix is a **transactional outbox**, or change data capture from the tweet store's log, so that an event is published exactly when the write commits."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "tweet", "label": "Tweet Service", "kind": "service" },
+          { "id": "tweetdb", "label": "Tweet Store", "kind": "data" },
+          { "id": "relay", "label": "Outbox Relay / CDC", "kind": "service" },
+          { "id": "kafka", "label": "Event Bus", "kind": "stream" }
+        ],
+        "steps": [
+          { "from": "tweet", "to": "tweetdb", "label": "one txn: insert tweet + outbox row" },
+          { "from": "tweetdb", "to": "tweet", "label": "committed", "reply": true },
+          { "note": "a crash here loses nothing: the outbox row is durable", "over": ["tweet", "tweetdb"] },
+          { "from": "relay", "to": "tweetdb", "label": "read outbox / commit log" },
+          { "from": "relay", "to": "kafka", "label": "publish TweetCreated" },
+          { "from": "relay", "to": "tweetdb", "label": "mark outbox row sent" }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
@@ -323,43 +649,250 @@
       "remove": ["e_tl_pull"],
       "title": "Timeline Service, version 2: fan-out on write",
       "script": [
-        "This is the heart of the design: **fan-out on write**, the push model. **Fan-out workers** consume TweetCreated, stream the author's follower list from the social graph, and **insert the tweet ID into each follower's home timeline**.",
-        "Those timelines live in a **Timeline Cache**: a Redis cluster where each user has a list of the most recent ~800 tweet IDs, sharded by user ID. Each entry is just the 8-byte ID plus a little metadata, not the tweet, so it's cheap. When a list grows past 800 entries the oldest fall off. Few people scroll back further than that, and if they do we fall back to the slow pull path.",
-        "Reading a home timeline is now **one lookup**: fetch a page of IDs from my list, then **hydrate** them, a batch multi-get of the tweet bodies from the tweet store, plus author names and avatars. Hydration is a fixed-size batch of key lookups, which is easy to cache and fast. We're within budget.",
-        "The cost moved to writes: about a million list inserts per second on average, but they're asynchronous, simple, and spread across thousands of Redis shards. Two optimizations help a lot. First, **only fan out to active users**. Someone who hasn't logged in for a month has no cached timeline; we rebuild it with the pull path when they return. Second, the cache isn't the source of truth: if we lose a Redis node, those timelines get rebuilt from the tweet store and graph.",
+        "This is the heart of the design: **fan-out on write**, the push model. **Fan-out workers** consume TweetCreated, stream the author's follower list from the social graph, and **insert the tweet ID into each follower's home timeline**."
+      ]
+    },
+    {
+      "title": "The Timeline Cache",
+      "script": [
+        "Those timelines live in a **Timeline Cache**: a Redis cluster where each user has a list of the most recent ~800 tweet IDs, sharded by user ID. Each entry is just the 8-byte ID plus a little metadata, not the tweet, so it's cheap. When a list grows past 800 entries the oldest fall off. Few people scroll back further than that, and if they do we fall back to the slow pull path."
+      ],
+      "entities": {
+        "items": [
+          {
+            "id": "list",
+            "name": "home_timeline:{user_id}",
+            "kind": "data",
+            "fields": ["Redis list, sharded by user_id", "newest first, capped at ~800", "oldest entries fall off"]
+          },
+          { "id": "entry", "name": "entry", "kind": "data", "fields": ["tweet_id: 8 bytes", "author_id", "flags: retweet · reply"] }
+        ],
+        "relations": [{ "from": "list", "to": "entry", "label": "1 — ≤ 800" }]
+      }
+    },
+    {
+      "title": "Reading a pushed timeline",
+      "script": [
+        "Reading a home timeline is now **one lookup**: fetch a page of IDs from my list, then **hydrate** them, a batch multi-get of the tweet bodies from the tweet store, plus author names and avatars. Hydration is a fixed-size batch of key lookups, which is easy to cache and fast. We're within budget."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client App", "kind": "client" },
+          { "id": "timeline", "label": "Timeline Service", "kind": "service" },
+          { "id": "tlcache", "label": "Timeline Cache", "kind": "data" },
+          { "id": "tweetdb", "label": "Tweet Store", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "client", "to": "timeline", "label": "GET /timeline/home" },
+          { "from": "timeline", "to": "tlcache", "label": "page of IDs from my list" },
+          { "from": "tlcache", "to": "timeline", "label": "20 tweet IDs", "reply": true },
+          { "from": "timeline", "to": "tweetdb", "label": "hydrate: multi-get 20 tweets + authors" },
+          { "from": "tweetdb", "to": "timeline", "label": "bodies · names · avatars", "reply": true },
+          { "from": "timeline", "to": "client", "label": "timeline page, within budget", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Paying at write time",
+      "script": [
+        "The cost moved to writes: about a million list inserts per second on average, but they're asynchronous, simple, and spread across thousands of Redis shards. Two optimizations help a lot. First, **only fan out to active users**. Someone who hasn't logged in for a month has no cached timeline; we rebuild it with the pull path when they return. Second, the cache isn't the source of truth: if we lose a Redis node, those timelines get rebuilt from the tweet store and graph."
+      ],
+      "bullets": {
+        "heading": "The cost moved to writes",
+        "items": [
+          { "text": "**~1M list inserts / second**", "detail": "async, simple, spread over thousands of Redis shards" },
+          { "text": "**Only fan out to active users**", "detail": "a returning user's timeline is rebuilt by pull" },
+          { "text": "**The cache isn't the source of truth**", "detail": "a lost Redis node is rebuilt from tweets + graph" }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "focus": ["kafka", "fanout", "graphdb", "tlcache", "e_kafka_fanout", "e_graphdb_fanout", "e_fanout_tlcache"],
+      "title": "Fan-out lag",
+      "script": [
         "The latency target from the non-functional requirements, a tweet reaching followers within about five seconds, is now a **fan-out lag** we can monitor. And for your own tweets, the client inserts them locally, which gives read-your-own-writes immediately."
       ]
     },
     {
       "scene": "main",
       "add": ["cache", "e_tl_celeb"],
-      "title": "The celebrity problem and the hybrid timeline",
+      "title": "The celebrity problem",
       "script": [
-        "Fan-out on write breaks on exactly the accounts people care about most. When an account with **100 million followers** tweets, the push model means 100 million Redis inserts. Even at a million a second, that's minutes of work for one tweet, it delays everyone else's tweets in the queue, and it happens again on the next tweet. Those accounts also tend to tweet in bursts.",
-        "So we use a **hybrid**. Accounts above a follower threshold, say a few hundred thousand, are flagged as **celebrities**, and their tweets are **not fanned out**. When you load your timeline, the service reads your pushed list from the timeline cache, then **pulls** the recent tweets of the few celebrities you follow and merges the two by ID. Since Snowflake IDs are time-ordered, that's a cheap merge of sorted lists.",
-        "Why is this pull cheap when version one wasn't? Because you follow at most a handful of celebrities, not hundreds of accounts, and their recent tweets are the **hottest objects in the whole system**, read by millions of timelines. That's what this **cache tier** is for. It sits in front of the tweet, user and graph stores and keeps hot tweets, each celebrity's recent tweet IDs, and profile data in memory. The tier also protects the stores from the thundering herd when a famous tweet goes viral. Hot keys get replicated across several cache nodes, so no single node takes all the traffic.",
-        "The threshold is a tunable trade-off: lower means less fan-out work but more merging at read time. The trick is the same as before: **do expensive work where it's cheapest**. For normal users that's at write time; for celebrities it's at read time."
+        "Fan-out on write breaks on exactly the accounts people care about most. When an account with **100 million followers** tweets, the push model means 100 million Redis inserts. Even at a million a second, that's minutes of work for one tweet, it delays everyone else's tweets in the queue, and it happens again on the next tweet. Those accounts also tend to tweet in bursts."
       ]
+    },
+    {
+      "title": "The hybrid timeline",
+      "script": [
+        "So we use a **hybrid**. Accounts above a follower threshold, say a few hundred thousand, are flagged as **celebrities**, and their tweets are **not fanned out**. When you load your timeline, the service reads your pushed list from the timeline cache, then **pulls** the recent tweets of the few celebrities you follow and merges the two by ID. Since Snowflake IDs are time-ordered, that's a cheap merge of sorted lists."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client App", "kind": "client" },
+          { "id": "timeline", "label": "Timeline Service", "kind": "service" },
+          { "id": "tlcache", "label": "Timeline Cache", "kind": "data" },
+          { "id": "cache", "label": "Cache Tier", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "client", "to": "timeline", "label": "GET /timeline/home" },
+          { "from": "timeline", "to": "tlcache", "label": "my pushed IDs" },
+          { "from": "tlcache", "to": "timeline", "label": "IDs from normal accounts", "reply": true },
+          { "from": "timeline", "to": "cache", "label": "recent tweets of my ~5 celebrities" },
+          { "from": "cache", "to": "timeline", "label": "celebrity tweet IDs", "reply": true },
+          { "from": "timeline", "to": "timeline", "label": "merge sorted lists by ID" },
+          { "from": "timeline", "to": "client", "label": "timeline page", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "scene": "main",
+      "focus": ["timeline", "cache", "e_tl_celeb"],
+      "title": "Why this pull is cheap",
+      "script": [
+        "Why is this pull cheap when version one wasn't? Because you follow at most a handful of celebrities, not hundreds of accounts, and their recent tweets are the **hottest objects in the whole system**, read by millions of timelines. That's what this **cache tier** is for."
+      ]
+    },
+    {
+      "title": "The cache tier",
+      "script": [
+        "It sits in front of the tweet, user and graph stores and keeps hot tweets, each celebrity's recent tweet IDs, and profile data in memory. The tier also protects the stores from the thundering herd when a famous tweet goes viral. Hot keys get replicated across several cache nodes, so no single node takes all the traffic."
+      ],
+      "bullets": {
+        "heading": "What the cache tier does",
+        "items": [
+          { "text": "Hot tweets · celebrities' recent IDs · profiles", "detail": "in memory, in front of the tweet, user and graph stores" },
+          { "text": "**Absorbs the thundering herd**", "detail": "a viral tweet is served from memory, not the store" },
+          { "text": "**Replicates hot keys** across several nodes", "detail": "no single node takes all the traffic" }
+        ]
+      }
+    },
+    {
+      "title": "Choosing the threshold",
+      "script": [
+        "The threshold is a tunable trade-off: lower means less fan-out work but more merging at read time. The trick is the same as before: **do expensive work where it's cheapest**. For normal users that's at write time; for celebrities it's at read time."
+      ],
+      "table": {
+        "heading": "Do the expensive work where it's cheapest",
+        "columns": ["Account", "Delivery", "Where the work happens"],
+        "rows": [
+          ["Normal (below threshold)", "**Push**: fan out on write", "Write time, async"],
+          ["Celebrity (above threshold)", "**Pull**: merge at read", "Read time, from the cache tier"],
+          ["Lower threshold", "Less fan-out work", "More merging on every read"]
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["media", "blob", "cdn", "e_media_blob", "e_cdn_client", "e_cdn_blob"],
       "title": "Media: blob storage and a CDN",
+      "script": ["Tweets are small, but media isn't: roughly **50 TB a day**. Those bytes should never flow through the tweet path."]
+    },
+    {
+      "title": "Uploading media",
       "script": [
-        "Tweets are small, but media isn't: roughly **50 TB a day**. Those bytes should never flow through the tweet path. The **Media Service** handles uploads separately. The client asks it for an upload slot, uploads the file directly to the **blob store** (S3 or similar) with a signed URL, in resumable chunks for video, and gets back a **media ID**. The tweet itself only carries that ID.",
-        "After upload the Media Service kicks off processing. Images get resized into a few variants and stripped of metadata such as GPS. Video gets transcoded into an adaptive-bitrate ladder so phones on bad connections still play smoothly. A tweet whose media is still processing can show a placeholder.",
-        "Delivery goes through a **CDN**. Media is immutable once processed, so it caches forever under a content-addressed URL. A viral image gets served from edge nodes near users, and the CDN pulls from the blob store only on a cache miss. At this volume, the CDN hit ratio is basically the media bill.",
-        "Blob storage is cheap and durable, eleven nines with cross-region replication. Older, rarely viewed media can move to colder storage tiers automatically."
+        "The **Media Service** handles uploads separately. The client asks it for an upload slot, uploads the file directly to the **blob store** (S3 or similar) with a signed URL, in resumable chunks for video, and gets back a **media ID**. The tweet itself only carries that ID."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client App", "kind": "client" },
+          { "id": "media", "label": "Media Service", "kind": "service" },
+          { "id": "blob", "label": "Media Blob Store", "kind": "data" },
+          { "id": "tweet", "label": "Tweet Service", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "client", "to": "media", "label": "request upload slot" },
+          { "from": "media", "to": "client", "label": "signed URL · media ID", "reply": true },
+          { "from": "client", "to": "blob", "label": "PUT bytes (resumable chunks)" },
+          { "from": "blob", "to": "client", "label": "stored", "reply": true },
+          { "from": "client", "to": "tweet", "label": "POST /tweets {text, media_id}" }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Processing media",
+      "script": [
+        "After upload the Media Service kicks off processing. Images get resized into a few variants and stripped of metadata such as GPS. Video gets transcoded into an adaptive-bitrate ladder so phones on bad connections still play smoothly. A tweet whose media is still processing can show a placeholder."
+      ],
+      "bullets": {
+        "heading": "After upload",
+        "items": [
+          { "text": "**Images**: resized variants", "detail": "metadata such as GPS stripped" },
+          { "text": "**Video**: adaptive-bitrate ladder", "detail": "plays smoothly on bad connections" },
+          { "text": "Placeholder while processing" }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "focus": ["cdn", "client", "blob", "e_cdn_client", "e_cdn_blob"],
+      "title": "Delivery through the CDN",
+      "script": [
+        "Delivery goes through a **CDN**. Media is immutable once processed, so it caches forever under a content-addressed URL. A viral image gets served from edge nodes near users, and the CDN pulls from the blob store only on a cache miss. At this volume, the CDN hit ratio is basically the media bill."
       ]
+    },
+    {
+      "title": "Storage tiers",
+      "script": ["Blob storage is cheap and durable, eleven nines with cross-region replication. Older, rarely viewed media can move to colder storage tiers automatically."],
+      "table": {
+        "heading": "Media Blob Store",
+        "columns": ["Tier", "Holds", "Trade-off"],
+        "rows": [
+          ["Standard", "Recent and popular media", "Fast reads, higher cost"],
+          ["Cold", "Older, rarely viewed media", "Cheap, slower first read"],
+          ["Both", "Eleven nines, cross-region replicas", "Lifecycle rules move data automatically"]
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["engage", "counters", "e_engage_counters", "e_engage_kafka"],
-      "title": "Engagement: likes, retweets, replies and counters",
+      "title": "Engagement: likes, retweets and replies",
       "script": [
-        "The **Engagement Service** handles likes, retweets and replies. Each one is two things: a **relationship** (user U liked tweet T, needed for \"you liked this\" and for preventing double-likes) and a **counter** shown on the tweet.",
-        "Counters are where naive designs fall over. A viral tweet can take tens of thousands of likes a second, and a single row being incremented is a lock-contention hotspot. So the **Counter Store** uses **sharded counters**: each tweet's count is split across N sub-counters, increments go to a random one, and reads sum them, usually from cache. We can also batch increments in memory for a second before flushing. Being off by a few likes for a moment is fine; we said counts are eventually consistent.",
-        "A **retweet** is stored as a tiny tweet that points at the original, so it flows through the same TweetCreated and fan-out machinery. A **reply** is a tweet with a reply-to pointer, which also gives us conversation threads. Follows from the Graph Service publish events onto the same bus.",
+        "The **Engagement Service** handles likes, retweets and replies. Each one is two things: a **relationship** (user U liked tweet T, needed for \"you liked this\" and for preventing double-likes) and a **counter** shown on the tweet."
+      ]
+    },
+    {
+      "title": "Sharded counters",
+      "script": [
+        "Counters are where naive designs fall over. A viral tweet can take tens of thousands of likes a second, and a single row being incremented is a lock-contention hotspot. So the **Counter Store** uses **sharded counters**: each tweet's count is split across N sub-counters, increments go to a random one, and reads sum them, usually from cache. We can also batch increments in memory for a second before flushing. Being off by a few likes for a moment is fine; we said counts are eventually consistent."
+      ],
+      "table": {
+        "heading": "Counting likes on a viral tweet",
+        "columns": ["Approach", "Writes", "Reads"],
+        "rows": [
+          ["One row", "Lock-contention hotspot", "One read"],
+          ["**N sub-counters**", "Random sub-counter, no contention", "Sum of N, usually cached"],
+          ["+ batch in memory", "Flush once a second", "A few likes behind, briefly"]
+        ],
+        "highlight": 1
+      }
+    },
+    {
+      "title": "Retweets and replies are tweets",
+      "script": [
+        "A **retweet** is stored as a tiny tweet that points at the original, so it flows through the same TweetCreated and fan-out machinery. A **reply** is a tweet with a reply-to pointer, which also gives us conversation threads. Follows from the Graph Service publish events onto the same bus."
+      ],
+      "entities": {
+        "items": [
+          { "id": "rt", "name": "Tweet (retweet)", "kind": "data", "fields": ["tweet_id", "author_id", "retweet_of: tweet_id"] },
+          { "id": "orig", "name": "Tweet (original)", "kind": "data", "fields": ["tweet_id", "author_id", "text · media_ids"] },
+          { "id": "reply", "name": "Tweet (reply)", "kind": "data", "fields": ["tweet_id", "author_id", "text", "reply_to: tweet_id"] }
+        ],
+        "relations": [
+          { "from": "rt", "to": "orig", "label": "retweet_of" },
+          { "from": "reply", "to": "orig", "label": "reply_to · thread" }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "focus": ["engage", "kafka", "e_engage_kafka"],
+      "title": "Engagement events",
+      "script": [
         "Every engagement is also published to the bus as an event. Those events turn out to be some of the most valuable data in the system: they drive notifications, and they're the main training signal for ranking."
       ]
     },
@@ -368,19 +901,96 @@
       "add": ["search", "searchidx", "indexer", "e_search_idx", "e_kafka_indexer", "e_indexer_idx"],
       "title": "Real-time search",
       "script": [
-        "Search on Twitter is unusual because **recency dominates**. People search for what's happening right now, and a tweet from ten seconds ago is often the best result. So the index has to be updated in near real time, not rebuilt nightly.",
-        "A **Search Indexer** consumes TweetCreated from the bus, tokenizes the text, extracts hashtags, mentions and language, and appends to an **inverted index**: for each term, the list of tweet IDs containing it. Since tweet IDs are time-ordered, posting lists are naturally sorted newest-first.",
-        "The index is **partitioned by time**. The newest slice, the last few hours, is small, held fully in memory, and takes all the writes. Older slices are immutable and optimized for reads. Twitter's Earlybird worked like this; with Elasticsearch you'd use time-based indices. Each time slice is also sharded by tweet ID so a query can run across shards in parallel.",
-        "The **Search Service** runs the query against the recent slices first and goes further back only if it needs more results. It then ranks by a mix of recency, engagement and the searcher's social graph, and hydrates the winners just like the timeline does. A new tweet is typically searchable within a few seconds of posting."
+        "Search on Twitter is unusual because **recency dominates**. People search for what's happening right now, and a tweet from ten seconds ago is often the best result. So the index has to be updated in near real time, not rebuilt nightly."
       ]
+    },
+    {
+      "title": "Indexing a tweet",
+      "script": [
+        "A **Search Indexer** consumes TweetCreated from the bus, tokenizes the text, extracts hashtags, mentions and language, and appends to an **inverted index**: for each term, the list of tweet IDs containing it. Since tweet IDs are time-ordered, posting lists are naturally sorted newest-first."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "kafka", "label": "Event Bus", "kind": "stream" },
+          { "id": "indexer", "label": "Search Indexer", "kind": "service" },
+          { "id": "idx", "label": "Search Index", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "kafka", "to": "indexer", "label": "TweetCreated" },
+          { "from": "indexer", "to": "indexer", "label": "tokenize · hashtags · mentions · lang" },
+          { "from": "indexer", "to": "idx", "label": "append tweet ID to each term's list" },
+          { "note": "posting lists are sorted newest-first by ID", "over": ["idx"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "A time-partitioned index",
+      "script": [
+        "The index is **partitioned by time**. The newest slice, the last few hours, is small, held fully in memory, and takes all the writes. Older slices are immutable and optimized for reads. Twitter's Earlybird worked like this; with Elasticsearch you'd use time-based indices. Each time slice is also sharded by tweet ID so a query can run across shards in parallel."
+      ],
+      "table": {
+        "heading": "Search Index: partitioned by time",
+        "columns": ["Slice", "Size", "Writes", "Layout"],
+        "rows": [
+          ["Last few hours", "Small, in memory", "All new writes", "Sharded by tweet ID"],
+          ["Older slices", "Large", "None (immutable)", "Read-optimized, sharded"]
+        ],
+        "highlight": 0
+      }
+    },
+    {
+      "title": "Running a search",
+      "script": [
+        "The **Search Service** runs the query against the recent slices first and goes further back only if it needs more results. It then ranks by a mix of recency, engagement and the searcher's social graph, and hydrates the winners just like the timeline does. A new tweet is typically searchable within a few seconds of posting."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client App", "kind": "client" },
+          { "id": "search", "label": "Search Service", "kind": "service" },
+          { "id": "idx", "label": "Search Index", "kind": "data" },
+          { "id": "tweetdb", "label": "Tweet Store", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "client", "to": "search", "label": "GET /search?q=…" },
+          { "from": "search", "to": "idx", "label": "query recent slices" },
+          { "from": "search", "to": "idx", "label": "older slices, only if needed" },
+          { "from": "search", "to": "search", "label": "rank: recency · engagement · graph" },
+          { "from": "search", "to": "tweetdb", "label": "hydrate winners" },
+          { "from": "search", "to": "client", "label": "results", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
       "add": ["trends", "trendstore", "trendproc", "e_trends_store", "e_kafka_trend", "e_trend_store"],
       "title": "Trending topics",
       "script": [
-        "Trends are a **stream-processing** problem. **Trend Detection** consumes the tweet stream, extracts hashtags and key phrases, and keeps **sliding-window counts** per term per region, for example over the last 5 minutes, the last hour, and a longer baseline.",
-        "The key insight is that a trend isn't the *most frequent* term; that would just be \"good morning\" forever. A trend is a term whose current rate is **far above its baseline**. So the score compares the short window to the long window, a measure of velocity or acceleration. We can't keep exact counts for every possible phrase in every region, so we use approximate structures: count-min sketches for frequencies and a heap for the top candidates.",
+        "Trends are a **stream-processing** problem. **Trend Detection** consumes the tweet stream, extracts hashtags and key phrases, and keeps **sliding-window counts** per term per region, for example over the last 5 minutes, the last hour, and a longer baseline."
+      ]
+    },
+    {
+      "title": "Frequent is not trending",
+      "script": [
+        "The key insight is that a trend isn't the *most frequent* term; that would just be \"good morning\" forever. A trend is a term whose current rate is **far above its baseline**. So the score compares the short window to the long window, a measure of velocity or acceleration. We can't keep exact counts for every possible phrase in every region, so we use approximate structures: count-min sketches for frequencies and a heap for the top candidates."
+      ],
+      "table": {
+        "heading": "Trend score = short window ÷ baseline",
+        "columns": ["Term", "Last 5 min", "Baseline", "Trending?"],
+        "rows": [
+          ["\"good morning\"", "Very high", "Very high", "No: ratio ≈ 1"],
+          ["#WorldCupFinal", "High", "Low", "**Yes: ratio ≫ 1**"],
+          ["Every term, every region", "Count-min sketch", "Count-min sketch", "Heap keeps the top candidates"]
+        ],
+        "highlight": 1
+      }
+    },
+    {
+      "scene": "main",
+      "focus": ["trendproc", "trendstore", "trends", "e_trend_store", "e_trends_store"],
+      "title": "Serving trends",
+      "script": [
         "The output is small: a **top-K list per region**, refreshed every minute or so and written to the **Trends Store**. The **Trends Service** just reads that list, so serving it is a trivially cacheable key lookup, even though computing it is the heavy part.",
         "In a real deployment there's also a filtering layer for spam and coordinated manipulation before anything is shown. That belongs to trust and safety, which we scoped out, but I'd call it out as a hook."
       ]
@@ -390,8 +1000,32 @@
       "add": ["notif", "notifdb", "notifw", "push", "e_notif_notifdb", "e_kafka_notifw", "e_notifw_notifdb", "e_notifw_push"],
       "title": "Notifications",
       "script": [
-        "**Notification Workers** consume from the same bus: likes, retweets, replies, follows, and mentions parsed out of new tweets. For each event they work out **who should be told** and whether they want to be, based on their settings, muted words, blocks, and whether the actor is someone they follow.",
-        "The big problem here is **noise**. A celebrity's tweet can get 50,000 likes in a minute, and nobody wants 50,000 notifications. So the workers **aggregate**: \"A, B and 4,998 others liked your tweet\" is one notification, updated in place, and pushes are rate-limited per user. Events can be redelivered, so writes are keyed by event ID to make them **idempotent**.",
+        "**Notification Workers** consume from the same bus: likes, retweets, replies, follows, and mentions parsed out of new tweets. For each event they work out **who should be told** and whether they want to be, based on their settings, muted words, blocks, and whether the actor is someone they follow."
+      ]
+    },
+    {
+      "title": "Aggregating the noise",
+      "script": [
+        "The big problem here is **noise**. A celebrity's tweet can get 50,000 likes in a minute, and nobody wants 50,000 notifications. So the workers **aggregate**: \"A, B and 4,998 others liked your tweet\" is one notification, updated in place, and pushes are rate-limited per user. Events can be redelivered, so writes are keyed by event ID to make them **idempotent**."
+      ],
+      "entities": {
+        "items": [
+          { "id": "evt", "name": "LikeEvent", "kind": "stream", "fields": ["event_id  dedupe key", "actor_id", "tweet_id"] },
+          {
+            "id": "notif",
+            "name": "Notification",
+            "kind": "data",
+            "fields": ["user_id + tweet_id + type  key", "actors: [A, B, …]", "count: 5,000", "updated_at", "applied event IDs"]
+          }
+        ],
+        "relations": [{ "from": "evt", "to": "notif", "label": "* — 1" }]
+      }
+    },
+    {
+      "scene": "main",
+      "focus": ["notifw", "notifdb", "notif", "push", "e_notifw_notifdb", "e_notif_notifdb", "e_notifw_push"],
+      "title": "Inbox and push",
+      "script": [
         "There are two outputs. The **Notification Store** is a per-user inbox, newest first, read by the **Notification Service** when you open the tab. Mobile push goes through Apple's and Google's push services, APNs and FCM, drawn dashed because they're third parties we don't design.",
         "Because this all runs off the bus, a slow push provider or a burst of activity delays notifications by a few seconds but never affects posting or timeline reads."
       ]
@@ -399,25 +1033,124 @@
     {
       "scene": "main",
       "add": ["ranker", "mlpipe", "e_tl_ranker", "e_kafka_ml", "e_ml_ranker"],
-      "title": "The For You timeline: candidates and ranking",
+      "title": "The For You timeline",
+      "script": ["Everything so far serves the chronological \"Following\" timeline. **For You** is a ranking problem, and it's built as a classic two-stage pipeline."]
+    },
+    {
+      "title": "Candidate generation",
       "script": [
-        "Everything so far serves the chronological \"Following\" timeline. **For You** is a ranking problem, and it's built as a classic two-stage pipeline.",
-        "**Candidate generation** gathers maybe a thousand or so tweets that might interest you. Roughly half come from *in-network* sources: the timeline cache and celebrity pull we already built. The rest are *out-of-network*: tweets popular among people similar to you, or liked by accounts you engage with, found through embeddings and graph walks computed offline.",
-        "The Timeline Service sends those candidates to the **Ranking Service**, which scores each one with a model that predicts the probability of engagement: like, reply, retweet, dwell, or \"not interested\". It then applies rules on top for author diversity, freshness, and filtering out blocked or muted content. The model needs features at scoring time, such as your recent engagement and the tweet's early engagement velocity, read from a low-latency feature store.",
-        "The **ML Pipeline** closes the loop. It consumes engagement events from the bus to update features in near real time, and periodically retrains the model on what people actually engaged with. That's why those events were worth publishing.",
-        "The important design property is **graceful degradation**. Ranking is the most complex, most failure-prone part of the read path, so it runs with a tight timeout. If it's slow or down, the Timeline Service falls back to the chronological in-network timeline, and the user still gets a feed."
+        "**Candidate generation** gathers maybe a thousand or so tweets that might interest you. Roughly half come from *in-network* sources: the timeline cache and celebrity pull we already built. The rest are *out-of-network*: tweets popular among people similar to you, or liked by accounts you engage with, found through embeddings and graph walks computed offline."
+      ],
+      "table": {
+        "heading": "~1,000 candidates per request",
+        "columns": ["Source", "Share", "How it's found"],
+        "rows": [
+          ["In-network: timeline cache", "~half", "Already pushed by fan-out"],
+          ["In-network: celebrity pull", "(same half)", "From the cache tier"],
+          ["Out-of-network: similar users", "~half", "Embeddings, computed offline"],
+          ["Out-of-network: liked by your circle", "(same half)", "Graph walks, computed offline"]
+        ]
+      }
+    },
+    {
+      "title": "Scoring candidates",
+      "script": [
+        "The Timeline Service sends those candidates to the **Ranking Service**, which scores each one with a model that predicts the probability of engagement: like, reply, retweet, dwell, or \"not interested\". It then applies rules on top for author diversity, freshness, and filtering out blocked or muted content. The model needs features at scoring time, such as your recent engagement and the tweet's early engagement velocity, read from a low-latency feature store."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "timeline", "label": "Timeline Service", "kind": "service" },
+          { "id": "ranker", "label": "Ranking Service", "kind": "ml" },
+          { "id": "features", "label": "Feature Store", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "timeline", "to": "ranker", "label": "rank ~1,000 candidates for me" },
+          { "from": "ranker", "to": "features", "label": "my recent engagement · tweet velocity" },
+          { "from": "features", "to": "ranker", "label": "features", "reply": true },
+          { "from": "ranker", "to": "ranker", "label": "P(like, reply, RT, dwell, not interested)" },
+          { "from": "ranker", "to": "ranker", "label": "rules: diversity · freshness · blocks" },
+          { "from": "ranker", "to": "timeline", "label": "ranked list", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "scene": "main",
+      "focus": ["kafka", "mlpipe", "ranker", "e_kafka_ml", "e_ml_ranker"],
+      "title": "The ML Pipeline closes the loop",
+      "script": [
+        "The **ML Pipeline** closes the loop. It consumes engagement events from the bus to update features in near real time, and periodically retrains the model on what people actually engaged with. That's why those events were worth publishing."
       ]
+    },
+    {
+      "title": "Graceful degradation",
+      "script": [
+        "The important design property is **graceful degradation**. Ranking is the most complex, most failure-prone part of the read path, so it runs with a tight timeout. If it's slow or down, the Timeline Service falls back to the chronological in-network timeline, and the user still gets a feed."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client App", "kind": "client" },
+          { "id": "timeline", "label": "Timeline Service", "kind": "service" },
+          { "id": "ranker", "label": "Ranking Service", "kind": "ml" }
+        ],
+        "steps": [
+          { "from": "client", "to": "timeline", "label": "GET /timeline/home (For You)" },
+          { "from": "timeline", "to": "ranker", "label": "rank candidates (tight timeout)" },
+          { "note": "ranker slow or down: timeout fires", "over": ["timeline", "ranker"] },
+          { "from": "timeline", "to": "timeline", "label": "fall back: chronological in-network" },
+          { "from": "timeline", "to": "client", "label": "a feed, always", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
       "add": ["regions", "e_regions"],
-      "title": "Going global: regions, replication and failure",
+      "title": "Going global: regions",
       "script": [
-        "Users are everywhere, so the whole stack is deployed in **several regions**, and users are routed to a nearby one. Within a region everything we've drawn is replicated across availability zones.",
-        "Between regions, the **source-of-truth stores** (tweets, the graph, engagement) replicate **asynchronously**. That fits our consistency model: it's fine if a tweet posted in Europe takes a second longer to appear in Asia. Writes for a given user are homed in one region at a time to avoid conflicts. Since tweets are immutable and IDs come from Snowflake with a region bit, there's almost nothing to conflict on anyway.",
-        "The **derived data** (timeline caches, search indexes, trends, counters) doesn't need cross-region replication. Each region rebuilds its own copy from the replicated event stream. That's one more payoff of putting the event log at the center: derived state is **rebuildable**.",
-        "Failure handling follows the priorities from the non-functional requirements. If a region goes down, users are rerouted and their timelines rebuild on demand from the pull path. If ranking fails, we show chronological. If search, trends or notifications lag, they catch up from Kafka. Posting and reading the Following timeline are protected above everything else."
+        "Users are everywhere, so the whole stack is deployed in **several regions**, and users are routed to a nearby one. Within a region everything we've drawn is replicated across availability zones."
       ]
+    },
+    {
+      "title": "Replicating the source of truth",
+      "script": [
+        "Between regions, the **source-of-truth stores** (tweets, the graph, engagement) replicate **asynchronously**. That fits our consistency model: it's fine if a tweet posted in Europe takes a second longer to appear in Asia. Writes for a given user are homed in one region at a time to avoid conflicts. Since tweets are immutable and IDs come from Snowflake with a region bit, there's almost nothing to conflict on anyway."
+      ],
+      "table": {
+        "heading": "What crosses regions",
+        "columns": ["Data", "Across regions", "Why it's safe"],
+        "rows": [
+          ["Tweets", "Async replication", "Immutable · Snowflake IDs carry a region bit"],
+          ["Social graph", "Async replication", "Each user's writes homed in one region"],
+          ["Engagement", "Async replication", "Eventually consistent by design"],
+          ["Timelines · index · trends · counters", "Not replicated", "Rebuilt locally (next slide)"]
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "focus": ["kafka", "fanout", "indexer", "trendproc", "tlcache", "searchidx", "trendstore", "e_kafka_fanout", "e_kafka_indexer", "e_kafka_trend", "e_fanout_tlcache", "e_indexer_idx", "e_trend_store"],
+      "title": "Derived data is rebuildable",
+      "script": [
+        "The **derived data** (timeline caches, search indexes, trends, counters) doesn't need cross-region replication. Each region rebuilds its own copy from the replicated event stream. That's one more payoff of putting the event log at the center: derived state is **rebuildable**."
+      ]
+    },
+    {
+      "title": "When things fail",
+      "script": [
+        "Failure handling follows the priorities from the non-functional requirements. If a region goes down, users are rerouted and their timelines rebuild on demand from the pull path. If ranking fails, we show chronological. If search, trends or notifications lag, they catch up from Kafka. Posting and reading the Following timeline are protected above everything else."
+      ],
+      "table": {
+        "heading": "Failure handling, by priority",
+        "columns": ["Failure", "What happens"],
+        "rows": [
+          ["A region goes down", "Users rerouted · timelines rebuilt on demand by pull"],
+          ["Ranking fails", "Show the chronological timeline"],
+          ["Search, trends or notifications lag", "Catch up from Kafka"],
+          ["**Always protected**", "**Posting and the Following timeline**"]
+        ],
+        "highlight": 3
+      }
     },
     {
       "scene": "main",
