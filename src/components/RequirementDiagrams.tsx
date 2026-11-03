@@ -1,10 +1,12 @@
 import type { FunctionalRequirements, NonFunctionalRequirements, RequirementCard } from "../types";
+import { EST_FIRST_DY, EST_LINE, EST_ROW_GAP, EST_TITLE_DY, NFR_CARD_GAP, NFR_CARD_H, NFR_TOP,
+  REQ_H, REQ_W, TAKE_FIRST_DY, TAKE_LINE, gridHeight, nfrLayout } from "../lib/requirements";
 
 // ============================================================================
 // Requirement-slide diagrams. Both use viewBox 0 0 1200 640.
 // ============================================================================
 
-export const REQUIREMENTS_VIEWBOX = "0 0 1200 640";
+export const REQUIREMENTS_VIEWBOX = `0 0 ${REQ_W} ${REQ_H}`;
 
 // One numbered requirement card: a title plus 1–3 short lines.
 // `isNew` highlights it and fades it in.
@@ -40,8 +42,6 @@ function CardGrid({ x0, y0, w, h, gap, cards, show, fresh }: {
   );
 }
 
-const gridHeight = (n: number, h: number, gap: number) => Math.ceil(n / 3) * (h + gap) - gap;
-
 // A titled box of lines: the dashed out-of-scope strip ("strip") or the
 // accent-bordered takeaway panel ("panel-box"). Fades in when `isNew`.
 function LinesBox({ x, y, w, h, variant, title, lines, isNew }: {
@@ -52,7 +52,7 @@ function LinesBox({ x, y, w, h, variant, title, lines, isNew }: {
       <rect className={variant} x={x} y={y} width={w} height={h} rx="10" />
       <text className={variant === "strip" ? "strip-title" : "panel-title"} x={x + 24} y={y + 34}>{title}</text>
       {lines.map((l, i) => (
-        <text key={i} className="strip-text" x={x + 24} y={y + 64 + i * 22}>{l}</text>
+        <text key={i} className="strip-text" x={x + 24} y={y + TAKE_FIRST_DY + i * TAKE_LINE}>{l}</text>
       ))}
     </g>
   );
@@ -62,17 +62,18 @@ function LinesBox({ x, y, w, h, variant, title, lines, isNew }: {
 function EstimatesPanel({ x, y, w, h, rows, isNew }: {
   x: number; y: number; w: number; h: number; rows: [string, string[]][]; isNew: boolean;
 }) {
-  let cy = y + 66;
+  let cy = y + EST_FIRST_DY - EST_LINE;
   const body = rows.flatMap(([k, vs], r) => {
+    cy += EST_LINE;
     const out = [<text key={`${r}`} className="est-k" x={x + 20} y={cy}>{k}</text>];
-    vs.forEach((v, i) => { cy += 21; out.push(<text key={`${r}.${i}`} className="est-v" x={x + 20} y={cy}>{v}</text>); });
-    cy += 36;
+    vs.forEach((v, i) => { cy += EST_LINE; out.push(<text key={`${r}.${i}`} className="est-v" x={x + 20} y={cy}>{v}</text>); });
+    cy += EST_ROW_GAP - EST_LINE;
     return out;
   });
   return (
     <g className={isNew ? "new" : ""}>
       <rect className="est-box" x={x} y={y} width={w} height={h} rx="10" />
-      <text className="est-title" x={x + 20} y={y + 32}>Back of the envelope</text>
+      <text className="est-title" x={x + 20} y={y + EST_TITLE_DY}>Back of the envelope</text>
       {body}
     </g>
   );
@@ -100,18 +101,17 @@ export function FrDiagram({ req, show, withStrip }: { req: FunctionalRequirement
 export function NfrDiagram({ req, show, withEstimates, withTakeaway }: {
   req: NonFunctionalRequirements; show: number; withEstimates: boolean; withTakeaway: boolean;
 }) {
-  const h = 128, gap = 13;
-  const cardsH = gridHeight(req.cards.length, h, gap);
-  const estH = req.estimates.height ?? cardsH;
+  const { estH, takeY, takeH } = nfrLayout(req);
   return (
     <>
       <text className="heading" x="30" y="42">Non-functional requirements</text>
-      <CardGrid x0={30} y0={66} w={255} h={h} gap={gap} cards={req.cards} show={show} fresh={withEstimates ? -1 : show - 1} />
+      <CardGrid x0={30} y0={NFR_TOP} w={255} h={NFR_CARD_H} gap={NFR_CARD_GAP} cards={req.cards} show={show}
+        fresh={withEstimates ? -1 : show - 1} />
       {withEstimates && (
-        <EstimatesPanel x={836} y={66} w={334} h={estH} rows={req.estimates.rows} isNew={!withTakeaway} />
+        <EstimatesPanel x={836} y={NFR_TOP} w={334} h={estH} rows={req.estimates.rows} isNew={!withTakeaway} />
       )}
       {withTakeaway && (
-        <LinesBox x={30} y={66 + Math.max(cardsH, estH) + 20} w={1140} h={100} variant="panel-box"
+        <LinesBox x={30} y={takeY} w={1140} h={takeH} variant="panel-box"
           title={req.takeaway.heading ?? "Takeaway"} lines={req.takeaway.lines} isNew />
       )}
     </>

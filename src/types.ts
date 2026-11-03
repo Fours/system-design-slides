@@ -75,7 +75,8 @@ export interface NonFunctionalRequirements {
   /** Back-of-the-envelope panel: rows of [heading, [value, ...]]. */
   estimates: SlideText & {
     rows: [string, string[]][];
-    /** Panel height; defaults to the height of the card grid. */
+    /** Minimum panel height; defaults to the height of the card grid. The panel
+     *  always grows to fit its rows, pushing the takeaway down. */
     height?: number;
   };
   /** The takeaway panel. `heading` is drawn in the panel; defaults to "Takeaway". */

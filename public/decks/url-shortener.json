@@ -174,9 +174,30 @@
       "add": ["creator", "visitor", "server", "e_creator_server", "e_visitor_server"],
       "title": "Start simple: one server",
       "script": [
-        "Let's start with the simplest thing that works. There are two kinds of users: a **link creator**, who posts a long URL and gets a short link back, and a **visitor**, who clicks that short link. Both talk to **one server**.",
-        "The server does two things. On POST /links it makes up a code and remembers the mapping; on GET /aZ3x9Kq it looks up the code and answers with a **redirect**. Everything we add from here exists to fix a specific weakness of this version."
+        "Let's start with the simplest thing that works. There are two kinds of users: a **link creator**, who posts a long URL and gets a short link back, and a **visitor**, who clicks that short link. Both talk to **one server**."
       ]
+    },
+    {
+      "title": "The server's two jobs",
+      "script": [
+        "The server does two things. On POST /links it makes up a code and remembers the mapping; on GET /aZ3x9Kq it looks up the code and answers with a **redirect**. Everything we add from here exists to fix a specific weakness of this version."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "creator", "label": "Link Creator", "kind": "client" },
+          { "id": "server", "label": "Server", "kind": "service" },
+          { "id": "visitor", "label": "Visitor", "kind": "client" }
+        ],
+        "steps": [
+          { "from": "creator", "to": "server", "label": "POST /links {long URL}" },
+          { "from": "server", "to": "server", "label": "make up a code, remember it" },
+          { "from": "server", "to": "creator", "label": "sho.rt/aZ3x9Kq", "reply": true },
+          { "from": "visitor", "to": "server", "label": "GET /aZ3x9Kq" },
+          { "from": "server", "to": "server", "label": "look up aZ3x9Kq" },
+          { "from": "server", "to": "visitor", "label": "302 Location: long URL", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
@@ -258,9 +279,33 @@
       "add": ["cache"],
       "title": "Cache the hot links",
       "script": [
-        "With 100 reads per write, the Link DB would be hammered by reads. But clicks are extremely **skewed**: a link is clicked most in its first days, and a small fraction of links gets most of the traffic. So we put a **Redis cache** in front of the database.",
-        "The Redirect Service reads the cache first and falls back to the database on a miss, then fills the cache: **cache-aside** with LRU eviction. A few hundred gigabytes of RAM holds the hot set, and we'd expect well over **90% of redirects** never to touch the database. We also cache \"not found\" briefly, so a bot hammering random codes can't reach the database either."
+        "With 100 reads per write, the Link DB would be hammered by reads. But clicks are extremely **skewed**: a link is clicked most in its first days, and a small fraction of links gets most of the traffic. So we put a **Redis cache** in front of the database."
       ]
+    },
+    {
+      "title": "Cache-aside on the redirect path",
+      "script": [
+        "The Redirect Service reads the cache first and falls back to the database on a miss, then fills the cache: **cache-aside** with LRU eviction. A few hundred gigabytes of RAM holds the hot set, and we'd expect well over **90% of redirects** never to touch the database. We also cache \"not found\" briefly, so a bot hammering random codes can't reach the database either."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "visitor", "label": "Visitor", "kind": "client" },
+          { "id": "redirect", "label": "Redirect Service", "kind": "service" },
+          { "id": "cache", "label": "Cache", "kind": "data", "sub": "Redis" },
+          { "id": "db", "label": "Link DB", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "visitor", "to": "redirect", "label": "GET /aZ3x9Kq" },
+          { "from": "redirect", "to": "cache", "label": "GET aZ3x9Kq" },
+          { "from": "cache", "to": "redirect", "label": "miss", "reply": true },
+          { "from": "redirect", "to": "db", "label": "read aZ3x9Kq" },
+          { "from": "db", "to": "redirect", "label": "long URL", "reply": true },
+          { "from": "redirect", "to": "cache", "label": "SET aZ3x9Kq (also caches \"not found\")" },
+          { "from": "redirect", "to": "visitor", "label": "302 → long URL", "reply": true },
+          { "note": "next click on aZ3x9Kq: cache hit, the DB is never touched (90%+ of redirects)", "over": ["redirect", "cache"] }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
@@ -295,9 +340,48 @@
       "focus": ["creator", "shorten", "linkdb", "e_shorten_db"],
       "title": "Custom aliases share the namespace",
       "script": [
-        "Custom aliases come from users, not from our counter, so two people can ask for **spring-sale** at once, or an alias can equal a code we'll generate later. We handle both with a **conditional insert**: put this code only if it doesn't exist yet, a lightweight transaction in Cassandra or a conditional put in DynamoDB.",
-        "We use the conditional insert for **generated codes too**. Normally it always succeeds; if a generated code was taken by an alias, we simply take the next ID. Conditional writes are slower, but at a thousand creates a second that's fine. We also validate aliases and block **reserved words** like api, login and admin."
+        "Custom aliases come from users, not from our counter, so two people can ask for **spring-sale** at once, or an alias can equal a code we'll generate later."
       ]
+    },
+    {
+      "title": "A conditional insert settles every race",
+      "script": [
+        "We handle both with a **conditional insert**: put this code only if it doesn't exist yet, a lightweight transaction in Cassandra or a conditional put in DynamoDB.",
+        "We use the conditional insert for **generated codes too**. Normally it always succeeds; if a generated code was taken by an alias, we simply take the next ID."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "alice", "label": "Creator A", "kind": "client" },
+          { "id": "bob", "label": "Creator B", "kind": "client" },
+          { "id": "shorten", "label": "Link Service", "kind": "service" },
+          { "id": "db", "label": "Link DB", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "alice", "to": "shorten", "label": "POST alias=spring-sale" },
+          { "from": "bob", "to": "shorten", "label": "POST alias=spring-sale" },
+          { "from": "shorten", "to": "db", "label": "insert spring-sale IF NOT EXISTS (A)" },
+          { "from": "db", "to": "shorten", "label": "applied", "reply": true },
+          { "from": "shorten", "to": "db", "label": "insert spring-sale IF NOT EXISTS (B)" },
+          { "from": "db", "to": "shorten", "label": "already exists", "reply": true },
+          { "from": "shorten", "to": "alice", "label": "201 sho.rt/spring-sale", "reply": true },
+          { "from": "shorten", "to": "bob", "label": "409 alias taken", "reply": true },
+          { "note": "a generated code that hits an alias: take the next ID and retry", "over": ["shorten", "db"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Alias rules",
+      "script": [
+        "Conditional writes are slower, but at a thousand creates a second that's fine. We also validate aliases and block **reserved words** like api, login and admin."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "Conditional insert on **every** create", "detail": "slower writes, but only ~1,000 creates a second" },
+          { "text": "Validate the alias", "detail": "allowed characters and length, same alphabet as codes" },
+          { "text": "Block **reserved words**", "detail": "api, login, admin, and our own paths" }
+        ]
+      }
     },
     {
       "scene": "main",
@@ -358,9 +442,22 @@
       "add": ["regions", "e_db_regions"],
       "title": "Going multi-region",
       "script": [
-        "Four nines for redirects means surviving the **loss of a whole region**. So we run this stack in several regions, and the Link DB **replicates asynchronously** between them; Cassandra does this natively. Each region serves redirects from its own replica, and DNS steers visitors to the nearest healthy one.",
-        "Creates can happen anywhere too: ID ranges are **globally unique**, so regions never conflict on generated codes. Only custom aliases need a global check, so we route those to one home region. And if a brand-new link hasn't replicated yet, a miss **falls back to the home region** before we answer 404."
+        "Four nines for redirects means surviving the **loss of a whole region**. So we run this stack in several regions, and the Link DB **replicates asynchronously** between them; Cassandra does this natively. Each region serves redirects from its own replica, and DNS steers visitors to the nearest healthy one."
       ]
+    },
+    {
+      "title": "What happens in which region",
+      "script": [
+        "Creates can happen anywhere too: ID ranges are **globally unique**, so regions never conflict on generated codes. Only custom aliases need a global check, so we route those to one home region. And if a brand-new link hasn't replicated yet, a miss **falls back to the home region** before we answer 404."
+      ],
+      "table": {
+        "columns": ["Request", "Runs in", "Why it's safe"],
+        "rows": [
+          ["**Redirect**", "nearest region", "local replica; on a miss, ask the home region before 404"],
+          ["**Generated create**", "any region", "ID ranges are globally unique"],
+          ["**Custom alias**", "home region", "one place checks the global namespace"]
+        ]
+      }
     },
     {
       "scene": "main",

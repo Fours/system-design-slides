@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { ArchitectureSlide, Deck, DeckIndex, SceneDef } from "../src/types.ts";
+import { REQ_H, nfrLayout } from "../src/lib/requirements.ts";
 
 const DIR = path.join(import.meta.dirname, "..", "public", "decks");
 let errors = 0, warnings = 0;
@@ -115,6 +116,8 @@ function checkDeck(slug: string, deck: Deck) {
   checkScript(`${where} functional.outOfScope`, fr.outOfScope.script);
   checkScript(`${where} nonFunctional.estimates`, nfr.estimates.script);
   checkScript(`${where} nonFunctional.takeaway`, nfr.takeaway.script);
+  const { bottom } = nfrLayout(nfr);
+  if (bottom > REQ_H - 4) warn(where, `non-functional takeaway ends at y=${bottom}, below the ${REQ_H}px slide; trim estimates rows or takeaway lines`);
 
   for (const [name, scene] of Object.entries(deck.scenes)) checkScene(`${where} scenes.${name}`, scene);
 

@@ -95,8 +95,9 @@ The intro and requirement slides are **generated**; don't list them in `slides`.
   - one slide per card (`nonFunctional.cards`: scale, latency, availability,
     durability, consistency, cost, ...), each adding the next card;
   - one slide adding the back-of-the-envelope panel (`nonFunctional.estimates`;
-    `rows` of `[heading, [value, ...]]`, and an optional `height` if the numbers
-    need more or less room than the card grid);
+    `rows` of `[heading, [value, ...]]`; the panel grows to fit its rows and
+    pushes the takeaway down, and the validator warns if that runs off the slide;
+    an optional `height` sets a minimum, e.g. shorter than the card grid);
   - one slide adding the takeaway panel, the numbers that shape the design
     (`nonFunctional.takeaway`; optional `heading`, default "Takeaway").
   With 6 cards these are slides 10–18.
