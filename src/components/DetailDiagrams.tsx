@@ -58,12 +58,12 @@ export function EntitiesDiagram({ frame }: { frame: EntitiesFrame }) {
 export function BulletsDiagram({ frame }: { frame: BulletsFrame }) {
   return (
     <>
-      <text className="heading" x="30" y="42">{frame.heading}</text>
+      <text className="heading bullets-heading" x="130" y={frame.headingY}>{frame.heading}</text>
       {frame.items.map((b) => (
         <g key={b.key} className="reveal" style={seqStyle(b.seq)}>
-          <circle className="bullet-dot" cx="52" cy={b.y - 8} r="6" />
-          <text className="bullet-text" x="76" y={b.y}>{svgInline(b.text)}</text>
-          {b.detail && <text className="bullet-detail" x="76" y={b.y + 26}>{svgInline(b.detail)}</text>}
+          <circle className="bullet-dot" cx="152" cy={b.y - 8} r="6" />
+          <text className="bullet-text" x="176" y={b.y}>{svgInline(b.text)}</text>
+          {b.detail && <text className="bullet-detail" x="176" y={b.y + 26}>{svgInline(b.detail)}</text>}
         </g>
       ))}
     </>
@@ -71,21 +71,22 @@ export function BulletsDiagram({ frame }: { frame: BulletsFrame }) {
 }
 
 export function TableDiagram({ frame }: { frame: TableFrame }) {
-  const { xs, rowH, headerY } = frame;
+  const { xs, rowH, headingY, headerY } = frame;
   const x0 = xs[0], x1 = xs[xs.length - 1];
   const cells = (texts: string[], y: number, cls: string) =>
     texts.map((t, j) => <text key={j} className={cls} x={xs[j] + 16} y={y + rowH / 2}>{svgInline(t)}</text>);
   return (
     <>
-      <text className="heading" x="30" y="42">{frame.heading}</text>
-      <rect className="table-head" x={x0} y={headerY} width={x1 - x0} height={rowH} rx="8" />
-      {cells(frame.columns, headerY, "table-col")}
+      <text className="heading" x="30" y={headingY}>{frame.heading}</text>
       {frame.rows.map((r) => (
         <g key={r.key} className={`reveal${r.highlight ? " table-pick" : ""}`} style={seqStyle(r.seq)}>
-          <rect className="table-row" x={x0} y={r.y} width={x1 - x0} height={rowH} rx="8" />
+          <rect className="table-row" x={x0} y={r.y} width={x1 - x0} height={rowH} />
           {cells(r.cells, r.y, "table-cell")}
         </g>
       ))}
+      {/* Drawn after the rows so the first row's border can't cover the header's bottom edge. */}
+      <rect className="table-head" x={x0} y={headerY} width={x1 - x0} height={rowH} />
+      {cells(frame.columns, headerY, "table-col")}
     </>
   );
 }

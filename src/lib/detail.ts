@@ -129,6 +129,8 @@ export function layoutEntities({ items, relations = [] }: EntitiesSlide["entitie
 export interface BulletsFrame {
   viewBox: string;
   heading: string;
+  /** Baseline of the heading above the list. */
+  headingY: number;
   items: { key: string; y: number; text: string; detail?: string; seq: number }[];
 }
 
@@ -137,9 +139,10 @@ export function layoutBullets({ heading, items }: BulletsSlide["bullets"], title
   return {
     viewBox: "0 0 1200 640",
     heading: heading ?? title,
+    headingY: 100,
     items: items.map((it, i) => {
       const { text, detail } = typeof it === "string" ? { text: it, detail: undefined } : it;
-      return { key: `b${i}`, y: 140 + i * pitch, text, detail, seq: i };
+      return { key: `b${i}`, y: 168 + i * pitch, text, detail, seq: i };
     }),
   };
 }
@@ -147,6 +150,8 @@ export function layoutBullets({ heading, items }: BulletsSlide["bullets"], title
 export interface TableFrame {
   viewBox: string;
   heading: string;
+  /** Baseline of the heading above the table. */
+  headingY: number;
   /** Left edge of each column, plus the right edge of the table. */
   xs: number[];
   headerY: number;
@@ -161,12 +166,13 @@ export function layoutTable({ heading, columns, rows, highlight }: TableSlide["t
   const total = longest.reduce((a, b) => a + b, 0);
   const xs = [30];
   longest.forEach((n) => xs.push(xs[xs.length - 1] + (1140 * n) / total));
-  const rowH = 52, headerY = 72;
+  // The heading and table sit 100 units below the top of the panel.
+  const rowH = 52, headingY = 142, headerY = 172;
   const height = Math.max(640, headerY + (rows.length + 1) * rowH + 40);
   return {
     viewBox: `0 0 1200 ${height}`,
     heading: heading ?? title,
-    xs, headerY, rowH, columns,
+    headingY, xs, headerY, rowH, columns,
     rows: rows.map((cells, i) => ({ key: `r${i}`, y: headerY + (i + 1) * rowH, cells, highlight: i === highlight, seq: i })),
   };
 }

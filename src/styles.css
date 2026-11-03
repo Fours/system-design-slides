@@ -227,6 +227,7 @@ tspan.dim { fill: var(--ink-dim); }
 .bullet-dot { fill: var(--accent); }
 .bullet-text { fill: var(--ink); font-size: 26px; }
 .bullet-detail { fill: var(--ink-dim); font-size: 17px; }
+.heading.bullets-heading { font-size: 26px; }
 .table-head { fill: var(--box-fill); stroke: var(--accent); stroke-width: 1.5; }
 .table-row { fill: transparent; stroke: var(--border); stroke-width: 1; }
 .table-pick .table-row { stroke: var(--accent); stroke-width: 2.5; filter: drop-shadow(0 0 6px var(--accent)); }
@@ -282,7 +283,6 @@ tspan.dim { fill: var(--ink-dim); }
   padding: 18px 20px;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 10px;
   color: var(--ink);
   text-decoration: none;
   transition: border-color 0.15s, background 0.15s;
