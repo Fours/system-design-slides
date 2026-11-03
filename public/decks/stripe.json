@@ -262,28 +262,142 @@
       "title": "Start simple: a merchant and one API server",
       "script": [
         "Let's start with the simplest thing that could work: the **merchant's server** talks to **one API server** of ours over HTTPS, authenticated with a secret API key.",
-        "The API has two calls that matter. **Create** a payment: \"I want to collect $50 from this customer\". And **confirm** it: \"here's the card, go get the money\". The server returns the payment's current status. Everything else in the design hangs off this one object and the states it moves through."
+        "The API has two calls that matter."
       ]
+    },
+    {
+      "title": "Create, then confirm",
+      "script": [
+        "**Create** a payment: \"I want to collect $50 from this customer\". And **confirm** it: \"here's the card, go get the money\". The server returns the payment's current status. Everything else in the design hangs off this one object and the states it moves through."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "merchant", "label": "Merchant Server", "kind": "client" },
+          { "id": "server", "label": "API Server", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "merchant", "to": "server", "label": "POST /payments ($50, usd)" },
+          { "from": "server", "to": "merchant", "label": "pay_123 · requires_confirmation", "reply": true },
+          { "note": "customer enters their card on checkout", "over": ["merchant", "server"] },
+          { "from": "merchant", "to": "server", "label": "POST /payments/pay_123/confirm (card)" },
+          { "from": "server", "to": "merchant", "label": "pay_123 · succeeded", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
       "add": ["acq", "e_server_acq"],
       "title": "The banks are an external system",
       "script": [
-        "On the other side are the **acquirers and card networks**. I'm drawing them dashed because we don't design them; we integrate with them.",
-        "When a payment is confirmed, we send an **authorization request** to an acquiring bank, which routes it over Visa or Mastercard to the customer's **issuing bank**. The issuer checks the balance and fraud rules and says approve or decline. That round trip takes from half a second to a couple of seconds. Later, a **capture** tells the network to actually move the held funds, and the money settles to us a day or two later.",
-        "This is the slowest and least reliable thing in the whole system, and it's on the critical path of every payment. Keep that in mind; a lot of what follows exists to cope with it."
+        "On the other side are the **acquirers and card networks**. I'm drawing them dashed because we don't design them; we integrate with them."
       ]
+    },
+    {
+      "title": "Authorize, then capture",
+      "script": [
+        "When a payment is confirmed, we send an **authorization request** to an acquiring bank, which routes it over Visa or Mastercard to the customer's **issuing bank**. The issuer checks the balance and fraud rules and says approve or decline. That round trip takes from half a second to a couple of seconds. Later, a **capture** tells the network to actually move the held funds, and the money settles to us a day or two later."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "server", "label": "API Server", "kind": "service" },
+          { "id": "acq", "label": "Acquirer", "kind": "ghost" },
+          { "id": "net", "label": "Card Network", "kind": "ghost", "sub": "Visa · Mastercard" },
+          { "id": "issuer", "label": "Issuing Bank", "kind": "ghost" }
+        ],
+        "steps": [
+          { "from": "server", "to": "acq", "label": "authorize $50" },
+          { "from": "acq", "to": "net", "label": "auth request" },
+          { "from": "net", "to": "issuer", "label": "auth request" },
+          { "from": "issuer", "to": "issuer", "label": "balance · fraud rules" },
+          { "from": "issuer", "to": "net", "label": "approve", "reply": true },
+          { "from": "net", "to": "acq", "label": "approve", "reply": true },
+          { "from": "acq", "to": "server", "label": "approved", "reply": true },
+          { "note": "round trip: 0.5–2 s", "over": ["server", "issuer"] },
+          { "from": "server", "to": "acq", "label": "capture $50" },
+          { "note": "funds settle to us 1–2 days later", "over": ["server", "issuer"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Slow, flaky, and on the critical path",
+      "script": [
+        "This is the slowest and least reliable thing in the whole system, and it's on the critical path of every payment. Keep that in mind; a lot of what follows exists to cope with it."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Slow**: 0.5–2 s per authorization", "detail": "out of our control, while the customer watches a spinner" },
+          { "text": "**Unreliable**: timeouts, outages, maintenance", "detail": "and sometimes no answer at all" },
+          { "text": "**On the critical path** of every payment", "detail": "no bank, no sale" }
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["db", "e_server_db"],
-      "title": "A database and a payment state machine",
+      "title": "A relational database",
       "script": [
-        "The server can't keep payments in memory, so we add a **relational database**. PostgreSQL is a good fit: payments, refunds, customers and merchants reference each other, and we want **transactions** around state changes.",
-        "The key column is the payment's **status**, and I'd model it as an explicit **state machine**: *requires_confirmation*, *processing*, *requires_capture*, *succeeded*, *canceled*, *failed*. Every transition is a guarded update: \"move to *succeeded* **only if** the current state is *requires_capture*\". That conditional write is what stops two concurrent requests from capturing the same payment twice.",
-        "One more rule I'll keep for the whole design: **write before you call the bank**. We record \"about to authorize\" in the database first, then call the acquirer, then record the result. If we crash in between, at least we know we might have charged someone."
+        "The server can't keep payments in memory, so we add a **relational database**. PostgreSQL is a good fit: payments, refunds, customers and merchants reference each other, and we want **transactions** around state changes."
       ]
+    },
+    {
+      "title": "The payment state machine",
+      "script": [
+        "The key column is the payment's **status**, and I'd model it as an explicit **state machine**: *requires_confirmation*, *processing*, *requires_capture*, *succeeded*, *canceled*, *failed*."
+      ],
+      "table": {
+        "columns": ["Status", "Moves to", "When"],
+        "rows": [
+          ["**requires_confirmation**", "processing", "merchant confirms with a card"],
+          ["**processing**", "requires_capture · failed", "bank approves · declines"],
+          ["**requires_capture**", "succeeded · canceled", "merchant captures · cancels"],
+          ["**succeeded**", "—", "final (refunds are new objects)"],
+          ["**canceled** · **failed**", "—", "final"]
+        ]
+      }
+    },
+    {
+      "title": "Guarded transitions",
+      "script": [
+        "Every transition is a guarded update: \"move to *succeeded* **only if** the current state is *requires_capture*\". That conditional write is what stops two concurrent requests from capturing the same payment twice."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "a", "label": "Capture request A", "kind": "service" },
+          { "id": "db", "label": "Database", "kind": "data" },
+          { "id": "b", "label": "Capture request B", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "a", "to": "db", "label": "SET succeeded WHERE requires_capture" },
+          { "from": "b", "to": "db", "label": "SET succeeded WHERE requires_capture" },
+          { "from": "db", "to": "a", "label": "1 row updated → capture", "reply": true },
+          { "from": "db", "to": "b", "label": "0 rows → already captured", "reply": true },
+          { "note": "exactly one request wins", "over": ["a", "b"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Write before you call the bank",
+      "script": [
+        "One more rule I'll keep for the whole design: **write before you call the bank**. We record \"about to authorize\" in the database first, then call the acquirer, then record the result. If we crash in between, at least we know we might have charged someone."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "server", "label": "API Server", "kind": "service" },
+          { "id": "db", "label": "Database", "kind": "data" },
+          { "id": "acq", "label": "Acquirer", "kind": "ghost" }
+        ],
+        "steps": [
+          { "from": "server", "to": "db", "label": "status = processing" },
+          { "from": "server", "to": "acq", "label": "authorize $50" },
+          { "from": "acq", "to": "server", "label": "approved", "reply": true },
+          { "from": "server", "to": "db", "label": "status = requires_capture" },
+          { "note": "crash mid-way? the row still says processing: we may have charged", "over": ["server", "acq"] }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
@@ -299,20 +413,131 @@
       "add": ["vault", "e_customer_vault", "e_server_vault"],
       "title": "Tokenization: a card vault",
       "script": [
-        "So the card number takes a different route. The checkout page embeds **Stripe.js**, our script, with card fields served from our domain. When the customer submits, the card number goes **directly from the browser to our Card Vault**, which stores it encrypted and hands back a **token**. The merchant's page passes only the token to the merchant's server, which confirms the payment with it.",
-        "The vault is the only place that holds raw card numbers, the **PAN**. It's a small, isolated service in its own network segment, with keys in hardware security modules, and it's the only part of the system in full **PCI scope**. When the API server needs to send a card to the bank, it **detokenizes** at the last moment.",
-        "This one decision shrinks the PCI blast radius from \"every merchant and all of Stripe\" down to one small, heavily audited box."
+        "So the card number takes a different route. The checkout page embeds **Stripe.js**, our script, with card fields served from our domain."
       ]
+    },
+    {
+      "title": "Card in, token out",
+      "script": [
+        "When the customer submits, the card number goes **directly from the browser to our Card Vault**, which stores it encrypted and hands back a **token**. The merchant's page passes only the token to the merchant's server, which confirms the payment with it."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "customer", "label": "Customer Browser", "kind": "client", "sub": "Stripe.js" },
+          { "id": "vault", "label": "Card Vault", "kind": "data" },
+          { "id": "merchant", "label": "Merchant Server", "kind": "client" },
+          { "id": "server", "label": "API Server", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "customer", "to": "vault", "label": "card number" },
+          { "from": "vault", "to": "vault", "label": "encrypt · store" },
+          { "from": "vault", "to": "customer", "label": "tok_123", "reply": true },
+          { "from": "customer", "to": "merchant", "label": "tok_123" },
+          { "from": "merchant", "to": "server", "label": "confirm pay_123 with tok_123" },
+          { "note": "the merchant never sees the card number", "over": ["customer", "server"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "The vault holds the PAN",
+      "script": [
+        "The vault is the only place that holds raw card numbers, the **PAN**. It's a small, isolated service in its own network segment, with keys in hardware security modules, and it's the only part of the system in full **PCI scope**. When the API server needs to send a card to the bank, it **detokenizes** at the last moment."
+      ],
+      "bullets": {
+        "items": [
+          "The **only** store of raw card numbers (PANs)",
+          { "text": "**Small and isolated**", "detail": "its own network segment, keys in HSMs" },
+          { "text": "The only part of the system in full **PCI scope**" },
+          { "text": "**Detokenize** at the last moment", "detail": "only when a card must go to the bank" }
+        ]
+      }
+    },
+    {
+      "title": "Shrinking PCI scope",
+      "script": [
+        "This one decision shrinks the PCI blast radius from \"every merchant and all of Stripe\" down to one small, heavily audited box."
+      ],
+      "table": {
+        "columns": ["", "Card via merchant", "Card → vault → token"],
+        "rows": [
+          ["**Card numbers pass through**", "every merchant's servers", "only the Card Vault"],
+          ["**Full PCI audit**", "every merchant, all of Stripe", "one small box"],
+          ["**A merchant breach leaks**", "card numbers", "useless tokens"]
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["idem", "e_server_idem"],
       "title": "Idempotency keys",
       "script": [
-        "Now the most important safety mechanism in the design. Imagine the merchant calls *confirm*, we charge the card, and the response is lost in a network blip. The merchant's code does what all good code does: **it retries**. Without protection, that's a double charge.",
-        "So every write carries an **Idempotency-Key** chosen by the client, usually a UUID per logical operation. The first time we see a key, we **record it, run the request, and save the response** against it. If the same key comes in again, we return the **saved response** without doing anything. If it comes in while the first request is still running, we return a conflict, and the client retries later.",
-        "Keys live in an **Idempotency Store**, scoped to the merchant and kept for about 24 hours. I'd keep it in the same database as the payment, so recording the key and changing the payment commit in one transaction. That way there's no gap where one happened without the other."
+        "Now the most important safety mechanism in the design."
       ]
+    },
+    {
+      "title": "The lost response",
+      "script": [
+        "Imagine the merchant calls *confirm*, we charge the card, and the response is lost in a network blip. The merchant's code does what all good code does: **it retries**. Without protection, that's a double charge."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "merchant", "label": "Merchant Server", "kind": "client" },
+          { "id": "server", "label": "API Server", "kind": "service" },
+          { "id": "acq", "label": "Acquirer", "kind": "ghost" }
+        ],
+        "steps": [
+          { "from": "merchant", "to": "server", "label": "confirm pay_123" },
+          { "from": "server", "to": "acq", "label": "authorize $50" },
+          { "from": "acq", "to": "server", "label": "approved", "reply": true },
+          { "from": "server", "to": "merchant", "label": "succeeded ✗ lost in transit", "reply": true },
+          { "from": "merchant", "to": "server", "label": "confirm pay_123 (retry)" },
+          { "from": "server", "to": "acq", "label": "authorize $50 again" },
+          { "note": "the customer is charged twice", "over": ["merchant", "acq"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "How an idempotency key works",
+      "script": [
+        "So every write carries an **Idempotency-Key** chosen by the client, usually a UUID per logical operation. The first time we see a key, we **record it, run the request, and save the response** against it. If the same key comes in again, we return the **saved response** without doing anything. If it comes in while the first request is still running, we return a conflict, and the client retries later."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "merchant", "label": "Merchant Server", "kind": "client" },
+          { "id": "server", "label": "API Server", "kind": "service" },
+          { "id": "idem", "label": "Idempotency Store", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "merchant", "to": "server", "label": "confirm · Idempotency-Key: k1" },
+          { "from": "server", "to": "idem", "label": "record k1 (in progress)" },
+          { "from": "server", "to": "server", "label": "charge the card" },
+          { "from": "server", "to": "idem", "label": "save response for k1" },
+          { "from": "server", "to": "merchant", "label": "succeeded ✗ lost", "reply": true },
+          { "from": "merchant", "to": "server", "label": "confirm · Idempotency-Key: k1" },
+          { "from": "server", "to": "idem", "label": "look up k1" },
+          { "from": "idem", "to": "server", "label": "saved response", "reply": true },
+          { "from": "server", "to": "merchant", "label": "succeeded (no new charge)", "reply": true },
+          { "note": "k1 still in progress? → 409 conflict, retry later", "over": ["merchant", "idem"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Keys live next to the payment",
+      "script": [
+        "Keys live in an **Idempotency Store**, scoped to the merchant and kept for about 24 hours. I'd keep it in the same database as the payment, so recording the key and changing the payment commit in one transaction. That way there's no gap where one happened without the other."
+      ],
+      "entities": {
+        "items": [
+          { "id": "key", "name": "IdempotencyKey", "kind": "data", "fields": ["merchant_id, key  PK", "request_hash: bytes", "state: in_progress | done", "response: json", "expires_at: now + 24 h"] },
+          { "id": "payment", "name": "Payment", "kind": "data", "fields": ["id: text  PK", "merchant_id: text", "amount, currency", "status: enum"] }
+        ],
+        "relations": [
+          { "from": "key", "to": "payment", "label": "one transaction" }
+        ]
+      }
     },
     {
       "scene": "main",
@@ -320,9 +545,30 @@
       "remove": ["e_customer_vault", "e_merchant_server"],
       "title": "An API gateway at the edge",
       "script": [
-        "Both kinds of client now come in through an **API Gateway**. It terminates TLS, authenticates **API keys** (secret keys for servers, publishable keys for browsers that can only create tokens), and applies **rate limits** per merchant, so one merchant's runaway script can't hurt everyone else.",
-        "It also routes. Card data goes to the vault and API calls go to the API servers, and the gateway is the place to **load-shed**. On Black Friday, if we're overloaded, we'd much rather reject *list* and *search* requests than *confirm* requests, because a confirm is a sale. The gateway knows which is which and drops the non-critical traffic first."
+        "Both kinds of client now come in through an **API Gateway**. It terminates TLS, authenticates **API keys** (secret keys for servers, publishable keys for browsers that can only create tokens), and applies **rate limits** per merchant, so one merchant's runaway script can't hurt everyone else."
       ]
+    },
+    {
+      "scene": "main",
+      "focus": ["apigw", "vault", "server", "customer", "merchant", "e_customer_apigw", "e_merchant_apigw"],
+      "title": "The gateway routes",
+      "script": [
+        "It also routes. Card data goes to the vault and API calls go to the API servers, and the gateway is the place to **load-shed**."
+      ]
+    },
+    {
+      "title": "Shed the least valuable traffic first",
+      "script": [
+        "On Black Friday, if we're overloaded, we'd much rather reject *list* and *search* requests than *confirm* requests, because a confirm is a sale. The gateway knows which is which and drops the non-critical traffic first."
+      ],
+      "table": {
+        "columns": ["Priority", "Requests", "When overloaded"],
+        "rows": [
+          ["**Critical**", "confirm · capture · tokenize card", "always served: each one is a sale"],
+          ["**Important**", "create · refund · cancel", "served, rate-limited per merchant"],
+          ["**Best effort**", "list · search · retrieve", "shed first"]
+        ]
+      }
     },
     {
       "scene": "main",
@@ -330,20 +576,94 @@
       "add": ["payments", "e_payments_db", "e_payments_idem", "router", "e_payments_router", "e_router_acq", "e_router_vault"],
       "title": "Split out a Processor Router",
       "script": [
-        "Time to split the monolith along its most important seam. The **Payment Service** owns the payment state machine, idempotency, and the API semantics. The **Processor Router** owns everything about talking to banks.",
-        "Stripe doesn't use one bank. It connects to **many acquirers** in different countries, each with its own protocol (ISO 8583 messages or a proprietary API), quirks and error codes. The router has an **adapter per acquirer** that translates our canonical \"authorize $50 on this token\" into that acquirer's format, and maps its responses back to a small set of outcomes: approved, declined, or **unknown**.",
-        "It also **chooses** the acquirer: the one local to the card's country (higher approval rates, lower fees), with failover to another if the first is down. And it's the only service besides the vault that ever touches a raw PAN, which it fetches from the vault just before sending and never stores. That keeps the Payment Service out of PCI scope too."
+        "Time to split the monolith along its most important seam. The **Payment Service** owns the payment state machine, idempotency, and the API semantics. The **Processor Router** owns everything about talking to banks."
       ]
+    },
+    {
+      "title": "An adapter per acquirer",
+      "script": [
+        "Stripe doesn't use one bank. It connects to **many acquirers** in different countries, each with its own protocol (ISO 8583 messages or a proprietary API), quirks and error codes. The router has an **adapter per acquirer** that translates our canonical \"authorize $50 on this token\" into that acquirer's format, and maps its responses back to a small set of outcomes: approved, declined, or **unknown**."
+      ],
+      "table": {
+        "columns": ["Acquirer", "Native response", "Canonical outcome"],
+        "rows": [
+          ["**Acquirer A** (ISO 8583)", "response code 00", "**approved**"],
+          ["**Acquirer A** (ISO 8583)", "response code 51 (insufficient funds)", "**declined**"],
+          ["**Acquirer B** (REST API)", "{ \"result\": \"AUTHORISED\" }", "**approved**"],
+          ["**Acquirer B** (REST API)", "{ \"result\": \"REFUSED\" }", "**declined**"],
+          ["**Any acquirer**", "timeout · connection reset · 5xx", "**unknown**"]
+        ]
+      }
+    },
+    {
+      "title": "Choosing the acquirer, fetching the PAN",
+      "script": [
+        "It also **chooses** the acquirer: the one local to the card's country (higher approval rates, lower fees), with failover to another if the first is down. And it's the only service besides the vault that ever touches a raw PAN, which it fetches from the vault just before sending and never stores. That keeps the Payment Service out of PCI scope too."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "payments", "label": "Payment Service", "kind": "service" },
+          { "id": "router", "label": "Processor Router", "kind": "service" },
+          { "id": "vault", "label": "Card Vault", "kind": "data" },
+          { "id": "acq", "label": "Acquirer", "kind": "ghost" }
+        ],
+        "steps": [
+          { "from": "payments", "to": "router", "label": "authorize $50 on tok_123" },
+          { "from": "router", "to": "router", "label": "pick acquirer: card country, health" },
+          { "from": "router", "to": "vault", "label": "fetch PAN for tok_123" },
+          { "from": "vault", "to": "router", "label": "PAN (memory only)", "reply": true },
+          { "from": "router", "to": "acq", "label": "ISO 8583 auth" },
+          { "from": "acq", "to": "router", "label": "code 00", "reply": true },
+          { "from": "router", "to": "payments", "label": "approved", "reply": true },
+          { "note": "the Payment Service never sees the PAN", "over": ["payments", "acq"] }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
       "add": ["risk", "e_payments_risk"],
       "title": "Fraud scoring before authorization",
       "script": [
-        "Before a payment goes to the bank, the Payment Service asks the **Risk Engine** for a **fraud score**. It's an ML model over hundreds of features: the card, the device fingerprint from Stripe.js, the IP, the velocity of attempts on this card, and, crucially, what we've seen of this card **across every other merchant** on the network.",
-        "That network effect is a real advantage: a card that was used for fraud at one merchant an hour ago is suspicious at all of them. Based on the score and the merchant's rules, we **allow**, **block**, or **challenge** the payment with 3-D Secure, which bounces the customer to their bank to verify.",
-        "It's synchronous and on the critical path, so it gets a strict budget, around **50 milliseconds**. If it's slow or down, we **fail open** with a simple rule-based fallback rather than block every sale."
+        "Before a payment goes to the bank, the Payment Service asks the **Risk Engine** for a **fraud score**. It's an ML model over hundreds of features: the card, the device fingerprint from Stripe.js, the IP, the velocity of attempts on this card, and, crucially, what we've seen of this card **across every other merchant** on the network."
       ]
+    },
+    {
+      "title": "Allow, block, or challenge",
+      "script": [
+        "That network effect is a real advantage: a card that was used for fraud at one merchant an hour ago is suspicious at all of them. Based on the score and the merchant's rules, we **allow**, **block**, or **challenge** the payment with 3-D Secure, which bounces the customer to their bank to verify."
+      ],
+      "table": {
+        "columns": ["Risk", "Decision", "What happens"],
+        "rows": [
+          ["**Low**", "allow", "authorize with the bank"],
+          ["**Medium**", "challenge", "3-D Secure: the customer verifies with their bank"],
+          ["**High**", "block", "decline without calling the bank"]
+        ]
+      }
+    },
+    {
+      "title": "A 50 ms budget, failing open",
+      "script": [
+        "It's synchronous and on the critical path, so it gets a strict budget, around **50 milliseconds**. If it's slow or down, we **fail open** with a simple rule-based fallback rather than block every sale."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "payments", "label": "Payment Service", "kind": "service" },
+          { "id": "risk", "label": "Risk Engine", "kind": "ml" },
+          { "id": "router", "label": "Processor Router", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "payments", "to": "risk", "label": "score(payment)" },
+          { "from": "risk", "to": "payments", "label": "0.08 · allow (< 50 ms)", "reply": true },
+          { "from": "payments", "to": "router", "label": "authorize" },
+          { "note": "Risk Engine slow or down", "over": ["payments", "router"] },
+          { "from": "payments", "to": "risk", "label": "score(payment) · no reply" },
+          { "from": "payments", "to": "payments", "label": "50 ms: rule-based fallback" },
+          { "from": "payments", "to": "router", "label": "authorize (fail open)" }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
@@ -351,60 +671,340 @@
       "add": ["paydb", "e_payments_paydb"],
       "title": "Shard the payments database by merchant",
       "script": [
-        "At 6,000 payments a second at peak, each with several writes, plus idempotency keys and events, one Postgres primary runs out of headroom. So we **shard the payments database**.",
-        "The shard key is the **merchant**. Nearly every query is scoped to one merchant, either their API calls or their dashboard, and a payment's refunds, events and idempotency keys all live with it, so every state transition stays a **single-shard transaction**. No distributed transactions on the hot path.",
-        "The catch is **hot merchants**: one giant retailer on Black Friday can outgrow a shard. Those get dedicated shards, or are split by a sub-key such as payment ID, at the cost of losing cross-payment transactions for that merchant, which we rarely need. Each shard is a primary with **synchronous replicas** in other availability zones, so a committed payment survives losing a machine or a zone."
+        "At 6,000 payments a second at peak, each with several writes, plus idempotency keys and events, one Postgres primary runs out of headroom. So we **shard the payments database**."
       ]
+    },
+    {
+      "title": "The shard key: merchant",
+      "script": [
+        "The shard key is the **merchant**. Nearly every query is scoped to one merchant, either their API calls or their dashboard, and a payment's refunds, events and idempotency keys all live with it, so every state transition stays a **single-shard transaction**. No distributed transactions on the hot path."
+      ],
+      "entities": {
+        "items": [
+          { "id": "payment", "name": "Payment", "kind": "data", "fields": ["merchant_id  shard key", "id: text  PK", "amount, currency", "status: enum"] },
+          { "id": "refund", "name": "Refund", "kind": "data", "fields": ["merchant_id  shard key", "id: text  PK", "payment_id: FK", "amount"] },
+          { "id": "event", "name": "PaymentEvent", "kind": "data", "fields": ["merchant_id  shard key", "id: text  PK", "payment_id: FK", "type, at"] },
+          { "id": "key", "name": "IdempotencyKey", "kind": "data", "fields": ["merchant_id  shard key", "key  PK", "response: json"] }
+        ],
+        "relations": [
+          { "from": "payment", "to": "refund", "label": "same shard" },
+          { "from": "refund", "to": "event", "label": "same shard" },
+          { "from": "event", "to": "key", "label": "same shard" }
+        ]
+      }
+    },
+    {
+      "title": "Hot merchants",
+      "script": [
+        "The catch is **hot merchants**: one giant retailer on Black Friday can outgrow a shard. Those get dedicated shards, or are split by a sub-key such as payment ID, at the cost of losing cross-payment transactions for that merchant, which we rarely need."
+      ],
+      "table": {
+        "columns": ["Merchant", "Placement", "Trade-off"],
+        "rows": [
+          ["**Typical**", "shares a shard, keyed by merchant", "every transaction is single-shard"],
+          ["**Hot**", "a dedicated shard", "costs a whole shard, keeps all transactions"],
+          ["**Hottest**", "split by (merchant, payment ID)", "loses cross-payment transactions (rarely needed)"]
+        ]
+      }
+    },
+    {
+      "title": "Synchronous replicas",
+      "script": [
+        "Each shard is a primary with **synchronous replicas** in other availability zones, so a committed payment survives losing a machine or a zone."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "payments", "label": "Payment Service", "kind": "service" },
+          { "id": "primary", "label": "Shard primary", "kind": "data", "sub": "zone A" },
+          { "id": "r1", "label": "Replica", "kind": "data", "sub": "zone B" },
+          { "id": "r2", "label": "Replica", "kind": "data", "sub": "zone C" }
+        ],
+        "steps": [
+          { "from": "payments", "to": "primary", "label": "COMMIT" },
+          { "from": "primary", "to": "r1", "label": "WAL" },
+          { "from": "primary", "to": "r2", "label": "WAL" },
+          { "from": "r1", "to": "primary", "label": "ack", "reply": true },
+          { "from": "primary", "to": "payments", "label": "committed", "reply": true },
+          { "note": "acked only once another zone has it", "over": ["payments", "r2"] }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
       "add": ["sweeper", "e_sweeper_paydb", "e_sweeper_router"],
       "title": "The unknown state and the Status Sweeper",
       "script": [
-        "Now the hardest failure in payments. We send an authorization to an acquirer, and **the connection times out**. Did the bank approve it? We **don't know**. Retrying blindly could charge twice; marking it failed could mean the customer was charged and the merchant thinks they weren't.",
-        "So *unknown* is a **first-class state**. The payment stays in *processing*, and the API tells the merchant so. Every request to an acquirer carries **our own unique reference**, so the outcome can be looked up later.",
-        "The **Status Sweeper** periodically scans the database for payments stuck in *processing*. For each one it asks the acquirer, through the router, \"what happened to reference X?\", then moves the payment to the right final state, or **reverses** the authorization if we'd rather not keep it. It's the same idea as the idempotency key, applied to our side of the bank conversation: make the operation identifiable, so a retry can **look up the outcome** instead of repeating the action."
+        "Now the hardest failure in payments. We send an authorization to an acquirer, and **the connection times out**."
       ]
+    },
+    {
+      "title": "Two bad options",
+      "script": [
+        "Did the bank approve it? We **don't know**. Retrying blindly could charge twice; marking it failed could mean the customer was charged and the merchant thinks they weren't."
+      ],
+      "table": {
+        "columns": ["After a timeout, we…", "If the bank actually approved"],
+        "rows": [
+          ["**Retry blindly**", "the customer is charged twice"],
+          ["**Mark it failed**", "the customer is charged, the merchant thinks they weren't"],
+          ["**Keep it unknown, then find out**", "we settle on the right answer"]
+        ],
+        "highlight": 2
+      }
+    },
+    {
+      "title": "Unknown is a real state",
+      "script": [
+        "So *unknown* is a **first-class state**. The payment stays in *processing*, and the API tells the merchant so. Every request to an acquirer carries **our own unique reference**, so the outcome can be looked up later."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "merchant", "label": "Merchant Server", "kind": "client" },
+          { "id": "payments", "label": "Payment Service", "kind": "service" },
+          { "id": "router", "label": "Processor Router", "kind": "service" },
+          { "id": "acq", "label": "Acquirer", "kind": "ghost" }
+        ],
+        "steps": [
+          { "from": "merchant", "to": "payments", "label": "confirm pay_123" },
+          { "from": "payments", "to": "router", "label": "authorize · ref ch_8f3a" },
+          { "from": "router", "to": "acq", "label": "auth · ref ch_8f3a" },
+          { "note": "timeout: no answer", "over": ["router", "acq"] },
+          { "from": "router", "to": "payments", "label": "unknown", "reply": true },
+          { "from": "payments", "to": "payments", "label": "stay in processing" },
+          { "from": "payments", "to": "merchant", "label": "pay_123 · processing", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "The sweeper resolves it",
+      "script": [
+        "The **Status Sweeper** periodically scans the database for payments stuck in *processing*. For each one it asks the acquirer, through the router, \"what happened to reference X?\", then moves the payment to the right final state, or **reverses** the authorization if we'd rather not keep it."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "sweeper", "label": "Status Sweeper", "kind": "service" },
+          { "id": "db", "label": "Payments DB", "kind": "data" },
+          { "id": "router", "label": "Processor Router", "kind": "service" },
+          { "id": "acq", "label": "Acquirer", "kind": "ghost" }
+        ],
+        "steps": [
+          { "from": "sweeper", "to": "db", "label": "stuck in processing > 1 min?" },
+          { "from": "db", "to": "sweeper", "label": "pay_123 · ref ch_8f3a", "reply": true },
+          { "from": "sweeper", "to": "router", "label": "status of ch_8f3a?" },
+          { "from": "router", "to": "acq", "label": "inquiry · ref ch_8f3a" },
+          { "from": "acq", "to": "router", "label": "approved", "reply": true },
+          { "from": "router", "to": "sweeper", "label": "approved", "reply": true },
+          { "from": "sweeper", "to": "db", "label": "processing → requires_capture" },
+          { "note": "or reverse the authorization if we'd rather not keep it", "over": ["sweeper", "acq"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Same idea, both directions",
+      "script": [
+        "It's the same idea as the idempotency key, applied to our side of the bank conversation: make the operation identifiable, so a retry can **look up the outcome** instead of repeating the action."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "merchant", "label": "Merchant Server", "kind": "client" },
+          { "id": "payments", "label": "Payment Service", "kind": "service" },
+          { "id": "acq", "label": "Acquirer", "kind": "ghost" }
+        ],
+        "steps": [
+          { "from": "merchant", "to": "payments", "label": "confirm · Idempotency-Key k1" },
+          { "from": "payments", "to": "acq", "label": "authorize · ref ch_8f3a" },
+          { "note": "a response is lost on either hop", "over": ["merchant", "acq"] },
+          { "from": "merchant", "to": "payments", "label": "retry with k1" },
+          { "from": "payments", "to": "merchant", "label": "saved response", "reply": true },
+          { "from": "payments", "to": "acq", "label": "what happened to ch_8f3a?" },
+          { "from": "acq", "to": "payments", "label": "approved", "reply": true },
+          { "note": "neither retry repeats the action: it looks up the outcome", "over": ["merchant", "acq"] }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
       "add": ["kafka", "e_paydb_kafka"],
       "title": "An event bus, fed by an outbox",
       "script": [
-        "Many things need to react to a payment changing state: webhooks, the ledger, analytics, fraud features. We don't want the Payment Service calling each of them synchronously. So we publish **events** to an **Event Bus**, Kafka, partitioned by merchant so each merchant's events stay in order.",
-        "But publishing has a classic trap: if we commit the database change and then crash before publishing, the event is **lost**; if we publish first and the transaction rolls back, we've announced something that **didn't happen**.",
-        "The fix is the **transactional outbox**. In the **same transaction** that changes the payment, we insert a row into an *outbox* table. A relay, or change data capture on the database log, reads committed outbox rows and publishes them to Kafka. Every committed change produces an event, **at least once**, so every consumer downstream deduplicates by event ID."
+        "Many things need to react to a payment changing state: webhooks, the ledger, analytics, fraud features. We don't want the Payment Service calling each of them synchronously. So we publish **events** to an **Event Bus**, Kafka, partitioned by merchant so each merchant's events stay in order."
       ]
+    },
+    {
+      "title": "The dual-write trap",
+      "script": [
+        "But publishing has a classic trap: if we commit the database change and then crash before publishing, the event is **lost**; if we publish first and the transaction rolls back, we've announced something that **didn't happen**."
+      ],
+      "table": {
+        "columns": ["Order", "Goes wrong when", "Result"],
+        "rows": [
+          ["**Commit, then publish**", "we crash before publishing", "the event is **lost**"],
+          ["**Publish, then commit**", "the transaction rolls back", "we announced something that **didn't happen**"]
+        ]
+      }
+    },
+    {
+      "title": "The transactional outbox",
+      "script": [
+        "The fix is the **transactional outbox**. In the **same transaction** that changes the payment, we insert a row into an *outbox* table. A relay, or change data capture on the database log, reads committed outbox rows and publishes them to Kafka. Every committed change produces an event, **at least once**, so every consumer downstream deduplicates by event ID."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "payments", "label": "Payment Service", "kind": "service" },
+          { "id": "db", "label": "Payments DB", "kind": "data" },
+          { "id": "relay", "label": "Outbox Relay", "kind": "stream", "sub": "or CDC" },
+          { "id": "kafka", "label": "Event Bus", "kind": "stream" }
+        ],
+        "steps": [
+          { "from": "payments", "to": "db", "label": "BEGIN" },
+          { "from": "payments", "to": "db", "label": "UPDATE payment → succeeded" },
+          { "from": "payments", "to": "db", "label": "INSERT outbox (evt_77)" },
+          { "from": "payments", "to": "db", "label": "COMMIT" },
+          { "from": "relay", "to": "db", "label": "read committed outbox rows" },
+          { "from": "relay", "to": "kafka", "label": "publish evt_77" },
+          { "note": "at least once: consumers dedupe by event ID", "over": ["payments", "kafka"] }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
       "add": ["webhooks", "e_kafka_webhooks", "e_webhooks_merchant"],
       "title": "Webhook delivery",
       "script": [
-        "The **Webhook Service** consumes payment events and **POSTs** them to each merchant's registered endpoint. Three things matter.",
-        "**Retries with backoff**: merchant endpoints are often down or slow, so we retry for up to three days on an exponential schedule, and one merchant's dead endpoint must never slow anyone else's deliveries. Each merchant gets its own logical queue, with timeouts and concurrency limits per endpoint.",
-        "**Signatures**: every payload is signed with an HMAC using a per-endpoint secret, so merchants can verify it came from us and not an attacker. **At-least-once**: we may deliver the same event twice, so each carries an event ID and merchants are told to deduplicate. Ordering isn't guaranteed across retries, so we tell merchants to treat a webhook as a nudge and **fetch the payment's current state** from the API."
+        "The **Webhook Service** consumes payment events and **POSTs** them to each merchant's registered endpoint. Three things matter."
       ]
+    },
+    {
+      "title": "Retries with backoff",
+      "script": [
+        "**Retries with backoff**: merchant endpoints are often down or slow, so we retry for up to three days on an exponential schedule, and one merchant's dead endpoint must never slow anyone else's deliveries. Each merchant gets its own logical queue, with timeouts and concurrency limits per endpoint."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Exponential backoff** for up to 3 days", "detail": "e.g. 1 min, 5 min, 30 min, 2 h, … then give up and alert" },
+          { "text": "**A logical queue per merchant**", "detail": "a dead endpoint backs up only its own queue" },
+          { "text": "**Timeouts and concurrency limits** per endpoint", "detail": "a slow endpoint can't tie up shared workers" }
+        ]
+      }
+    },
+    {
+      "title": "Signed, at least once",
+      "script": [
+        "**Signatures**: every payload is signed with an HMAC (a hash-based message authentication code) using a per-endpoint secret, so merchants can verify it came from us and not an attacker. **At-least-once**: we may deliver the same event twice, so each carries an event ID and merchants are told to deduplicate. Ordering isn't guaranteed across retries, so we tell merchants to treat a webhook as a nudge and **fetch the payment's current state** from the API."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "webhooks", "label": "Webhook Service", "kind": "service" },
+          { "id": "merchant", "label": "Merchant Server", "kind": "client" },
+          { "id": "api", "label": "Stripe API", "kind": "infra" }
+        ],
+        "steps": [
+          { "from": "webhooks", "to": "merchant", "label": "POST evt_77 · HMAC signature" },
+          { "from": "merchant", "to": "merchant", "label": "verify HMAC with endpoint secret" },
+          { "from": "merchant", "to": "merchant", "label": "seen evt_77 before? skip" },
+          { "from": "merchant", "to": "webhooks", "label": "200 OK", "reply": true },
+          { "from": "merchant", "to": "api", "label": "GET /payments/pay_123" },
+          { "from": "api", "to": "merchant", "label": "current state", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
       "add": ["ledger", "e_kafka_ledger"],
       "title": "A double-entry ledger",
       "script": [
-        "Now the money itself. The payment's status says *succeeded*, but how much does each merchant actually have? That's the **Ledger**, and it's built on accounting's oldest idea: **double-entry bookkeeping**.",
-        "Every movement of money is a **transaction of entries that sum to zero**. A $100 charge with a $3 fee might debit *funds receivable from the acquirer* $100, credit the *merchant's balance* $97, and credit *Stripe fee revenue* $3. A **refund** is a new transaction that moves money back; we **never update or delete** an entry. A merchant's balance is the sum of the entries on their account, cached and maintained incrementally.",
-        "The ledger consumes payment events and writes entries **idempotently**, keyed by event ID, so redelivery is harmless. Because it's append-only and always balances, it's **auditable**: any balance can be explained, entry by entry, years later. And if the entries ever don't sum to zero, we know immediately that something is wrong."
+        "Now the money itself. The payment's status says *succeeded*, but how much does each merchant actually have? That's the **Ledger**, and it's built on accounting's oldest idea: **double-entry bookkeeping**."
       ]
+    },
+    {
+      "title": "A $100 charge, in entries",
+      "script": [
+        "Every movement of money is a **transaction of entries that sum to zero**. A $100 charge with a $3 fee might debit *funds receivable from the acquirer* $100, credit the *merchant's balance* $97, and credit *Stripe fee revenue* $3."
+      ],
+      "table": {
+        "columns": ["Account", "Debit", "Credit"],
+        "rows": [
+          ["**Funds receivable** from the acquirer", "$100", ""],
+          ["**Merchant balance**", "", "$97"],
+          ["**Stripe fee revenue**", "", "$3"],
+          ["**Total**", "$100", "$100 · balanced"]
+        ],
+        "highlight": 3
+      }
+    },
+    {
+      "title": "Append-only entries",
+      "script": [
+        "A **refund** is a new transaction that moves money back; we **never update or delete** an entry. A merchant's balance is the sum of the entries on their account, cached and maintained incrementally."
+      ],
+      "entities": {
+        "items": [
+          { "id": "txn", "name": "LedgerTransaction", "kind": "data", "fields": ["id: text  PK", "event_id: text  UNIQUE", "type: charge | refund | payout", "created_at"] },
+          { "id": "entry", "name": "Entry", "kind": "data", "fields": ["id  PK", "txn_id: FK", "account_id: FK", "amount: ± cents", "append-only"] },
+          { "id": "account", "name": "Account", "kind": "data", "fields": ["id: text  PK", "owner: merchant | Stripe", "type: balance | fees | …", "cached_balance"] }
+        ],
+        "relations": [
+          { "from": "txn", "to": "entry", "label": "1 — 2..*" },
+          { "from": "entry", "to": "account", "label": "* — 1" }
+        ]
+      }
+    },
+    {
+      "title": "Idempotent and auditable",
+      "script": [
+        "The ledger consumes payment events and writes entries **idempotently**, keyed by event ID, so redelivery is harmless. Because it's append-only and always balances, it's **auditable**: any balance can be explained, entry by entry, years later. And if the entries ever don't sum to zero, we know immediately that something is wrong."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Idempotent**: one transaction per event ID", "detail": "a redelivered event is a no-op" },
+          { "text": "**Auditable**: append-only, always balanced", "detail": "any balance explained entry by entry, years later" },
+          { "text": "**Self-checking**: entries must sum to zero", "detail": "if they don't, we know immediately" }
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["recon", "e_acq_recon", "e_recon_ledger"],
       "title": "Reconciliation against the banks",
       "script": [
-        "The ledger records what **we believe** happened. But the truth about money is what the **banks** say happened. Every day, each acquirer sends a **settlement file**: every transaction they cleared, fees they charged, and chargebacks from customers who disputed a payment.",
-        "The **Reconciliation** service matches every line of those files against our ledger, by the reference we attached to each request. Most lines match exactly. The rest are breaks: a charge the bank settled that we think failed (perhaps an unknown state resolved wrongly), an amount that's off by a fee, a dispute we hadn't heard about. Each break becomes an **adjusting entry** in the ledger or a ticket for a human.",
-        "This is the safety net under the whole system. Idempotency and the outbox make errors rare; reconciliation makes sure the ones that slip through are **caught within a day**."
+        "The ledger records what **we believe** happened. But the truth about money is what the **banks** say happened. Every day, each acquirer sends a **settlement file**: every transaction they cleared, fees they charged, and chargebacks from customers who disputed a payment."
       ]
+    },
+    {
+      "title": "Matches and breaks",
+      "script": [
+        "The **Reconciliation** service matches every line of those files against our ledger, by the reference we attached to each request. Most lines match exactly. The rest are breaks: a charge the bank settled that we think failed (perhaps an unknown state resolved wrongly), an amount that's off by a fee, a dispute we hadn't heard about. Each break becomes an **adjusting entry** in the ledger or a ticket for a human."
+      ],
+      "table": {
+        "columns": ["Bank file says", "Our ledger says", "Resolution"],
+        "rows": [
+          ["ch_1 settled $50", "ch_1 succeeded $50", "**match**"],
+          ["ch_2 settled $50", "ch_2 failed", "break: adjusting entry, investigate"],
+          ["ch_3 fee $1.52", "ch_3 fee $1.50", "break: fee adjustment"],
+          ["ch_4 chargeback $80", "no dispute", "break: record the dispute"]
+        ],
+        "highlight": 0
+      }
+    },
+    {
+      "title": "The safety net",
+      "script": [
+        "This is the safety net under the whole system. Idempotency and the outbox make errors rare; reconciliation makes sure the ones that slip through are **caught within a day**."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Idempotency keys**", "detail": "merchant retries never charge twice" },
+          { "text": "**Unknown state + sweeper**", "detail": "bank timeouts get resolved, not guessed" },
+          { "text": "**Outbox**", "detail": "every committed change becomes an event" },
+          { "text": "**Reconciliation**", "detail": "whatever still slips through is caught within a day" }
+        ]
+      }
     },
     {
       "scene": "main",
@@ -456,8 +1056,45 @@
       "add": ["regions"],
       "title": "Five nines: multiple regions",
       "script": [
-        "Last, availability. Five nines means surviving the loss of a **whole region**. The stack runs in **several regions**, with each merchant's data having one home region at a time and **synchronous replication** to a standby. If a region fails, we promote the standby and route that merchant's traffic there. That's a brief pause rather than a double charge. Within a region, everything stateless is horizontally scaled, and acquirer connections are spread across regions so losing one doesn't cut us off from a bank."
+        "Last, availability. Five nines means surviving the loss of a **whole region**. The stack runs in **several regions**, with each merchant's data having one home region at a time and **synchronous replication** to a standby."
       ]
+    },
+    {
+      "title": "Region failover",
+      "script": [
+        "If a region fails, we promote the standby and route that merchant's traffic there. That's a brief pause rather than a double charge."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "merchant", "label": "Merchant Server", "kind": "client" },
+          { "id": "edge", "label": "Global routing", "kind": "infra", "sub": "DNS · anycast" },
+          { "id": "home", "label": "Home region", "kind": "service" },
+          { "id": "standby", "label": "Standby region", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "merchant", "to": "edge", "label": "confirm pay_123" },
+          { "from": "edge", "to": "home", "label": "route to home region" },
+          { "from": "home", "to": "standby", "label": "sync replication" },
+          { "note": "home region fails", "over": ["home"] },
+          { "from": "standby", "to": "standby", "label": "promote to primary" },
+          { "from": "merchant", "to": "edge", "label": "retry (same Idempotency-Key)" },
+          { "from": "edge", "to": "standby", "label": "route to new home" },
+          { "from": "standby", "to": "merchant", "label": "same result, no double charge", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Redundancy within a region",
+      "script": [
+        "Within a region, everything stateless is horizontally scaled, and acquirer connections are spread across regions so losing one doesn't cut us off from a bank."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Stateless services scale horizontally**", "detail": "gateway, Payment Service, router, webhooks" },
+          { "text": "**Acquirer connections spread across regions**", "detail": "losing a region never cuts us off from a bank" }
+        ]
+      }
     },
     {
       "scene": "main",
