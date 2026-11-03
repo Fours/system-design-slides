@@ -1,6 +1,11 @@
 {
   "decks": [
     {
+      "slug": "dropbox",
+      "title": "Design Dropbox",
+      "description": "File sync at exabyte scale: content-addressed blocks with dedupe, a per-namespace metadata journal with cursors, long-poll notifications, conflicted copies, and erasure-coded storage."
+    },
+    {
       "slug": "google-docs",
       "title": "Design Google Docs",
       "description": "Real-time collaborative editing: operational transformation, one session owner per document, an op log with snapshots, and offline edits."
