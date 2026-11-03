@@ -1,0 +1,374 @@
+{
+  "title": "Design a URL Shortener",
+  "topic": "System Design: URL Shortener",
+  "requirements": {
+    "functional": {
+      "intro": {
+        "title": "Functional requirements",
+        "script": [
+          "A URL shortener looks like a toy problem: take a long URL, hand back a short one, and redirect anyone who clicks it. But it's a great interview question because almost every interesting decision hides in **two numbers**: how many links we create, and how many times they get clicked.",
+          "Let's start by agreeing on **what the system does**, and what we're deliberately leaving out."
+        ]
+      },
+      "cards": [
+        {
+          "title": "Shorten a URL",
+          "lines": ["Long URL in, short link out", "e.g. sho.rt/aZ3x9Kq"],
+          "script": ["The core feature: a user, or a program calling our API, submits a **long URL** and gets back a **short link** with a 7-character code, like sho.rt/aZ3x9Kq. Every call creates a new, unique code, even if someone has shortened the same URL before, because each link has its own owner, expiry and click stats."]
+        },
+        {
+          "title": "Redirect",
+          "lines": ["GET the short link →", "redirect to the long URL"],
+          "script": ["When anyone opens the short link, we look up the code and answer with an **HTTP redirect** to the original URL. This is the path that matters most: it's what the whole internet sees, it's most of our traffic, and if it breaks, every link anyone has ever printed, tweeted or emailed breaks with it."]
+        },
+        {
+          "title": "Custom aliases",
+          "lines": ["Optional vanity code,", "e.g. sho.rt/spring-sale"],
+          "script": ["Users can optionally pick their own **custom alias** instead of a generated code, like sho.rt/spring-sale. That means codes come from two sources, generated and user-chosen, and they have to share one namespace without ever colliding."]
+        },
+        {
+          "title": "Expiration",
+          "lines": ["Optional TTL per link;", "expired links stop working"],
+          "script": ["A link can have an optional **expiration time**. After it passes, the short link stops redirecting and returns a clear \"this link has expired\" response instead. Links without an expiry live forever."]
+        },
+        {
+          "title": "Click analytics",
+          "lines": ["Clicks per link over time,", "by country, referrer, device"],
+          "script": ["Link owners want to see **how their links perform**: total clicks, clicks over time, and breakdowns by country, referrer and device. This is why many people use a shortener in the first place, and it puts a write, a click event, on every single redirect."]
+        },
+        {
+          "title": "Manage links",
+          "lines": ["List, edit and disable", "your own links"],
+          "script": ["Finally, a signed-in user can **list their links**, change where one points, or **disable** one. Disabling also matters to us as operators: when a link turns out to point at malware, we need to be able to switch it off everywhere, quickly."]
+        }
+      ],
+      "outOfScope": {
+        "title": "Out of scope",
+        "script": [
+          "Out of scope: **QR codes**, which are just a rendering of the short link; **link-in-bio pages**; **A/B or geo routing** of one link to several destinations; and **billing and plans**. They're real products, but none of them changes the core architecture, so we'll leave them out."
+        ],
+        "lines": ["QR codes  ·  Link-in-bio pages  ·  A/B and geo routing  ·  Billing and plans"]
+      }
+    },
+    "nonFunctional": {
+      "intro": {
+        "title": "Non-functional requirements",
+        "script": [
+          "Now the **qualities** the system needs, and a few back-of-the-envelope numbers. For a URL shortener these matter more than the features: the features are easy, and doing them for billions of links at very low latency is the actual problem."
+        ]
+      },
+      "cards": [
+        {
+          "title": "Scale",
+          "lines": ["100M new links a day,", "100 reads per write"],
+          "script": ["Let's design for **100 million new links a day**, and assume each link is clicked about **100 times** over its life on average. So reads outnumber writes by **100 to 1**; that ratio drives almost every choice we'll make."]
+        },
+        {
+          "title": "Latency",
+          "lines": ["Redirect p99 < 20 ms", "inside our servers"],
+          "script": ["A redirect is an extra hop between the user and the page they actually want, so it has to be nearly invisible. The target is **p99 under 20 milliseconds** inside our systems, and a nearby edge so the network adds little more. Creating a link can be slower: a couple of hundred milliseconds is fine."]
+        },
+        {
+          "title": "Availability",
+          "lines": ["Redirects 99.99%;", "creation may degrade"],
+          "script": ["Redirects need **four nines**: a broken redirect breaks someone else's product, marketing campaign or printed poster. Link creation is less critical. If it has to degrade, we'd rather fail creates than fail redirects, and we'll keep the two paths separate so we can."]
+        },
+        {
+          "title": "Durability",
+          "lines": ["A link is never lost;", "codes are never reused"],
+          "script": ["Once we hand out a short link, it may be printed on a billboard for years, so the mapping must **never be lost**. And we'll **never reuse a code**, not even after its link expires, because an old printout would then silently send people somewhere new."]
+        },
+        {
+          "title": "Consistency",
+          "lines": ["New link works at once;", "analytics may lag"],
+          "script": ["Read-your-writes on the link itself: the moment we return a short link, **clicking it must work**, because the first thing a user does is test it. Click counts, on the other hand, can be **eventually consistent**, a minute behind is fine."]
+        },
+        {
+          "title": "Unguessable codes",
+          "lines": ["7 characters, short;", "not enumerable in order"],
+          "script": ["Codes should be **short**, 7 characters, but not **sequential**. If links were aaaaaab, aaaaaac and so on, anyone could walk the whole keyspace and scrape every private link, so codes must look random even though we generate them cheaply."]
+        }
+      ],
+      "estimates": {
+        "title": "Back-of-the-envelope estimates",
+        "script": [
+          "The numbers. **100 million links a day** is about **1,200 creates a second** on average, a few thousand at peak. With a 100-to-1 ratio that's **10 billion redirects a day**, roughly **115,000 a second** on average and around **300,000** at peak.",
+          "Over five years we accumulate about **180 billion links**. At around 500 bytes each, with the long URL and some metadata, that's **90 terabytes**, about 270 with three replicas. Seven base-62 characters give us **3.5 trillion codes**, so five years uses only about 5% of the keyspace.",
+          "Every redirect also produces a **click event** of about 100 bytes, which is roughly **a terabyte a day** of analytics data."
+        ],
+        "rows": [
+          ["Writes", ["100M links/day ≈ 1.2K/s", "a few K/s at peak"]],
+          ["Reads", ["100 : 1 → 10B redirects/day", "≈ 115K/s average, ~300K/s peak"]],
+          ["Storage", ["5 yrs × 100M/day ≈ 180B links", "× ~500 B ≈ 90 TB (×3 replicas)"]],
+          ["Keyspace", ["62⁷ ≈ 3.5 trillion codes", "5 years uses ~5% of it"]],
+          ["Clicks", ["10B events/day × ~100 B", "≈ 1 TB/day of raw clicks"]]
+        ]
+      },
+      "takeaway": {
+        "title": "Takeaway",
+        "heading": "Takeaway: a read-heavy key-value lookup",
+        "script": [
+          "So the takeaway: at its heart this is a giant, **read-heavy key-value lookup**, code to URL, at hundreds of thousands of reads a second. The data is small per row but large in total, never changes much, and is accessed with a very skewed popularity, which is the perfect shape for **caching**.",
+          "The two genuinely interesting problems are **generating unique, unguessable codes** cheaply, and keeping the **redirect path** fast and up no matter what else is going on. Let's build it."
+        ],
+        "lines": [
+          "~300K redirects/s vs ~1K creates/s → optimize and isolate the read path; cache aggressively",
+          "180B links, 3.5T codes → unique IDs without coordination per request, scrambled so they can't be enumerated"
+        ]
+      }
+    }
+  },
+  "scenes": {
+    "main": {
+      "boxes": [
+        { "id": "creator", "x": 40, "y": 130, "w": 170, "h": 60, "label": "Link Creator", "kind": "client", "sub": "web app · API" },
+        { "id": "visitor", "x": 40, "y": 310, "w": 170, "h": 60, "label": "Visitor", "kind": "client", "sub": "clicks a short link" },
+        { "id": "cdn", "x": 270, "y": 310, "w": 150, "h": 60, "label": "CDN / Edge", "kind": "infra", "sub": "caches redirects" },
+        { "id": "lb", "x": 480, "y": 130, "w": 140, "h": 240, "label": "Load Balancer", "kind": "infra", "sub": "L7 · TLS" },
+        { "id": "ratelimit", "x": 480, "y": 400, "w": 140, "h": 60, "label": "Rate Limiter", "kind": "data", "sub": "Redis counters" },
+        { "id": "threat", "x": 480, "y": 40, "w": 140, "h": 60, "label": "Threat Intel", "kind": "ghost", "sub": "blocklist feeds" },
+        { "id": "server", "x": 700, "y": 220, "w": 190, "h": 60, "label": "Server", "kind": "service", "sub": "shorten + redirect" },
+        { "id": "safety", "x": 700, "y": 40, "w": 190, "h": 60, "label": "Safety Scanner", "kind": "service", "sub": "checks destinations" },
+        { "id": "shorten", "x": 700, "y": 130, "w": 190, "h": 60, "label": "Link Service", "kind": "service", "sub": "create · edit · disable" },
+        { "id": "redirect", "x": 700, "y": 220, "w": 190, "h": 60, "label": "Redirect Service", "kind": "service", "sub": "GET /:code → 302" },
+        { "id": "stats", "x": 700, "y": 400, "w": 190, "h": 60, "label": "Stats Service", "kind": "service", "sub": "clicks per link" },
+        { "id": "cache", "x": 930, "y": 120, "w": 90, "h": 190, "label": "Cache", "kind": "data tier", "sub": "Redis" },
+        { "id": "counter", "x": 1060, "y": 40, "w": 190, "h": 60, "label": "Global Counter", "kind": "data", "sub": "Redis INCR" },
+        { "id": "kgs", "x": 1060, "y": 40, "w": 190, "h": 60, "label": "ID Allocator", "kind": "data", "sub": "ZooKeeper · ID ranges" },
+        { "id": "linkdb", "x": 1060, "y": 150, "w": 190, "h": 100, "label": "Link DB", "kind": "data", "sub": "code → URL · sharded KV" },
+        { "id": "analytics", "x": 1060, "y": 400, "w": 190, "h": 60, "label": "Analytics DB", "kind": "data", "sub": "ClickHouse · rollups" },
+        { "id": "sweeper", "x": 1320, "y": 130, "w": 180, "h": 60, "label": "Expiry Sweeper", "kind": "service", "sub": "deletes expired links" },
+        { "id": "regions", "x": 1320, "y": 220, "w": 180, "h": 60, "label": "Other Regions", "kind": "ghost", "sub": "full replicas" },
+        { "id": "kafka", "x": 1320, "y": 310, "w": 180, "h": 60, "label": "Click Events", "kind": "stream", "sub": "Kafka · keyed by code" },
+        { "id": "aggregator", "x": 1320, "y": 400, "w": 180, "h": 60, "label": "Click Aggregator", "kind": "stream", "sub": "Flink · 1-min rollups" }
+      ],
+      "edges": [
+        { "id": "e_creator_server", "from": "creator", "to": "server", "pts": [[210, 160], [660, 160], [660, 235], [700, 235]], "label": "POST /links", "lp": [435, 152, "middle"], "both": true },
+        { "id": "e_visitor_server", "from": "visitor", "to": "server", "pts": [[210, 340], [660, 340], [660, 265], [700, 265]], "label": "GET /aZ3x9Kq", "lp": [435, 332, "middle"], "both": true },
+        { "id": "e_server_db", "from": "server", "to": "linkdb", "pts": [[890, 235], [1060, 235]], "label": "read / write" },
+        { "id": "e_server_counter", "from": "server", "to": "counter", "pts": [[850, 220], [850, 70], [1060, 70]], "label": "next ID" },
+        { "id": "e_server_kgs", "from": "server", "to": "kgs", "pts": [[850, 220], [850, 70], [1060, 70]], "label": "lease range" },
+        { "id": "e_creator_lb", "from": "creator", "to": "lb", "pts": [[210, 160], [480, 160]], "label": "POST /links", "both": true },
+        { "id": "e_visitor_lb", "from": "visitor", "to": "lb", "pts": [[210, 340], [480, 340]], "label": "GET /aZ3x9Kq", "both": true },
+        { "id": "e_visitor_cdn", "from": "visitor", "to": "cdn", "pts": [[210, 340], [270, 340]], "both": true },
+        { "id": "e_cdn_lb", "from": "cdn", "to": "lb", "pts": [[420, 340], [480, 340]], "both": true },
+        { "id": "e_shorten_kgs", "from": "shorten", "to": "kgs", "pts": [[890, 145], [910, 145], [910, 70], [1060, 70]], "label": "lease range" },
+        { "id": "e_shorten_db", "from": "shorten", "to": "linkdb", "pts": [[890, 175], [1060, 175]], "label": "write", "lp": [1040, 167, "middle"] },
+        { "id": "e_redirect_db", "from": "redirect", "to": "linkdb", "pts": [[890, 235], [1060, 235]], "label": "read", "lp": [1040, 227, "middle"] },
+        { "id": "e_redirect_kafka", "from": "redirect", "to": "kafka", "pts": [[840, 280], [840, 340], [1320, 340]], "label": "click event", "async": true },
+        { "id": "e_kafka_agg", "from": "kafka", "to": "aggregator", "pts": [[1410, 370], [1410, 400]] },
+        { "id": "e_agg_analytics", "from": "aggregator", "to": "analytics", "pts": [[1320, 430], [1250, 430]] },
+        { "id": "e_stats_analytics", "from": "stats", "to": "analytics", "pts": [[890, 430], [1060, 430]], "label": "query" },
+        { "id": "e_sweeper_db", "from": "sweeper", "to": "linkdb", "pts": [[1320, 175], [1250, 175]], "async": true },
+        { "id": "e_shorten_safety", "from": "shorten", "to": "safety", "pts": [[795, 130], [795, 100]] },
+        { "id": "e_safety_threat", "from": "safety", "to": "threat", "pts": [[700, 70], [620, 70]] },
+        { "id": "e_lb_ratelimit", "from": "lb", "to": "ratelimit", "pts": [[550, 370], [550, 400]] },
+        { "id": "e_db_regions", "from": "linkdb", "to": "regions", "pts": [[1250, 235], [1320, 235]], "both": true, "async": true }
+      ],
+      "bus": { "hub": "lb", "hubX": 620, "hubY": 250, "x": 660, "members": ["server", "shorten", "redirect", "stats"] }
+    }
+  },
+  "slides": [
+    {
+      "scene": "main",
+      "add": ["creator", "visitor", "server", "e_creator_server", "e_visitor_server"],
+      "title": "Start simple: one server",
+      "script": [
+        "Let's start with the simplest thing that works. There are two kinds of users: a **link creator**, who posts a long URL and gets a short link back, and a **visitor**, who clicks that short link. Both talk to **one server**.",
+        "The server does two things. On POST /links it makes up a code and remembers the mapping; on GET /aZ3x9Kq it looks up the code and answers with a **redirect**. Everything we add from here exists to fix a specific weakness of this version."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["linkdb", "e_server_db"],
+      "title": "Store the mapping in a database",
+      "script": [
+        "The server can't keep the mapping in memory; a restart would break every link ever made. So we add a **Link DB**. The record is simple: the **code** as the key, the **long URL**, the owner, a creation time and an optional expiry.",
+        "Look at the access pattern: every read is a **point lookup by code**, there are no joins and no range scans on the hot path. That's a key-value workload, which will matter when we choose and scale the database in a few steps."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["server", "linkdb", "e_server_db"],
+      "title": "Where do codes come from? Not a hash",
+      "script": [
+        "Now the interesting question: **how do we make the code**? The obvious idea is to **hash the long URL**, say MD5, encode it in base 62 and keep the first 7 characters.",
+        "It has two problems. **Collisions**: with 180 billion links in a 3.5-trillion space, truncated hashes collide all the time, so every create needs a read-check-retry loop. And the **same URL always gets the same code**, but we want separate links per user, each with its own stats and expiry; salting the hash fixes that, but not the collisions."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["counter", "e_server_counter"],
+      "title": "A counter, encoded in base 62",
+      "script": [
+        "A better source is a **counter**. Every create takes the next integer from a **global counter**, say Redis INCR, and encodes it in **base 62**: digits, lowercase and uppercase letters. Seven characters cover 62 to the 7th, about 3.5 trillion IDs.",
+        "Uniqueness is now free: two creates never get the same number, so there's **no collision check** at all. But we just traded one problem for two others, and the next two slides deal with them."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["server", "counter", "e_server_counter"],
+      "title": "Scramble the IDs so they can't be walked",
+      "script": [
+        "Problem one: sequential IDs give **sequential codes**. If I get aaaaaab, I can guess aaaaaac, and walk everyone's links. So before encoding, we pass the ID through a **keyed bijection**, a small Feistel cipher over the range 0 to 62⁷.",
+        "Because it's a one-to-one permutation, distinct IDs still give **distinct codes**, so we keep uniqueness for free, but consecutive IDs land far apart and look random. Someone guessing random codes still hits a real link about 5% of the time late in our life; if that's too much for private links, we make those 8 or 9 characters."
+      ]
+    },
+    {
+      "scene": "main",
+      "remove": ["counter"],
+      "add": ["kgs", "e_server_kgs"],
+      "title": "Lease ID ranges instead of single IDs",
+      "script": [
+        "Problem two: a single counter is a **single point of failure** and a network round trip on every create. So instead of one ID at a time, each server **leases a range**, say a million IDs, from an **ID Allocator** backed by ZooKeeper, and hands them out from memory.",
+        "The allocator is touched once per million links, so it's never a bottleneck, and if it's briefly down, servers keep going on their current range. If a server crashes we **lose the rest of its range**; that's fine, because we have trillions of IDs and gaps are invisible after the scramble."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["lb", "e_creator_lb", "e_visitor_lb"],
+      "remove": ["e_creator_server", "e_visitor_server"],
+      "title": "Scale out behind a load balancer",
+      "script": [
+        "One server can't serve 300,000 redirects a second, and if it dies, every link is down. So we put a **load balancer** in front and run **many identical servers** behind it. They're stateless: the mapping lives in the Link DB and each server's ID range is just a cache of numbers.",
+        "The load balancer terminates **TLS**, health-checks the servers and spreads requests across them. Any server can handle any request, so scaling out is just adding servers."
+      ]
+    },
+    {
+      "scene": "main",
+      "remove": ["server"],
+      "add": ["shorten", "redirect", "e_shorten_kgs", "e_shorten_db", "e_redirect_db"],
+      "title": "Split writes from reads",
+      "script": [
+        "Creates and redirects have completely different profiles: about **1,000 creates a second** that do validation, ID allocation and safety checks, versus **300,000 redirects a second** that do one lookup. So we split the server into a **Link Service** and a **Redirect Service**.",
+        "Now each one scales independently, and a bad deploy or a spike in creates **can't take redirects down** with it. That's exactly the availability split we asked for: creation may degrade, redirects may not."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["visitor", "lb", "redirect", "linkdb", "e_visitor_lb", "e_redirect_db"],
+      "title": "The redirect path, and 301 vs. 302",
+      "script": [
+        "Let's trace a click: the visitor hits the load balancer, the **Redirect Service** looks up the code in the Link DB, and answers with a redirect whose Location header is the long URL. Unknown codes get a **404**, expired ones a **410 Gone**.",
+        "Which redirect? A **301 Permanent** is cached by the browser forever, which saves us traffic but means repeat clicks never reach us: we **lose the analytics** and can never disable or expire that link for that browser. So we send a **302**, with caching controlled by us, and pay for the extra traffic on purpose."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["cache"],
+      "title": "Cache the hot links",
+      "script": [
+        "With 100 reads per write, the Link DB would be hammered by reads. But clicks are extremely **skewed**: a link is clicked most in its first days, and a small fraction of links gets most of the traffic. So we put a **Redis cache** in front of the database.",
+        "The Redirect Service reads the cache first and falls back to the database on a miss, then fills the cache: **cache-aside** with LRU eviction. A few hundred gigabytes of RAM holds the hot set, and we'd expect well over **90% of redirects** never to touch the database. We also cache \"not found\" briefly, so a bot hammering random codes can't reach the database either."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["creator", "lb", "shorten", "cache", "linkdb", "e_creator_lb", "e_shorten_db"],
+      "title": "A new link works immediately",
+      "script": [
+        "Our consistency requirement says a new link must **work the moment we return it**. The Link Service writes the database first and only then returns the short link, so any redirect that reaches the database will find it.",
+        "The cache is the risk: if the creator tested a typo'd alias earlier, the cache could still hold a \"not found\". So on create, the Link Service also **writes the new mapping into the cache**, overwriting anything stale. Writes are rare and reads are hot, so this write-through costs us almost nothing."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["cdn", "e_visitor_cdn", "e_cdn_lb"],
+      "remove": ["e_visitor_lb"],
+      "title": "Redirects at the edge",
+      "script": [
+        "Visitors come from everywhere, and a round trip to a single data center can be 150 milliseconds by itself. So redirects go through a **CDN**: our 302s carry a short shared-cache lifetime, say a minute, so the edge answers repeat clicks on a hot link **without reaching us at all**.",
+        "We keep browser caching off, so the edge is the only cache we don't control directly, and we can **purge** it when a link is edited or disabled. Clicks the edge answers never reach the Redirect Service, so the CDN's **access logs** are shipped into the same click pipeline we're about to build."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["linkdb", "e_shorten_db", "e_redirect_db"],
+      "title": "Sharding the Link DB",
+      "script": [
+        "Ninety terabytes, growing forever, won't fit on one machine. Since every access is a lookup by code, we **partition by a hash of the code** in a distributed key-value store like **Cassandra or DynamoDB**: consistent hashing spreads codes evenly, and adding nodes moves only a small slice of data.",
+        "Every row is stored on **three replicas**, and we read and write at **quorum**, so a node failure loses nothing and a read after a successful write always sees it. Listing a user's links needs a second table keyed by **owner and creation time**, written alongside the main one."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["creator", "shorten", "linkdb", "e_shorten_db"],
+      "title": "Custom aliases share the namespace",
+      "script": [
+        "Custom aliases come from users, not from our counter, so two people can ask for **spring-sale** at once, or an alias can equal a code we'll generate later. We handle both with a **conditional insert**: put this code only if it doesn't exist yet, a lightweight transaction in Cassandra or a conditional put in DynamoDB.",
+        "We use the conditional insert for **generated codes too**. Normally it always succeeds; if a generated code was taken by an alias, we simply take the next ID. Conditional writes are slower, but at a thousand creates a second that's fine. We also validate aliases and block **reserved words** like api, login and admin."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["kafka", "e_redirect_kafka"],
+      "title": "Every click becomes an event",
+      "script": [
+        "Now analytics. The redirect must stay fast, so the Redirect Service doesn't count anything itself: it **emits a click event** to **Kafka**, with the code, time, country from the IP, referrer and user agent, and returns immediately.",
+        "The send is **asynchronous and fire-and-forget**, buffered in the service and batched. If Kafka is slow, we drop analytics, never redirects. Events are keyed by code, so each link's clicks stay in order on one partition."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["aggregator", "e_kafka_agg", "analytics", "e_agg_analytics"],
+      "title": "Aggregate clicks into rollups",
+      "script": [
+        "A terabyte of raw clicks a day is too much to query on every dashboard view. A **stream processor**, say Flink, consumes the topic and **rolls clicks up per link per minute**, by country, referrer and device, and writes those rollups to a columnar **Analytics DB** like ClickHouse.",
+        "It also filters out **bots** and link-preview crawlers, which would otherwise inflate counts. The numbers lag by about a minute, which our requirements allow, and the raw events stay in the log, so we can recompute rollups if we change the logic."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["stats", "e_stats_analytics"],
+      "title": "Serving stats and managing links",
+      "script": [
+        "A **Stats Service** behind the load balancer answers the dashboard: clicks over time and breakdowns for one link, read straight from the rollups. It checks that the caller **owns the link** first, since stats are private.",
+        "Managing links stays in the Link Service. Listing reads the owner table; **editing or disabling** a link updates the row, then **deletes the cache entry and purges the CDN**, so the change shows up everywhere within seconds."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["sweeper", "e_sweeper_db"],
+      "title": "Expiring links",
+      "script": [
+        "Expiry is enforced on **read**: each record carries its expiry time, and the Redirect Service returns **410 Gone** once it has passed. Cache entries get a lifetime no longer than the link's remaining life, so nothing serves an expired link for long.",
+        "Separately, an **Expiry Sweeper** deletes expired rows in the background to reclaim space, or we let the database's native **TTL** do it. Either way, the code itself is **never reissued**: the keyspace is huge, and reusing it would redirect old printouts to someone else's page."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["safety", "e_shorten_safety", "threat", "e_safety_threat"],
+      "title": "Keeping malicious links out",
+      "script": [
+        "Shorteners are a favorite tool for **phishing and malware**, because a short link hides where it goes. So on create, the Link Service asks a **Safety Scanner** to check the destination against **threat-intelligence feeds** like Safe Browsing, using a local copy so the check is fast.",
+        "But a page can turn bad after we shorten it, so the scanner also **rescans** links in the background, the popular ones most often. A flagged link is **disabled**, cache and CDN purged, and visitors see a warning page instead of the redirect."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["ratelimit", "e_lb_ratelimit"],
+      "title": "Rate limiting",
+      "script": [
+        "Two kinds of abuse remain: spammers **creating millions of links**, and scrapers **guessing codes**. The load balancer checks a **Rate Limiter**, token buckets kept in Redis, keyed by API key, account and IP.",
+        "Creates get tight per-account limits. On the redirect side, normal clicking is never limited, but an IP producing a stream of **404s** is clearly enumerating codes, so we slow it down and then block it."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["regions", "e_db_regions"],
+      "title": "Going multi-region",
+      "script": [
+        "Four nines for redirects means surviving the **loss of a whole region**. So we run this stack in several regions, and the Link DB **replicates asynchronously** between them; Cassandra does this natively. Each region serves redirects from its own replica, and DNS steers visitors to the nearest healthy one.",
+        "Creates can happen anywhere too: ID ranges are **globally unique**, so regions never conflict on generated codes. Only custom aliases need a global check, so we route those to one home region. And if a brand-new link hasn't replicated yet, a miss **falls back to the home region** before we answer 404."
+      ]
+    },
+    {
+      "scene": "main",
+      "title": "Putting it all together",
+      "script": [
+        "Here's the complete system. **Redirects** go visitor, CDN, load balancer, Redirect Service, cache and only rarely the Link DB, answering a 302 in a few milliseconds and dropping a click event on Kafka on the way out. **Creates** go through the Link Service, which takes an ID from its leased range, scrambles it into a code, checks the destination, and does a conditional insert into the sharded Link DB.",
+        "Everything else, **analytics, expiry and abuse checks**, hangs off the side, asynchronous and isolated, so none of it can slow down or break the one thing that must always work: **clicking a short link and landing on the right page**."
+      ]
+    }
+  ]
+}

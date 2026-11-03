@@ -44,6 +44,11 @@
       "slug": "uber",
       "title": "Design Uber",
       "description": "Ride hailing: a firehose of driver locations in a geo index, ETA-based batch matching, the trip state machine, surge pricing, and payments."
+    },
+    {
+      "slug": "url-shortener",
+      "title": "Design a URL Shortener",
+      "description": "A read-heavy key-value lookup at 300K redirects a second: leased ID ranges scrambled into unguessable base-62 codes, a cache and CDN in front of a sharded store, 302s, and click analytics off the hot path."
     }
   ]
 }
