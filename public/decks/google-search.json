@@ -1,0 +1,1622 @@
+{
+  "title": "Design Google Search",
+  "topic": "System Design: Google Search",
+  "requirements": {
+    "functional": {
+      "intro": {
+        "title": "Functional requirements",
+        "script": [
+          "Let me start by agreeing on **what we're building**. Google Search is really two products glued together: a **web crawler** that downloads and understands a large fraction of the public web, and a **search engine** that answers a query against all of it in a fraction of a second.",
+          "I'll scope it to classic web search, ten blue links, because that's where the core architecture lives. Everything else Google shows on a results page sits on top of this."
+        ]
+      },
+      "cards": [
+        {
+          "title": "Crawl the web",
+          "lines": [
+            "Discover and fetch billions of pages",
+            "by following links"
+          ],
+          "script": [
+            "First, we have to **crawl the web**. Nobody hands us a list of pages: we start from some seed URLs, download them, pull out the links, and follow those, over and over, until we've discovered **billions of pages** across hundreds of millions of sites."
+          ]
+        },
+        {
+          "title": "Keep it fresh",
+          "lines": [
+            "News in minutes, popular pages daily,",
+            "the long tail every few weeks"
+          ],
+          "script": [
+            "Second, the web keeps changing, so crawling is never done. We need to **recrawl** pages at a rate that matches how fast they change and how much people care: a breaking news story should be searchable in **minutes**, a popular homepage daily, and some obscure forum thread from 2009 every few weeks."
+          ]
+        },
+        {
+          "title": "Index pages",
+          "lines": [
+            "Parse HTML, extract text and links,",
+            "build an inverted index"
+          ],
+          "script": [
+            "Third, we **index** what we crawl. We parse each page's HTML, pull out its text, title and links, and build an **inverted index**: for every word, the list of pages that contain it. That's the data structure that makes search possible at all."
+          ]
+        },
+        {
+          "title": "Keyword search",
+          "lines": [
+            "Query in, top 10 results out"
+          ],
+          "script": [
+            "Fourth, the user-facing feature: someone types a **query**, and we return the **top ten results** out of the tens of billions of pages we know about."
+          ]
+        },
+        {
+          "title": "Ranking",
+          "lines": [
+            "Relevance (text match) +",
+            "quality (PageRank, link signals)"
+          ],
+          "script": [
+            "Fifth, and this is what made Google win: **ranking**. Millions of pages may match a query; the order is the product. We'll combine **relevance**, how well the page's text matches the query, with **quality**, how trustworthy and important the page is, which we can learn from the link graph with something like **PageRank**."
+          ]
+        },
+        {
+          "title": "Results page",
+          "lines": [
+            "Title, URL and a",
+            "query-highlighted snippet"
+          ],
+          "script": [
+            "Sixth, each result on the page shows a **title, the URL, and a snippet**: a couple of sentences from the page with the query terms highlighted, so the user can judge the result without clicking it. That turns out to need its own storage."
+          ]
+        },
+        {
+          "title": "Autocomplete & spelling",
+          "lines": [
+            "Suggestions as you type,",
+            "\"did you mean\""
+          ],
+          "script": [
+            "And seventh, the query-side helpers: **autocomplete** suggestions as you type, and **spelling correction**, the \"did you mean\" line. Both are learned from what millions of other people searched for."
+          ]
+        }
+      ],
+      "outOfScope": {
+        "title": "Out of scope",
+        "script": [
+          "I'm leaving out **ads**, which is a whole auction system of its own, the **image, video, maps and news verticals**, **personalization**, the **knowledge graph** panels and AI answers, user accounts, and the details of **spam and abuse detection**.",
+          "I'll point at where some of these plug in, spam signals feed ranking for example, but I won't design them."
+        ],
+        "lines": [
+          "Ads  ·  Images, video, maps & news verticals  ·  Personalization",
+          "Knowledge graph & AI answers  ·  Accounts  ·  Spam & abuse detection (details)"
+        ]
+      }
+    },
+    "nonFunctional": {
+      "intro": {
+        "title": "Non-functional requirements",
+        "script": [
+          "Now the qualities. This system has an unusual shape: a gigantic **offline pipeline** that can be slow and sloppy, feeding an **online service** that has to be extremely fast and never down. Most of the requirements land on one side or the other."
+        ]
+      },
+      "cards": [
+        {
+          "title": "Scale",
+          "lines": [
+            "50B pages in the index",
+            "~100K QPS avg · 200K peak"
+          ],
+          "script": [
+            "**Scale**: we'll keep about **50 billion pages** in the index, out of many more we know exist. On the query side, roughly **8 to 9 billion searches a day**, so about **100,000 queries per second** on average and maybe **200,000** at peak."
+          ]
+        },
+        {
+          "title": "Latency",
+          "lines": [
+            "< 200 ms p99 server-side",
+            "for a search"
+          ],
+          "script": [
+            "**Latency**: a search should take under **200 milliseconds at p99** on our side. Speed is a feature here; Google's own experiments found that a few hundred extra milliseconds measurably reduces how much people search. And because every query will touch many machines, it's the **tail** latency that will hurt us."
+          ]
+        },
+        {
+          "title": "Availability",
+          "lines": [
+            "99.99% for serving",
+            "crawl and indexing can lag"
+          ],
+          "script": [
+            "**Availability**: serving needs **four nines** or better; Google being down is front-page news. The crawl and index pipeline is different: if it stalls for an hour, results get slightly staler and nobody notices. That asymmetry gives us a lot of freedom."
+          ]
+        },
+        {
+          "title": "Freshness",
+          "lines": [
+            "Top news indexed in < 5 min",
+            "average page recrawled ~10 days"
+          ],
+          "script": [
+            "**Freshness**: important new pages, breaking news above all, should be searchable within **five minutes**. On average a page gets recrawled about every **ten days**, with a huge spread between hot and cold pages."
+          ]
+        },
+        {
+          "title": "Politeness",
+          "lines": [
+            "Obey robots.txt",
+            "per-host rate limits"
+          ],
+          "script": [
+            "**Politeness** is a requirement you only get with crawlers. We must obey every site's **robots.txt**, and never hit one host hard enough to hurt it. Our crawler could take down a small site in seconds, and that's a fast way to get blocked everywhere."
+          ]
+        },
+        {
+          "title": "Consistency",
+          "lines": [
+            "Eventual; index updates",
+            "roll out shard by shard"
+          ],
+          "script": [
+            "**Consistency** is relaxed. Two users might briefly see slightly different results while a new index rolls out, and that's fine. There are no transactions here; the hard part is making each **query** see a coherent snapshot, not the whole system."
+          ]
+        },
+        {
+          "title": "Cost",
+          "lines": [
+            "Index serving RAM and SSD",
+            "plus crawl bandwidth dominate"
+          ],
+          "script": [
+            "And **cost**. The two big bills are the **machines serving the index**, which want it in RAM or flash for speed, and **crawl bandwidth and storage**. Every byte of posting list we shave off saves money on thousands of machines."
+          ]
+        }
+      ],
+      "estimates": {
+        "title": "Back-of-the-envelope estimates",
+        "script": [
+          "**50 billion pages** at ~**100 KB** each is about **5 PB** of HTML, a petabyte compressed. Recrawling every ten days means **5 billion fetches a day**: **60,000 pages a second**, about **50 Gbps**.",
+          "The compressed index is roughly **300 TB**, so about **1,000 shards**, each replicated. And the scary one: **200,000 queries a second** fanning out to **1,000 shards** is **200 million shard lookups a second**."
+        ],
+        "rows": [
+          [
+            "Pages",
+            [
+              "50B × ~100 KB ≈ 5 PB raw HTML",
+              "≈ 1 PB compressed, × a few versions"
+            ]
+          ],
+          [
+            "Crawl",
+            [
+              "recrawl every ~10 days ≈ 5B fetches/day",
+              "≈ 60K pages/s ≈ 50 Gbps sustained"
+            ]
+          ],
+          [
+            "Index",
+            [
+              "≈ 300 TB compressed postings",
+              "÷ ~300 GB per machine ≈ 1,000 shards"
+            ]
+          ],
+          [
+            "Queries",
+            [
+              "~100K QPS avg, 200K peak",
+              "× 1,000 shards ≈ 200M shard lookups/s"
+            ]
+          ],
+          [
+            "Results",
+            [
+              "~30% of queries repeat recently",
+              "→ worth caching whole result pages"
+            ]
+          ]
+        ]
+      },
+      "takeaway": {
+        "title": "Takeaway: two systems with opposite shapes",
+        "heading": "Takeaway: an offline pipeline feeding an online fan-out",
+        "script": [
+          "So the takeaway: this is **two systems**. An **offline crawl and index pipeline**, measured in petabytes and pages per second, that optimizes for throughput and can tolerate delay and failure.",
+          "And an **online serving system** that has to scatter every query across about a thousand shards and gather the answers in under 200 milliseconds. There, **tail latency** is the enemy, because the query is only as fast as its slowest shard. The design is about keeping those two worlds apart and connecting them through one artifact: the **index**."
+        ],
+        "lines": [
+          "Offline: 5 PB of pages, 60K fetches/s → throughput, batch jobs, tolerate lag",
+          "Online: 200K QPS × 1,000 shards in < 200 ms → scatter-gather, replicas, beat the tail"
+        ]
+      }
+    }
+  },
+  "scenes": {
+    "main": {
+      "boxes": [
+        {
+          "id": "regions",
+          "x": 40,
+          "y": 40,
+          "w": 180,
+          "h": 54,
+          "label": "Other Datacenters",
+          "kind": "ghost",
+          "sub": "full serving replicas"
+        },
+        {
+          "id": "user",
+          "x": 40,
+          "y": 151,
+          "w": 180,
+          "h": 54,
+          "label": "Searcher",
+          "kind": "client",
+          "sub": "browser · mobile app"
+        },
+        {
+          "id": "gfe",
+          "x": 290,
+          "y": 40,
+          "w": 160,
+          "h": 350,
+          "label": "Front End",
+          "kind": "infra",
+          "sub": "GFE · TLS · geo routing"
+        },
+        {
+          "id": "server",
+          "x": 520,
+          "y": 114,
+          "w": 460,
+          "h": 128,
+          "label": "Server",
+          "kind": "service",
+          "sub": "crawls, indexes and answers"
+        },
+        {
+          "id": "qu",
+          "x": 520,
+          "y": 40,
+          "w": 190,
+          "h": 54,
+          "label": "Query Rewriter",
+          "kind": "service",
+          "sub": "spelling · synonyms"
+        },
+        {
+          "id": "search",
+          "x": 520,
+          "y": 114,
+          "w": 190,
+          "h": 128,
+          "label": "Search Service",
+          "kind": "service",
+          "sub": "orchestrates · builds the page"
+        },
+        {
+          "id": "suggest",
+          "x": 520,
+          "y": 290,
+          "w": 190,
+          "h": 54,
+          "label": "Autocomplete",
+          "kind": "service",
+          "sub": "prefix trie · top-K"
+        },
+        {
+          "id": "rcache",
+          "x": 790,
+          "y": 40,
+          "w": 190,
+          "h": 54,
+          "label": "Results Cache",
+          "kind": "data",
+          "sub": "query → top 10"
+        },
+        {
+          "id": "root",
+          "x": 790,
+          "y": 114,
+          "w": 190,
+          "h": 128,
+          "label": "Root Mixer",
+          "kind": "service",
+          "sub": "scatter-gather · merge"
+        },
+        {
+          "id": "ranker",
+          "x": 790,
+          "y": 290,
+          "w": 190,
+          "h": 54,
+          "label": "ML Re-ranker",
+          "kind": "ml",
+          "sub": "top ~1,000 → top 10"
+        },
+        {
+          "id": "qlog",
+          "x": 790,
+          "y": 380,
+          "w": 190,
+          "h": 54,
+          "label": "Query Logs",
+          "kind": "stream",
+          "sub": "queries · clicks"
+        },
+        {
+          "id": "fresh",
+          "x": 1060,
+          "y": 40,
+          "w": 190,
+          "h": 54,
+          "label": "Fresh Index",
+          "kind": "data",
+          "sub": "last few hours · in RAM"
+        },
+        {
+          "id": "index",
+          "x": 1060,
+          "y": 114,
+          "w": 190,
+          "h": 128,
+          "label": "Inverted Index",
+          "kind": "data",
+          "sub": "term → posting list"
+        },
+        {
+          "id": "shards",
+          "x": 1060,
+          "y": 114,
+          "w": 190,
+          "h": 128,
+          "label": "Index Shards",
+          "kind": "data",
+          "sub": "~1,000 shards × replicas"
+        },
+        {
+          "id": "docsrv",
+          "x": 1060,
+          "y": 290,
+          "w": 190,
+          "h": 54,
+          "label": "Doc Servers",
+          "kind": "data",
+          "sub": "titles · snippets"
+        },
+        {
+          "id": "web",
+          "x": 40,
+          "y": 470,
+          "w": 180,
+          "h": 234,
+          "label": "The Web",
+          "kind": "ghost",
+          "sub": "~billions of hosts"
+        },
+        {
+          "id": "dns",
+          "x": 290,
+          "y": 470,
+          "w": 160,
+          "h": 54,
+          "label": "DNS Cache",
+          "kind": "infra",
+          "sub": "host → IP"
+        },
+        {
+          "id": "robots",
+          "x": 290,
+          "y": 650,
+          "w": 160,
+          "h": 54,
+          "label": "Robots Cache",
+          "kind": "data",
+          "sub": "robots.txt per host"
+        },
+        {
+          "id": "fetcher",
+          "x": 520,
+          "y": 470,
+          "w": 190,
+          "h": 234,
+          "label": "Fetchers",
+          "kind": "service",
+          "sub": "async · ~60K pages/s"
+        },
+        {
+          "id": "pagestore",
+          "x": 790,
+          "y": 470,
+          "w": 190,
+          "h": 54,
+          "label": "Page Store",
+          "kind": "data",
+          "sub": "Bigtable · URL → HTML"
+        },
+        {
+          "id": "frontier",
+          "x": 790,
+          "y": 560,
+          "w": 190,
+          "h": 54,
+          "label": "URL Frontier",
+          "kind": "stream",
+          "sub": "priority · per-host queues"
+        },
+        {
+          "id": "scheduler",
+          "x": 790,
+          "y": 650,
+          "w": 190,
+          "h": 54,
+          "label": "Recrawl Scheduler",
+          "kind": "service",
+          "sub": "when to fetch again"
+        },
+        {
+          "id": "parser",
+          "x": 1060,
+          "y": 470,
+          "w": 190,
+          "h": 54,
+          "label": "Parser",
+          "kind": "service",
+          "sub": "text · links · dedupe"
+        },
+        {
+          "id": "urldb",
+          "x": 1060,
+          "y": 650,
+          "w": 190,
+          "h": 54,
+          "label": "URL DB",
+          "kind": "data",
+          "sub": "seen URLs · history · links"
+        },
+        {
+          "id": "indexer",
+          "x": 1330,
+          "y": 470,
+          "w": 190,
+          "h": 54,
+          "label": "Batch Indexer",
+          "kind": "ml",
+          "sub": "MapReduce · builds shards"
+        },
+        {
+          "id": "freshidx",
+          "x": 1330,
+          "y": 560,
+          "w": 190,
+          "h": 54,
+          "label": "Fresh Indexer",
+          "kind": "stream",
+          "sub": "streaming · seconds"
+        },
+        {
+          "id": "pagerank",
+          "x": 1330,
+          "y": 650,
+          "w": 190,
+          "h": 54,
+          "label": "PageRank",
+          "kind": "ml",
+          "sub": "link graph · batch"
+        }
+      ],
+      "edges": [
+        {
+          "id": "e_user_server",
+          "from": "user",
+          "to": "server",
+          "pts": [
+            [
+              220,
+              178
+            ],
+            [
+              520,
+              178
+            ]
+          ],
+          "label": "query",
+          "both": true
+        },
+        {
+          "id": "e_server_web",
+          "from": "server",
+          "to": "web",
+          "pts": [
+            [
+              600,
+              242
+            ],
+            [
+              600,
+              587
+            ],
+            [
+              220,
+              587
+            ]
+          ],
+          "label": "crawl",
+          "both": true
+        },
+        {
+          "id": "e_user_search",
+          "from": "user",
+          "to": "search",
+          "pts": [
+            [
+              220,
+              178
+            ],
+            [
+              520,
+              178
+            ]
+          ],
+          "label": "query",
+          "both": true
+        },
+        {
+          "id": "e_user_gfe",
+          "from": "user",
+          "to": "gfe",
+          "pts": [
+            [
+              220,
+              178
+            ],
+            [
+              290,
+              178
+            ]
+          ],
+          "label": "HTTPS",
+          "both": true
+        },
+        {
+          "id": "e_gfe_regions",
+          "from": "gfe",
+          "to": "regions",
+          "pts": [
+            [
+              290,
+              67
+            ],
+            [
+              220,
+              67
+            ]
+          ],
+          "label": "failover"
+        },
+        {
+          "id": "e_search_qu",
+          "from": "search",
+          "to": "qu",
+          "pts": [
+            [
+              615,
+              114
+            ],
+            [
+              615,
+              94
+            ]
+          ],
+          "label": "rewrite",
+          "lp": [
+            624,
+            108,
+            "start"
+          ],
+          "both": true
+        },
+        {
+          "id": "e_search_rcache",
+          "from": "search",
+          "to": "rcache",
+          "pts": [
+            [
+              710,
+              130
+            ],
+            [
+              750,
+              130
+            ],
+            [
+              750,
+              67
+            ],
+            [
+              790,
+              67
+            ]
+          ],
+          "label": "cached?",
+          "both": true
+        },
+        {
+          "id": "e_search_root",
+          "from": "search",
+          "to": "root",
+          "pts": [
+            [
+              710,
+              178
+            ],
+            [
+              790,
+              178
+            ]
+          ],
+          "label": "query",
+          "both": true
+        },
+        {
+          "id": "e_server_index",
+          "from": "server",
+          "to": "index",
+          "pts": [
+            [
+              980,
+              178
+            ],
+            [
+              1060,
+              178
+            ]
+          ],
+          "label": "lookup",
+          "both": true
+        },
+        {
+          "id": "e_server_shards",
+          "from": "server",
+          "to": "shards",
+          "pts": [
+            [
+              980,
+              178
+            ],
+            [
+              1060,
+              178
+            ]
+          ],
+          "label": "fan-out",
+          "both": true
+        },
+        {
+          "id": "e_root_shards",
+          "from": "root",
+          "to": "shards",
+          "pts": [
+            [
+              980,
+              178
+            ],
+            [
+              1060,
+              178
+            ]
+          ],
+          "label": "fan-out",
+          "both": true
+        },
+        {
+          "id": "e_root_fresh",
+          "from": "root",
+          "to": "fresh",
+          "pts": [
+            [
+              980,
+              125
+            ],
+            [
+              1020,
+              125
+            ],
+            [
+              1020,
+              67
+            ],
+            [
+              1060,
+              67
+            ]
+          ],
+          "both": true
+        },
+        {
+          "id": "e_root_ranker",
+          "from": "root",
+          "to": "ranker",
+          "pts": [
+            [
+              885,
+              242
+            ],
+            [
+              885,
+              290
+            ]
+          ],
+          "label": "rerank",
+          "lp": [
+            894,
+            270,
+            "start"
+          ],
+          "both": true
+        },
+        {
+          "id": "e_root_docs",
+          "from": "root",
+          "to": "docsrv",
+          "pts": [
+            [
+              980,
+              230
+            ],
+            [
+              1020,
+              230
+            ],
+            [
+              1020,
+              317
+            ],
+            [
+              1060,
+              317
+            ]
+          ],
+          "label": "snippets",
+          "both": true
+        },
+        {
+          "id": "e_search_qlog",
+          "from": "search",
+          "to": "qlog",
+          "pts": [
+            [
+              710,
+              230
+            ],
+            [
+              750,
+              230
+            ],
+            [
+              750,
+              407
+            ],
+            [
+              790,
+              407
+            ]
+          ],
+          "label": "log",
+          "async": true
+        },
+        {
+          "id": "e_qlog_suggest",
+          "from": "qlog",
+          "to": "suggest",
+          "pts": [
+            [
+              790,
+              420
+            ],
+            [
+              615,
+              420
+            ],
+            [
+              615,
+              344
+            ]
+          ],
+          "label": "popular prefixes",
+          "async": true
+        },
+        {
+          "id": "e_qlog_ranker",
+          "from": "qlog",
+          "to": "ranker",
+          "pts": [
+            [
+              885,
+              380
+            ],
+            [
+              885,
+              344
+            ]
+          ],
+          "label": "clicks",
+          "lp": [
+            894,
+            366,
+            "start"
+          ],
+          "async": true
+        },
+        {
+          "id": "e_fetch_web",
+          "from": "fetcher",
+          "to": "web",
+          "pts": [
+            [
+              520,
+              587
+            ],
+            [
+              220,
+              587
+            ]
+          ],
+          "label": "HTTP GET",
+          "both": true
+        },
+        {
+          "id": "e_fetch_dns",
+          "from": "fetcher",
+          "to": "dns",
+          "pts": [
+            [
+              520,
+              497
+            ],
+            [
+              450,
+              497
+            ]
+          ],
+          "label": "resolve"
+        },
+        {
+          "id": "e_fetch_robots",
+          "from": "fetcher",
+          "to": "robots",
+          "pts": [
+            [
+              520,
+              677
+            ],
+            [
+              450,
+              677
+            ]
+          ],
+          "label": "allowed?"
+        },
+        {
+          "id": "e_frontier_fetch",
+          "from": "frontier",
+          "to": "fetcher",
+          "pts": [
+            [
+              790,
+              587
+            ],
+            [
+              710,
+              587
+            ]
+          ],
+          "label": "next URLs"
+        },
+        {
+          "id": "e_fetch_store",
+          "from": "fetcher",
+          "to": "pagestore",
+          "pts": [
+            [
+              710,
+              497
+            ],
+            [
+              790,
+              497
+            ]
+          ],
+          "label": "HTML"
+        },
+        {
+          "id": "e_store_parser",
+          "from": "pagestore",
+          "to": "parser",
+          "pts": [
+            [
+              980,
+              497
+            ],
+            [
+              1060,
+              497
+            ]
+          ],
+          "label": "pages"
+        },
+        {
+          "id": "e_parser_urldb",
+          "from": "parser",
+          "to": "urldb",
+          "pts": [
+            [
+              1155,
+              524
+            ],
+            [
+              1155,
+              650
+            ]
+          ],
+          "label": "out-links",
+          "lp": [
+            1164,
+            590,
+            "start"
+          ]
+        },
+        {
+          "id": "e_urldb_sched",
+          "from": "urldb",
+          "to": "scheduler",
+          "pts": [
+            [
+              1060,
+              677
+            ],
+            [
+              980,
+              677
+            ]
+          ],
+          "label": "history"
+        },
+        {
+          "id": "e_sched_frontier",
+          "from": "scheduler",
+          "to": "frontier",
+          "pts": [
+            [
+              885,
+              650
+            ],
+            [
+              885,
+              614
+            ]
+          ],
+          "label": "enqueue",
+          "lp": [
+            894,
+            636,
+            "start"
+          ]
+        },
+        {
+          "id": "e_parser_indexer",
+          "from": "parser",
+          "to": "indexer",
+          "pts": [
+            [
+              1250,
+              488
+            ],
+            [
+              1330,
+              488
+            ]
+          ],
+          "label": "docs"
+        },
+        {
+          "id": "e_indexer_index",
+          "from": "indexer",
+          "to": "index",
+          "pts": [
+            [
+              1400,
+              470
+            ],
+            [
+              1400,
+              200
+            ],
+            [
+              1250,
+              200
+            ]
+          ],
+          "label": "build"
+        },
+        {
+          "id": "e_indexer_shards",
+          "from": "indexer",
+          "to": "shards",
+          "pts": [
+            [
+              1400,
+              470
+            ],
+            [
+              1400,
+              200
+            ],
+            [
+              1250,
+              200
+            ]
+          ],
+          "label": "new shards"
+        },
+        {
+          "id": "e_parser_fresh",
+          "from": "parser",
+          "to": "freshidx",
+          "pts": [
+            [
+              1250,
+              510
+            ],
+            [
+              1290,
+              510
+            ],
+            [
+              1290,
+              587
+            ],
+            [
+              1330,
+              587
+            ]
+          ],
+          "label": "hot pages",
+          "lp": [
+            1296,
+            552,
+            "start"
+          ]
+        },
+        {
+          "id": "e_freshidx_fresh",
+          "from": "freshidx",
+          "to": "fresh",
+          "pts": [
+            [
+              1520,
+              587
+            ],
+            [
+              1570,
+              587
+            ],
+            [
+              1570,
+              67
+            ],
+            [
+              1250,
+              67
+            ]
+          ],
+          "label": "seconds"
+        },
+        {
+          "id": "e_urldb_pr",
+          "from": "urldb",
+          "to": "pagerank",
+          "pts": [
+            [
+              1250,
+              677
+            ],
+            [
+              1330,
+              677
+            ]
+          ],
+          "label": "graph"
+        },
+        {
+          "id": "e_pr_indexer",
+          "from": "pagerank",
+          "to": "indexer",
+          "pts": [
+            [
+              1520,
+              690
+            ],
+            [
+              1600,
+              690
+            ],
+            [
+              1600,
+              505
+            ],
+            [
+              1520,
+              505
+            ]
+          ],
+          "label": "scores"
+        }
+      ],
+      "bus": {
+        "hub": "gfe",
+        "hubX": 450,
+        "hubY": 178,
+        "x": 485,
+        "members": [
+          "search",
+          "suggest"
+        ]
+      }
+    }
+  },
+  "slides": [
+    {
+      "scene": "main",
+      "add": [
+        "user",
+        "server",
+        "e_user_server"
+      ],
+      "title": "Start with a toy search engine",
+      "script": [
+        "Let's start with the **simplest search engine** that could possibly work: a user, and **one server**. The server keeps a list of pages and, in memory, a map from every word to the pages that contain it. A query comes in, we look up its words, intersect the lists, and send back the matches.",
+        "That's a perfectly good search engine for ten thousand pages. Every piece of the real system exists because this one box can't stretch to 50 billion pages and 200,000 queries a second."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "web",
+        "e_server_web"
+      ],
+      "title": "Get pages by crawling the web",
+      "script": [
+        "Where do the pages come from? The server **crawls the web** itself: start from a few seed URLs, download each page, find the links in it, and add those to a to-do list. Repeat forever.",
+        "Already there's a problem with keeping this in one box. **Crawling** is a throughput job: slow network calls, petabytes of data, and it's fine if it's a bit behind. **Serving** queries is a latency job: tiny requests that must be answered in milliseconds. Put them on the same machine and a big crawl batch makes searches slow. So the first move is to pull them apart."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "fetcher",
+        "e_fetch_web"
+      ],
+      "remove": [
+        "e_server_web"
+      ],
+      "title": "Split the crawler out",
+      "script": [
+        "So the crawl moves to its own fleet of **fetchers**. A fetcher's job is narrow: take a URL, download it, hand the bytes on. It's almost all waiting on the network, so each machine runs **thousands of asynchronous connections** at once.",
+        "At 60,000 pages a second, and with a typical fetch taking a second or so end to end, we need tens of thousands of downloads in flight. A few hundred machines does it. And they're **stateless**: if one dies, its URLs just get handed out again."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "frontier",
+        "e_frontier_fetch"
+      ],
+      "title": "The URL frontier",
+      "script": [
+        "The fetchers need to know **what to download next**. That's the **URL frontier**, the crawler's to-do list. In the toy version it was a FIFO queue, which gives us a breadth-first crawl of the web.",
+        "At our scale it isn't a simple queue, though. It has to answer two questions every time a fetcher asks for work: which URLs are **most important** to fetch now, and which ones can we fetch **without hammering any single site**. I'll come back to both in a moment; for now, the frontier hands out batches of URLs and the fetchers pull from it."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "pagestore",
+        "e_fetch_store"
+      ],
+      "title": "Store every page we fetch",
+      "script": [
+        "Fetched pages go into a **page store**: petabytes keyed by URL, with a few timestamped **versions per page**. A wide-column store like **Bigtable** fits well, and keying rows by **reversed hostname**, com.example.www/path, keeps each site's pages together for fast scans.",
+        "Keeping the raw HTML, not just what we extract from it, means we can **re-parse and re-index** the whole web when the parser improves, without crawling it again."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "parser",
+        "e_store_parser"
+      ],
+      "title": "Parse pages into text and links",
+      "script": [
+        "Next, a **parser** turns raw HTML into something useful. It extracts the **title, the visible text, and the outgoing links**, along with the anchor text of each link. It detects the language, normalizes character sets, and strips boilerplate like navigation menus.",
+        "Parsing is CPU-heavy and completely independent per page, so it's an easy batch or streaming job that scales out on as many machines as we like. Its outputs feed two places: the **links** go back to the crawler, and the **text** goes on to indexing."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "urldb",
+        "e_parser_urldb"
+      ],
+      "title": "Don't crawl the same URL twice",
+      "script": [
+        "Every page has dozens of links, and most point to pages we already know about. So before anything goes back into the frontier we check a **URL DB**: every URL we've ever seen, plus its crawl history, when we last fetched it, whether it changed, and its links.",
+        "First, we **normalize** URLs: lowercase the host, drop default ports, sort query parameters, strip tracking junk like session IDs. Then the check is a lookup by a hash of the normalized URL. With hundreds of billions of known URLs, it's a big sharded key-value table, and a **Bloom filter** in front of it answers \"definitely new\" for most links without touching disk."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "scheduler",
+        "e_urldb_sched",
+        "e_sched_frontier"
+      ],
+      "title": "A scheduler closes the crawl loop",
+      "script": [
+        "Now the loop closes with a **recrawl scheduler**. It reads the URL DB and decides **what to fetch next, and when**. New URLs get a priority based on how important their linking pages are. Known URLs get a next-fetch time based on how often they've changed in the past and how much people care about them.",
+        "This is where the freshness requirement lives. A news homepage that changes every few minutes gets fetched every few minutes; a page that hasn't changed in a year drifts to the back. If a fetch shows a page didn't change, we stretch its interval; if it did change, we shrink it. The scheduler pushes due URLs into the frontier, and the cycle runs forever."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "robots",
+        "e_fetch_robots"
+      ],
+      "title": "Politeness: robots.txt and rate limits",
+      "script": [
+        "Now **politeness**. Before fetching from a host, we check its **robots.txt**, which says which paths crawlers may visit. We fetch it once per host, keep it in a **robots cache** for a day or so, and check every URL against it.",
+        "Rate limiting lives in the frontier: **front queues by priority**, **back queues by host**. Each back queue holds one host's URLs and enforces a minimum delay between requests, so a big site is crawled one connection at a time while thousands of others run in parallel. Slow or erroring hosts get longer delays."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "dns",
+        "e_fetch_dns"
+      ],
+      "title": "Cache DNS lookups",
+      "script": [
+        "A less obvious bottleneck: **DNS**. Every fetch needs the host's IP address, and public resolvers are slow and rate-limited. At 60,000 fetches a second, DNS would quickly become the crawler's slowest step.",
+        "So we run our own **DNS cache** for the crawler. Because back queues already group URLs by host, one lookup usually serves many fetches. It's a small component, but it's the kind of thing that decides whether a crawler reaches its throughput target."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": [
+        "pagestore",
+        "parser",
+        "urldb",
+        "e_store_parser",
+        "e_parser_urldb"
+      ],
+      "title": "Duplicates and crawler traps",
+      "script": [
+        "Two problems for the parser and URL DB. First, **duplicate content**: maybe a third of the web is copies and mirrors. Exact copies are a content hash; for near-duplicates a **SimHash** fingerprint differs by only a few bits when pages differ by an ad or a date. We index one canonical page per cluster.",
+        "Second, **crawler traps**, like a calendar with \"next month\" forever. We cap depth and URLs per host, spot repeating path patterns, and give each site a **crawl budget** based on how valuable its pages are."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "indexer",
+        "e_parser_indexer",
+        "index",
+        "e_indexer_index",
+        "e_server_index"
+      ],
+      "title": "Build an inverted index",
+      "script": [
+        "With clean documents coming out of the parser, we build the **inverted index**: for every term, a **posting list** of the documents containing it, with positions and fields, so we can match phrases and tell a title hit from a footer hit.",
+        "It's a classic **MapReduce**: emit (term, docID, positions), shuffle by term, reduce into sorted, **delta-compressed** posting lists. That's how 5 PB of HTML becomes a few hundred TB of index, which the server now queries. But that's far too big for one machine."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "shards",
+        "e_indexer_shards",
+        "e_server_shards"
+      ],
+      "remove": [
+        "index"
+      ],
+      "title": "Shard the index by document",
+      "script": [
+        "Three hundred terabytes means about **1,000 shards**. **Term partitioning** gives each shard some of the words. A query touches few shards, but \"cat AND dog\" ships huge posting lists between machines, and popular words become hot spots.",
+        "**Document partitioning** gives each shard a slice of the **documents**, with a complete index for them. Every query hits **every shard**, but each returns only its local **top few results**, so little crosses the network and load is even. That's what we'll use, with every shard **replicated** for availability and throughput."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "search",
+        "root",
+        "e_user_search",
+        "e_search_root",
+        "e_root_shards"
+      ],
+      "remove": [
+        "server"
+      ],
+      "title": "A search service and a root mixer",
+      "script": [
+        "The single server now splits in two. A **search service** owns the user's request: it parses the query, calls the backends, and builds the results page. Behind it, a **root mixer** does the distributed part: it sends the query to a replica of every shard, waits for their answers, and **merges** the per-shard top results into one global list.",
+        "Separating them keeps the fan-out logic in one place. Product features, layout and experiments change constantly in the search service. The root mixer is a tight, performance-critical piece of infrastructure that changes rarely."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": [
+        "root",
+        "shards",
+        "e_root_shards"
+      ],
+      "title": "Scatter-gather and the tail",
+      "script": [
+        "The fan-out's weak spot: a query is only as fast as its **slowest shard**. If each shard is slow one time in a hundred, a query touching a thousand is slow **almost every time**.",
+        "Defenses: **intermediate aggregators**, so the root talks to ~30 mixers of ~30 shards each instead of a thousand machines. **Hedged requests**: if a shard is slower than its usual p95, ask another replica and take the first answer. And **partial results**: past the deadline, answer without the straggler. Losing one shard in a thousand costs a little recall nobody notices; a slow page, everybody notices."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "pagerank",
+        "e_urldb_pr",
+        "e_pr_indexer"
+      ],
+      "title": "PageRank: quality from the link graph",
+      "script": [
+        "Matching text alone ranks badly: the pages with the most copies of a word are usually spam. We need a sense of **quality**, and the web gives us a great signal for it: **links**. A link is a vote, and a vote from an important page counts more.",
+        "That's **PageRank**: a page's score is the sum of its linkers' scores, each divided by their out-link count, iterated over the **link graph** in a batch job until it settles. The result is a **static quality score** per page that the indexer stores, so shards can order posting lists best-first."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "ranker",
+        "e_root_ranker"
+      ],
+      "title": "Rank in two phases",
+      "script": [
+        "Ranking every match carefully is impossible: a common query matches millions of pages. So ranking happens in **two phases**. In the first, each shard uses a **cheap score**, text match like BM25 combined with the static quality score, to pick its local best handful of candidates. That's fast because posting lists are already ordered by quality, so a shard can often stop early.",
+        "In the second phase, the root sends the merged top **thousand or so** candidates to an **ML re-ranker**. Here we can afford hundreds of features per document: where the terms appear, how close together, anchor text, freshness, the language and location match, spam scores, and how users interacted with this result before. A learned model turns those into the final order of the top ten."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "docsrv",
+        "e_root_docs"
+      ],
+      "title": "Doc servers for titles and snippets",
+      "script": [
+        "Once we know the top ten document IDs, we need what's actually shown: the **title, URL and snippet**. Snippets are **query-dependent**: we pick the sentences from the page that best match this particular query, and highlight the words. So we can't precompute them.",
+        "That's the job of the **doc servers**: a second sharded store, partitioned by document ID, holding a compressed copy of each page's text. The root asks only the doc servers holding those ten documents, so it's a small, targeted lookup, unlike the full fan-out to the index. The indexer builds these alongside the index shards."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "gfe",
+        "e_user_gfe"
+      ],
+      "remove": [
+        "e_user_search"
+      ],
+      "title": "A front end in every datacenter",
+      "script": [
+        "Now the front door. Users reach a **front end** layer, Google calls it the GFE. DNS and anycast send each user to a nearby datacenter, and the front end ends **TLS**, protects against abuse, and **load-balances** across a pool of stateless search service machines.",
+        "Since the search service holds no state, we scale it by adding machines and route around failed ones with health checks. The interesting state, the index, lives further back."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "rcache",
+        "e_search_rcache"
+      ],
+      "title": "Cache whole result pages",
+      "script": [
+        "Query traffic is very skewed: a big chunk of searches repeat ones made in the last few minutes, think of a celebrity's name or a sports score. So before fanning out to a thousand shards, the search service checks a **results cache** keyed by the normalized query plus language and region.",
+        "A hit skips the whole backend, which is the cheapest way to cut load. Entries live for minutes, not days, so results stay fresh, and they're **invalidated** when a new index version rolls out. With hit rates around **30%**, that's a third of a very expensive fan-out avoided."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "qu",
+        "e_search_qu"
+      ],
+      "title": "Rewrite the query first",
+      "script": [
+        "What users type is often not the best thing to search for. A **query rewriter** runs before the fan-out. It fixes **spelling**, \"recieve\" to \"receive\", using a model built from billions of past queries and their corrections. It adds **synonyms** and word variants, so \"running shoes\" also matches \"run\" and \"sneakers\". And it notices things like a place or language in the query.",
+        "This one step adds a lot of recall: the best page for a misspelled query usually doesn't contain the misspelling. When the correction is confident we search for it directly; otherwise we show \"did you mean\"."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "freshidx",
+        "e_parser_fresh"
+      ],
+      "title": "A streaming path for fresh pages",
+      "script": [
+        "Now the freshness problem. Rebuilding a 300-terabyte index with MapReduce takes hours, and rolling it out takes longer. That's fine for most of the web, but not for a news story that broke five minutes ago.",
+        "So we add a second, **streaming** path. When the scheduler marks a page as hot, a news site or something trending, the parser also sends it to a **fresh indexer**, which indexes documents one at a time as they arrive. This is roughly the move Google made from batch indexing to its incremental **Caffeine** system: process each document as it's crawled instead of waiting for the next big rebuild."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "fresh",
+        "e_freshidx_fresh",
+        "e_root_fresh"
+      ],
+      "title": "Query a fresh tier and the base index",
+      "script": [
+        "The fresh indexer writes into a small **fresh index**: just the last few hours of hot pages, small enough to keep entirely in memory and update within **seconds**.",
+        "The root mixer now queries **both tiers**: the big base index and the fresh index, and merges them, preferring the fresh copy when a document appears in both. When the next base build includes those pages, they age out of the fresh tier. This **tiered index** gives us minutes-level freshness for the pages that need it without paying for streaming updates across all 50 billion."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": [
+        "user",
+        "gfe",
+        "search",
+        "rcache",
+        "qu",
+        "root",
+        "shards",
+        "fresh",
+        "ranker",
+        "docsrv",
+        "e_user_gfe",
+        "e_search_rcache",
+        "e_search_qu",
+        "e_search_root",
+        "e_root_shards",
+        "e_root_fresh",
+        "e_root_ranker",
+        "e_root_docs"
+      ],
+      "title": "Trace one search end to end",
+      "script": [
+        "Let's trace one query through what we've built. The user's request lands on the nearest **front end**, which picks a **search service** machine. It checks the **results cache**; on a miss, the **query rewriter** fixes and expands the query.",
+        "The **root mixer** scatters it to every **index shard** and the **fresh index**, merges their top candidates, has the **ML re-ranker** order the best thousand, and fetches **snippets** for the top ten. The search service renders the page and caches it. Fan-out and re-ranking take about **100 ms** of the budget."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "qlog",
+        "e_search_qlog"
+      ],
+      "title": "Log every query and click",
+      "script": [
+        "Every search, and every click on a result, gets written asynchronously to **query logs**, a durable stream that batch jobs read later. Logging is fire-and-forget, so it never slows the search down.",
+        "These logs turn out to be one of the most valuable datasets in the system. They tell us what people **search for**, what they **misspell**, and which results they actually **chose**. The next few pieces all learn from them."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "suggest",
+        "e_qlog_suggest"
+      ],
+      "title": "Autocomplete from popular queries",
+      "script": [
+        "**Autocomplete** has to answer on every keystroke, so its latency budget is even tighter than search: tens of milliseconds. It can't fan out to the index; instead it has its own **prefix index**, built offline from the query logs.",
+        "Think of a **trie** of popular queries where each node already stores the **top-K completions** for that prefix, so a lookup is just walking down a few characters. It's rebuilt from the logs regularly, with a fast lane for queries that are trending right now. We also filter out offensive or very rare queries, so we never suggest something only one person ever typed."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "e_qlog_ranker"
+      ],
+      "title": "Train ranking on clicks",
+      "script": [
+        "The logs also feed **ranking**. When users consistently skip result three and click result five, that's a signal the order is wrong. Click data, with care for position bias since people click the top results more no matter what, becomes **training data** for the re-ranker, along with ratings from human evaluators.",
+        "Models are retrained offline and rolled out behind **experiments**: a small slice of traffic gets the new model, and we compare engagement before shipping it to everyone. Spelling correction learns the same way, from users who retype a query a moment later."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": [
+        "indexer",
+        "shards",
+        "e_indexer_shards"
+      ],
+      "title": "Roll out a new index safely",
+      "script": [
+        "One more detail on the boundary between the offline and online worlds: how a freshly built index gets to the shards. We never update a serving shard in place. The indexer writes a complete new **immutable** version of each shard, the shard servers copy it in the background, and then swap to it.",
+        "We roll that out **replica by replica**, so most replicas keep serving while some swap, and we check result quality on the new version before going further. If something looks wrong, we **roll back** to the previous version, which is still on disk. During the rollout, different replicas serve different versions, which is exactly the eventual consistency we agreed was acceptable."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "regions",
+        "e_gfe_regions"
+      ],
+      "title": "Replicate across datacenters",
+      "script": [
+        "Finally, **availability at Google scale**. The whole serving stack, front ends, search services, index shards, doc servers, caches, is replicated in **many datacenters** around the world, each holding a full copy of the index. Users go to the nearest one, which also saves latency.",
+        "If a datacenter fails or needs maintenance, the front end layer and DNS route its traffic to others. Since serving is read-only and the index is just copied out, replicating it is easy; there's no cross-region write coordination to worry about. The crawl and index pipeline doesn't need this: it can run in a few big datacenters and ship finished indexes everywhere."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": [
+        "regions",
+        "user",
+        "gfe",
+        "search",
+        "qu",
+        "suggest",
+        "rcache",
+        "root",
+        "ranker",
+        "qlog",
+        "fresh",
+        "shards",
+        "docsrv",
+        "web",
+        "dns",
+        "robots",
+        "fetcher",
+        "pagestore",
+        "frontier",
+        "scheduler",
+        "parser",
+        "urldb",
+        "indexer",
+        "freshidx",
+        "pagerank",
+        "e_user_gfe",
+        "e_gfe_regions",
+        "e_search_qu",
+        "e_search_rcache",
+        "e_search_root",
+        "e_root_shards",
+        "e_root_fresh",
+        "e_root_ranker",
+        "e_root_docs",
+        "e_search_qlog",
+        "e_qlog_suggest",
+        "e_qlog_ranker",
+        "e_fetch_web",
+        "e_fetch_dns",
+        "e_fetch_robots",
+        "e_frontier_fetch",
+        "e_fetch_store",
+        "e_store_parser",
+        "e_parser_urldb",
+        "e_urldb_sched",
+        "e_sched_frontier",
+        "e_parser_indexer",
+        "e_indexer_shards",
+        "e_parser_fresh",
+        "e_freshidx_fresh",
+        "e_urldb_pr",
+        "e_pr_indexer"
+      ],
+      "title": "The complete system",
+      "script": [
+        "So here's the whole design. At the bottom, the **offline pipeline**: a polite, prioritized crawl loop feeding a batch indexer and PageRank, plus a streaming fresh indexer for what's hot. It optimizes for **throughput** and can lag. At the top, the **online system**: a root mixer scattering each query over ~1,000 **document-partitioned, replicated shards**, re-ranking with ML, in under 200 ms.",
+        "They meet at one artifact, the **immutable index**, and query logs close the loop for ranking, spelling and autocomplete. With more time, I'd go deeper on the ranking model and spam."
+      ]
+    }
+  ]
+}

@@ -11,6 +11,11 @@
       "description": "Real-time collaborative editing: operational transformation, one session owner per document, an op log with snapshots, and offline edits."
     },
     {
+      "slug": "google-search",
+      "title": "Design Google Search",
+      "description": "A web crawler and search engine: a polite, prioritized crawl loop, a document-partitioned inverted index, scatter-gather over ~1,000 shards with two-phase ranking, PageRank, and a fresh tier for news."
+    },
+    {
       "slug": "slack",
       "title": "Design Slack",
       "description": "Team messaging in real time: tens of millions of WebSockets, strict per-channel order and fan-out, and a database sharded by workspace."
