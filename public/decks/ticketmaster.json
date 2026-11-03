@@ -258,21 +258,116 @@
       "title": "Start with the simplest thing that works",
       "script": [
         "Let's start with the **simplest system that could possibly sell a ticket**: fans on the web or in the app, talking over HTTPS to **one server**.",
-        "The API is small. **GET /events** and **GET /events/{id}** for browsing. **GET /events/{id}/seats** returns the seat map. **POST /holds** takes an event and a list of seats (or \"best available, quantity 4\") and returns a hold with an expiry time. **POST /orders** takes a hold ID and payment details and turns the hold into tickets. Last, **GET /orders** lists my tickets.",
-        "Splitting **hold** from **order** is the first important design decision, and it comes straight from the product. Checkout takes minutes: you type your card number, maybe fumble a 3-D Secure prompt. We can't ask the fan to pay first and only then find out whether the seat is still there. And we can't block every other buyer while one person types. So we **reserve first, pay second**, with a time limit in between. Most of the rest of this design is about making that two-step dance correct and keeping it fast under load.",
-        "This one box is fine for a small venue's box office. It obviously has no durability yet, so let's fix that first."
+        "The API is small."
       ]
+    },
+    {
+      "title": "The API",
+      "script": [
+        "**GET /events** and **GET /events/{id}** for browsing. **GET /events/{id}/seats** returns the seat map. **POST /holds** takes an event and a list of seats (or \"best available, quantity 4\") and returns a hold with an expiry time. **POST /orders** takes a hold ID and payment details and turns the hold into tickets. Last, **GET /orders** lists my tickets."
+      ],
+      "table": {
+        "columns": ["Endpoint", "Does"],
+        "rows": [
+          ["**GET /events**", "browse and list events"],
+          ["**GET /events/{id}**", "one event page"],
+          ["**GET /events/{id}/seats**", "the seat map: available · held · sold"],
+          ["**POST /holds**", "event + seats (or best available ×4) → hold + expiry"],
+          ["**POST /orders**", "hold ID + payment → tickets"],
+          ["**GET /orders**", "my tickets"]
+        ]
+      }
+    },
+    {
+      "title": "Why not buy in one step?",
+      "script": [
+        "Splitting **hold** from **order** is the first important design decision, and it comes straight from the product. Checkout takes minutes: you type your card number, maybe fumble a 3-D Secure prompt. We can't ask the fan to pay first and only then find out whether the seat is still there. And we can't block every other buyer while one person types."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Checkout takes minutes**", "detail": "typing a card number, a 3-D Secure prompt" },
+          { "text": "Pay first? The seat may be **gone** by the time you finish", "detail": "and now we owe you a refund" },
+          { "text": "Lock the seat while you pay? **Everyone else waits**", "detail": "one slow typist blocks every other buyer" }
+        ]
+      }
+    },
+    {
+      "title": "Reserve first, pay second",
+      "script": [
+        "So we **reserve first, pay second**, with a time limit in between. Most of the rest of this design is about making that two-step dance correct and keeping it fast under load.",
+        "This one box is fine for a small venue's box office. It obviously has no durability yet, so let's fix that first."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "fan", "label": "Fan", "kind": "client" },
+          { "id": "server", "label": "Server", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "fan", "to": "server", "label": "GET /events/{id}/seats" },
+          { "from": "server", "to": "fan", "label": "seat map", "reply": true },
+          { "from": "fan", "to": "server", "label": "POST /holds (seats)" },
+          { "from": "server", "to": "fan", "label": "hold · expires in 10 min", "reply": true },
+          { "note": "fan types card details (minutes)", "over": ["fan", "server"] },
+          { "from": "fan", "to": "server", "label": "POST /orders (hold ID, payment)" },
+          { "from": "server", "to": "fan", "label": "tickets", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
       "add": ["db", "e_server_db"],
-      "title": "A relational database and the data model",
+      "title": "A relational database",
       "script": [
-        "The server gets a **database**, and I'd pick a relational one, **Postgres**, without much hesitation. The thing we must get right is \"two people cannot buy the same seat\". That's a textbook job for **transactions and conditional updates**. And as we just computed, the data is small enough that we don't need a NoSQL store for volume.",
-        "The core tables: **Venue** holds the physical layout, meaning sections, rows and seat coordinates for drawing the map. **Event** is a performer at a venue on a date, with an on-sale time. **Seat** (or event-seat) is the inventory row: one per seat *per event*, carrying the price tier and a **status**: AVAILABLE, HELD or SOLD. A held seat also carries a **hold_id** and a **hold_expires_at**. **Order** records who bought what and the payment reference, and **Ticket** links an order to each seat it bought.",
-        "One thing worth calling out: the **layout** and the **inventory** are different kinds of data. The layout is big (an arena map has tens of thousands of seat shapes) but it almost never changes, and it's identical for every event at that venue. The inventory is tiny per seat, a status and a price, but it changes constantly during an on-sale. Keeping them apart lets us cache the layout forever and treat the inventory very differently.",
-        "For general-admission events with no assigned seats, the same model works with a counter per price tier instead of a row per seat. I'll focus on reserved seating because it's the harder case."
+        "The server gets a **database**, and I'd pick a relational one, **Postgres**, without much hesitation. The thing we must get right is \"two people cannot buy the same seat\". That's a textbook job for **transactions and conditional updates**. And as we just computed, the data is small enough that we don't need a NoSQL store for volume."
       ]
+    },
+    {
+      "title": "The data model",
+      "script": [
+        "The core tables: **Venue** holds the physical layout, meaning sections, rows and seat coordinates for drawing the map. **Event** is a performer at a venue on a date, with an on-sale time. **Seat** (or event-seat) is the inventory row: one per seat *per event*, carrying the price tier and a **status**: AVAILABLE, HELD or SOLD. A held seat also carries a **hold_id** and a **hold_expires_at**. **Order** records who bought what and the payment reference, and **Ticket** links an order to each seat it bought."
+      ],
+      "entities": {
+        "items": [
+          { "id": "venue", "name": "Venue", "kind": "data", "fields": ["id: uuid  PK", "name, city: text", "layout: sections · rows", "seat coordinates"] },
+          { "id": "event", "name": "Event", "kind": "data", "fields": ["id: uuid  PK", "venue_id: uuid  FK", "performer: text", "starts_at: timestamp", "on_sale_at: timestamp"] },
+          { "id": "seat", "name": "Seat", "kind": "data", "fields": ["event_id, seat_id  PK", "price_tier: text", "status: AVAILABLE | HELD | SOLD", "hold_id: uuid", "hold_expires_at: timestamp"] },
+          { "id": "order", "name": "Order", "kind": "data", "fields": ["id: uuid  PK", "user_id: uuid", "hold_id: uuid", "payment_ref: text", "state: enum"] },
+          { "id": "ticket", "name": "Ticket", "kind": "data", "fields": ["id: uuid  PK", "order_id: uuid  FK", "event_id, seat_id  FK"] }
+        ],
+        "relations": [
+          { "from": "venue", "to": "event", "label": "1 — *" },
+          { "from": "event", "to": "seat", "label": "1 — *" },
+          { "from": "order", "to": "ticket", "label": "1 — *" }
+        ]
+      }
+    },
+    {
+      "title": "Layout vs. inventory",
+      "script": [
+        "One thing worth calling out: the **layout** and the **inventory** are different kinds of data. The layout is big (an arena map has tens of thousands of seat shapes) but it almost never changes, and it's identical for every event at that venue. The inventory is tiny per seat, a status and a price, but it changes constantly during an on-sale. Keeping them apart lets us cache the layout forever and treat the inventory very differently."
+      ],
+      "table": {
+        "columns": ["", "Layout", "Inventory"],
+        "rows": [
+          ["**Size**", "big: tens of thousands of seat shapes", "tiny per seat: status + price"],
+          ["**Changes**", "almost never", "constantly during an on-sale"],
+          ["**Shared**", "same for every event at the venue", "one row per seat per event"],
+          ["**Treatment**", "cache forever", "strongly consistent writes"]
+        ]
+      }
+    },
+    {
+      "title": "General admission",
+      "script": [
+        "For general-admission events with no assigned seats, the same model works with a counter per price tier instead of a row per seat. I'll focus on reserved seating because it's the harder case."
+      ],
+      "entities": {
+        "items": [
+          { "id": "seat", "name": "Seat (reserved)", "kind": "data", "fields": ["event_id, seat_id  PK", "status: enum", "hold_id, hold_expires_at"] },
+          { "id": "tier", "name": "TierInventory (GA)", "kind": "data", "fields": ["event_id, tier  PK", "capacity: int", "held: int", "sold: int"] }
+        ]
+      }
     },
     {
       "scene": "main",
@@ -280,23 +375,161 @@
       "remove": ["server"],
       "title": "Split the read path from the write path",
       "script": [
-        "The monolith is about to be pulled in two very different directions, so I'll split it along the line that matters most: **reads versus writes**.",
-        "The **Event Service** owns the catalog: events, venues, performers, and the seat-map layout. It's almost entirely reads, it's tolerant of staleness, and it gets the 100-to-1 share of traffic. We'll put caches and a CDN in front of it and scale it horizontally without thinking very hard.",
-        "The **Booking Service** owns the **inventory**: it returns the current availability for an event and it places holds. Its traffic is much lower on a normal day, but it's the part that must be **strongly consistent**, and it's the part that gets hammered during an on-sale. Keeping it separate means we can scale, deploy and protect it on its own. A bad deploy to the event pages shouldn't stop people from buying, and a meltdown during an on-sale shouldn't take down browsing for every other event.",
-        "In front of both is an **API gateway**. It terminates TLS, authenticates the user, applies **rate limits** per user and per IP, and routes each request to the right service. It will also become the enforcement point for the waiting room later on, so it's worth having from the start.",
+        "The monolith is about to be pulled in two very different directions, so I'll split it along the line that matters most: **reads versus writes**."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["event", "e_event_db", "db"],
+      "title": "The Event Service: the read path",
+      "script": [
+        "The **Event Service** owns the catalog: events, venues, performers, and the seat-map layout. It's almost entirely reads, it's tolerant of staleness, and it gets the 100-to-1 share of traffic. We'll put caches and a CDN in front of it and scale it horizontally without thinking very hard."
+      ]
+    },
+    {
+      "title": "The Booking Service: the write path",
+      "script": [
+        "The **Booking Service** owns the **inventory**: it returns the current availability for an event and it places holds. Its traffic is much lower on a normal day, but it's the part that must be **strongly consistent**, and it's the part that gets hammered during an on-sale. Keeping it separate means we can scale, deploy and protect it on its own. A bad deploy to the event pages shouldn't stop people from buying, and a meltdown during an on-sale shouldn't take down browsing for every other event."
+      ],
+      "table": {
+        "columns": ["", "Event Service", "Booking Service"],
+        "rows": [
+          ["**Owns**", "events, venues, seat-map layout", "inventory: availability, holds"],
+          ["**Traffic**", "~100× more, almost all reads", "lower, but writes"],
+          ["**Consistency**", "a few seconds stale is fine", "strongly consistent"],
+          ["**During an on-sale**", "cached, scales out easily", "hammered; must be protected"]
+        ]
+      }
+    },
+    {
+      "title": "An API gateway in front",
+      "script": [
+        "In front of both is an **API gateway**. It terminates TLS, authenticates the user, applies **rate limits** per user and per IP, and routes each request to the right service. It will also become the enforcement point for the waiting room later on, so it's worth having from the start."
+      ],
+      "bullets": {
+        "items": [
+          "**Terminates TLS**",
+          "**Authenticates** the user",
+          { "text": "**Rate limits** per user and per IP" },
+          { "text": "**Routes** each request to the right service" },
+          { "text": "Later: **enforces the waiting room**", "detail": "the one place every booking call passes through" }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "focus": ["event", "booking", "e_event_db", "e_booking_db", "db"],
+      "title": "One shared database, for now",
+      "script": [
         "Both services still share one Postgres for now. That's fine. The booking side's tables are the ones that matter, and we'll come back to how they're partitioned."
       ]
     },
     {
       "scene": "main",
-      "add": ["sweeper", "e_sweeper_db"],
-      "title": "Holding seats without double-booking",
+      "focus": ["booking", "e_booking_db", "db"],
+      "title": "Two fans, one seat",
       "script": [
-        "Now the heart of the problem: two fans click the same seat at the same moment. How does the Booking Service make sure exactly one of them gets it?",
-        "The naive version is \"read the seat, see it's available, write HELD\". That's a classic race: both requests read AVAILABLE and both write HELD. Instead we do it in **one atomic conditional update**: *set status to HELD, with my hold ID and an expiry ten minutes out, where the seat ID is in my list and the seat is available (or its old hold has expired)*. Then we check the row count. If I asked for four seats and four rows changed, I have them all. If fewer changed, someone beat me to one, so I roll back the transaction and tell the user to pick again. The database's row locking does the arbitration. No distributed lock, no read-then-write gap.",
-        "Notice the **expiry is lazy**. A HELD seat whose **hold_expires_at** is in the past already counts as available for the next hold, so correctness never depends on a background job running on time. We still add a **Hold Expiry Worker** that sweeps every few seconds and flips lapsed holds back to AVAILABLE. That keeps the seat map honest and produces a \"seats released\" event we'll use later.",
-        "The popular alternative is to keep holds in **Redis** with a TTL, using SET-if-not-exists per seat, and write to Postgres only on purchase. It's faster and expiry is free, but now the truth about a seat lives in **two places**. You need careful handling when Redis says \"held\" and Postgres says \"sold\", or when a Redis failover forgets holds. Because the waiting room will cap how many people hit this path, Postgres can easily handle the hold rate. So I prefer one source of truth. If we ever needed more, Redis would be a fine optimization in front of it, not a replacement."
+        "Now the heart of the problem: two fans click the same seat at the same moment. How does the Booking Service make sure exactly one of them gets it?"
       ]
+    },
+    {
+      "title": "The naive version: read, then write",
+      "script": [
+        "The naive version is \"read the seat, see it's available, write HELD\". That's a classic race: both requests read AVAILABLE and both write HELD."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "a", "label": "Fan A", "kind": "client" },
+          { "id": "booking", "label": "Booking Service", "kind": "service" },
+          { "id": "db", "label": "Primary DB", "kind": "data" },
+          { "id": "b", "label": "Fan B", "kind": "client" }
+        ],
+        "steps": [
+          { "from": "a", "to": "booking", "label": "hold 14C" },
+          { "from": "b", "to": "booking", "label": "hold 14C" },
+          { "from": "booking", "to": "db", "label": "SELECT 14C (for A)" },
+          { "from": "booking", "to": "db", "label": "SELECT 14C (for B)" },
+          { "from": "db", "to": "booking", "label": "AVAILABLE · AVAILABLE", "reply": true },
+          { "from": "booking", "to": "db", "label": "UPDATE 14C → HELD (A)" },
+          { "from": "booking", "to": "db", "label": "UPDATE 14C → HELD (B)" },
+          { "note": "both fans think they hold seat 14C", "over": ["a", "b"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "One atomic conditional update",
+      "script": [
+        "Instead we do it in **one atomic conditional update**: *set status to HELD, with my hold ID and an expiry ten minutes out, where the seat ID is in my list and the seat is available (or its old hold has expired)*. Then we check the row count. If I asked for four seats and four rows changed, I have them all."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "a", "label": "Fan A", "kind": "client" },
+          { "id": "booking", "label": "Booking Service", "kind": "service" },
+          { "id": "db", "label": "Primary DB", "kind": "data" },
+          { "id": "b", "label": "Fan B", "kind": "client" }
+        ],
+        "steps": [
+          { "from": "a", "to": "booking", "label": "hold 14A–14D" },
+          { "from": "b", "to": "booking", "label": "hold 14C–14F" },
+          { "from": "booking", "to": "db", "label": "HELD if 14A–14D available" },
+          { "from": "db", "to": "booking", "label": "4 rows", "reply": true },
+          { "from": "booking", "to": "a", "label": "hold confirmed", "reply": true },
+          { "from": "booking", "to": "db", "label": "HELD if 14C–14F available" },
+          { "from": "db", "to": "booking", "label": "2 rows → ROLLBACK", "reply": true },
+          { "from": "booking", "to": "b", "label": "please pick again", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "The database arbitrates",
+      "script": [
+        "If fewer changed, someone beat me to one, so I roll back the transaction and tell the user to pick again. The database's row locking does the arbitration. No distributed lock, no read-then-write gap."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**All rows changed** → the hold is yours", "detail": "4 seats asked, 4 rows updated" },
+          { "text": "**Fewer rows** → roll back, ask the fan to pick again", "detail": "someone beat you to at least one seat" },
+          { "text": "**Row locks** do the arbitration", "detail": "the second update waits, then sees HELD" },
+          { "text": "No distributed lock, **no read-then-write gap**" }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "add": ["sweeper", "e_sweeper_db"],
+      "title": "Lazy expiry and the sweeper",
+      "script": [
+        "Notice the **expiry is lazy**. A HELD seat whose **hold_expires_at** is in the past already counts as available for the next hold, so correctness never depends on a background job running on time. We still add a **Hold Expiry Worker** that sweeps every few seconds and flips lapsed holds back to AVAILABLE. That keeps the seat map honest and produces a \"seats released\" event we'll use later."
+      ]
+    },
+    {
+      "title": "Holds in Postgres or in Redis?",
+      "script": [
+        "The popular alternative is to keep holds in **Redis** with a TTL, using SET-if-not-exists per seat, and write to Postgres only on purchase. It's faster and expiry is free, but now the truth about a seat lives in **two places**. You need careful handling when Redis says \"held\" and Postgres says \"sold\", or when a Redis failover forgets holds."
+      ],
+      "table": {
+        "columns": ["Option", "Upside", "Downside"],
+        "rows": [
+          ["**Postgres conditional update**", "one source of truth", "slower per hold"],
+          ["**Redis SETNX + TTL**", "faster, expiry for free", "truth in two places; failover can forget holds"]
+        ],
+        "highlight": 0
+      }
+    },
+    {
+      "title": "One source of truth",
+      "script": [
+        "Because the waiting room will cap how many people hit this path, Postgres can easily handle the hold rate. So I prefer one source of truth. If we ever needed more, Redis would be a fine optimization in front of it, not a replacement."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "The waiting room **caps the hold rate**", "detail": "Postgres handles it easily" },
+          { "text": "**One source of truth** for every seat" },
+          { "text": "Redis later, if needed: **in front of** Postgres", "detail": "an optimization, not a replacement" }
+        ]
+      }
     },
     {
       "scene": "main",
@@ -304,21 +537,152 @@
       "title": "Checkout: pay, then confirm, exactly once",
       "script": [
         "The **Order Service** turns a hold into a purchase, and it's where money meets inventory, so the ordering of steps matters.",
-        "When the fan submits payment, we first create an **order in PENDING state** tied to the hold ID. Then we ask the **payment provider** to **authorize** the card, which reserves the funds without moving them. Only once that succeeds do we run the second conditional update: *set status to SOLD where the seats carry my hold ID*, in the same transaction that marks the order CONFIRMED and writes the tickets. If that update touches all the seats, we **capture** the payment. If it doesn't (say the hold expired and someone else got a seat), we **void the authorization** and apologize. The fan is never charged for seats they don't have, and a seat never ends up sold to two people.",
-        "Every step is **idempotent**. The client sends an idempotency key with the order. We pass our order ID to the provider as its idempotency key, so a retried request or a double-clicked \"Buy\" never charges twice. Payment providers also confirm asynchronously through **webhooks**, and the webhook handler is just another idempotent \"advance this order's state\" call. A small reconciliation job compares our PENDING orders with the provider's records, to catch anything that fell between the cracks.",
-        "One product detail: we give checkout a little **grace**. If the fan submitted payment before their hold expired, we treat the hold as still valid while the authorization is in flight. The seats aren't released mid-payment. Holds have a hard deadline for starting checkout, not for finishing it."
+        "When the fan submits payment, we first create an **order in PENDING state** tied to the hold ID."
       ]
+    },
+    {
+      "title": "Authorize, sell, capture",
+      "script": [
+        "Then we ask the **payment provider** to **authorize** the card, which reserves the funds without moving them. Only once that succeeds do we run the second conditional update: *set status to SOLD where the seats carry my hold ID*, in the same transaction that marks the order CONFIRMED and writes the tickets. If that update touches all the seats, we **capture** the payment."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "fan", "label": "Fan", "kind": "client" },
+          { "id": "order", "label": "Order Service", "kind": "service" },
+          { "id": "db", "label": "Primary DB", "kind": "data" },
+          { "id": "psp", "label": "Payment Provider", "kind": "ghost" }
+        ],
+        "steps": [
+          { "from": "fan", "to": "order", "label": "POST /orders (hold ID, card)" },
+          { "from": "order", "to": "db", "label": "insert order PENDING" },
+          { "from": "order", "to": "psp", "label": "authorize" },
+          { "from": "psp", "to": "order", "label": "authorized", "reply": true },
+          { "from": "order", "to": "db", "label": "SOLD if hold = mine · CONFIRMED" },
+          { "from": "db", "to": "order", "label": "all 4 rows", "reply": true },
+          { "from": "order", "to": "psp", "label": "capture" },
+          { "from": "order", "to": "fan", "label": "confirmed · tickets", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "When the hold was lost",
+      "script": [
+        "If it doesn't (say the hold expired and someone else got a seat), we **void the authorization** and apologize. The fan is never charged for seats they don't have, and a seat never ends up sold to two people."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "fan", "label": "Fan", "kind": "client" },
+          { "id": "order", "label": "Order Service", "kind": "service" },
+          { "id": "db", "label": "Primary DB", "kind": "data" },
+          { "id": "psp", "label": "Payment Provider", "kind": "ghost" }
+        ],
+        "steps": [
+          { "from": "order", "to": "psp", "label": "authorize" },
+          { "from": "psp", "to": "order", "label": "authorized", "reply": true },
+          { "from": "order", "to": "db", "label": "SOLD where hold = mine" },
+          { "from": "db", "to": "order", "label": "3 of 4 rows → ROLLBACK", "reply": true },
+          { "from": "order", "to": "psp", "label": "void authorization" },
+          { "from": "order", "to": "fan", "label": "sorry: a seat was lost, no charge", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Idempotent at every step",
+      "script": [
+        "Every step is **idempotent**. The client sends an idempotency key with the order. We pass our order ID to the provider as its idempotency key, so a retried request or a double-clicked \"Buy\" never charges twice."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "Client → us: an **idempotency key** per order", "detail": "a retry or a double-click finds the same order" },
+          { "text": "Us → provider: **our order ID** as its key", "detail": "a retried authorize never charges twice" },
+          { "text": "Every state change is **advance-only**", "detail": "PENDING → CONFIRMED, never backwards" }
+        ]
+      }
+    },
+    {
+      "title": "Webhooks and reconciliation",
+      "script": [
+        "Payment providers also confirm asynchronously through **webhooks**, and the webhook handler is just another idempotent \"advance this order's state\" call. A small reconciliation job compares our PENDING orders with the provider's records, to catch anything that fell between the cracks."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "psp", "label": "Payment Provider", "kind": "ghost" },
+          { "id": "order", "label": "Order Service", "kind": "service" },
+          { "id": "db", "label": "Primary DB", "kind": "data" },
+          { "id": "recon", "label": "Reconciliation Job", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "psp", "to": "order", "label": "webhook: payment captured" },
+          { "from": "order", "to": "db", "label": "advance order state (no-op if done)" },
+          { "from": "order", "to": "psp", "label": "200 OK", "reply": true },
+          { "from": "recon", "to": "db", "label": "list old PENDING orders" },
+          { "from": "recon", "to": "psp", "label": "look up each payment" },
+          { "from": "recon", "to": "order", "label": "advance or void the stragglers" }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "A little grace at checkout",
+      "script": [
+        "One product detail: we give checkout a little **grace**. If the fan submitted payment before their hold expired, we treat the hold as still valid while the authorization is in flight. The seats aren't released mid-payment. Holds have a hard deadline for starting checkout, not for finishing it."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "Paid **before** the hold expired → hold stays valid", "detail": "while the authorization is in flight" },
+          { "text": "Seats are **never released mid-payment**" },
+          { "text": "The deadline is for **starting** checkout, not finishing it" }
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["search", "searchidx", "e_search_searchidx", "e_db_searchidx"],
       "title": "Search with a dedicated index",
       "script": [
-        "Fans rarely navigate to an event by ID. They type \"taylor swft chicago\" and expect the right result. A SQL **LIKE** query doesn't do typo tolerance, relevance ranking or faceted filters, and it would put browse load on the same database that guards our inventory. So search gets its own **Search Service** on top of an **Elasticsearch** index.",
-        "Each document is an event, denormalized: performer names and aliases, venue, city, geo-point, date, category, price range, and a coarse \"on sale / sold out\" flag. That supports full-text matching with fuzziness, filters like \"this weekend, within 50 km\", and ranking that blends text relevance with popularity.",
-        "The index is fed by **change data capture** from the primary database. Every insert or update to an event is streamed out of the Postgres write-ahead log and applied to the index. That's better than having the Event Service \"dual-write\" to both, because dual writes drift apart whenever one of them fails. CDC means the database stays the source of truth, and the index catches up a second or two later.",
-        "That lag is fine for search. It would **not** be fine for seat availability, which is why the search index only carries a coarse sold-out flag, never seat-level inventory. Clicking through to an event always gets live availability from the Booking Service."
+        "Fans rarely navigate to an event by ID. They type \"taylor swft chicago\" and expect the right result. A SQL **LIKE** query doesn't do typo tolerance, relevance ranking or faceted filters, and it would put browse load on the same database that guards our inventory. So search gets its own **Search Service** on top of an **Elasticsearch** index."
       ]
+    },
+    {
+      "title": "The search document",
+      "script": [
+        "Each document is an event, denormalized: performer names and aliases, venue, city, geo-point, date, category, price range, and a coarse \"on sale / sold out\" flag. That supports full-text matching with fuzziness, filters like \"this weekend, within 50 km\", and ranking that blends text relevance with popularity."
+      ],
+      "entities": {
+        "items": [
+          { "id": "doc", "name": "EventDoc (search index)", "kind": "data", "fields": ["event_id: keyword", "performers, aliases: text (fuzzy)", "venue, city: text", "location: geo_point", "date: date", "category: keyword", "price_range: range", "on_sale: bool  (coarse)", "popularity: float"] }
+        ]
+      }
+    },
+    {
+      "title": "Feeding the index: CDC, not dual writes",
+      "script": [
+        "The index is fed by **change data capture** from the primary database. Every insert or update to an event is streamed out of the Postgres write-ahead log and applied to the index. That's better than having the Event Service \"dual-write\" to both, because dual writes drift apart whenever one of them fails. CDC means the database stays the source of truth, and the index catches up a second or two later."
+      ],
+      "table": {
+        "columns": ["Approach", "How", "When something fails"],
+        "rows": [
+          ["**Dual write**", "Event Service writes DB, then index", "the two drift apart"],
+          ["**CDC**", "stream the Postgres WAL into the index", "index catches up; DB stays the truth"]
+        ],
+        "highlight": 1
+      }
+    },
+    {
+      "title": "Search is a little behind, on purpose",
+      "script": [
+        "That lag is fine for search. It would **not** be fine for seat availability, which is why the search index only carries a coarse sold-out flag, never seat-level inventory. Clicking through to an event always gets live availability from the Booking Service."
+      ],
+      "table": {
+        "columns": ["Data", "Served by", "Freshness"],
+        "rows": [
+          ["**Event text, venue, date**", "Search Index (via CDC)", "a second or two behind"],
+          ["**On sale / sold out**", "Search Index", "coarse flag only"],
+          ["**Seat availability**", "Booking Service", "live"]
+        ]
+      }
     },
     {
       "scene": "main",
@@ -326,31 +690,185 @@
       "title": "Cache event pages and seat-map snapshots",
       "script": [
         "Next, a **Redis cache tier** in front of the database for the two hottest reads.",
-        "The first is **event details and venue layouts**. They're read constantly and change rarely, so the Event Service caches them with a long TTL and invalidates on update. Layouts in particular can be cached almost forever: they're versioned, and the venue for a given event doesn't change.",
-        "The second, more interesting one is the **seat-map availability snapshot**. Without a cache, every fan looking at the seat map runs a query over thousands of seat rows. During an on-sale that's the single most expensive read we have, and it competes directly with the writes that sell tickets. Instead the Booking Service keeps a **compact snapshot per event**: a bitmap or a small per-section count of available seats. It's rebuilt from the database at most every second or two, and every fan's seat-map request is served from it. A stadium's worth of seat statuses fits in a few kilobytes as a bitmap, so this is cheap to store and cheap to ship.",
-        "The trade-off is that the map can be **a second or two stale**, so a fan might click a seat that was just taken. That's fine, because the map is only a **hint**. The authoritative check is the conditional update when they try to hold it. If that fails we say \"sorry, someone just grabbed that one\" and refresh their map. **Cache for reads, database for decisions** is the rule throughout."
+        "The first is **event details and venue layouts**. They're read constantly and change rarely, so the Event Service caches them with a long TTL and invalidates on update. Layouts in particular can be cached almost forever: they're versioned, and the venue for a given event doesn't change."
       ]
+    },
+    {
+      "scene": "main",
+      "focus": ["booking", "e_booking_db", "db"],
+      "title": "The most expensive read",
+      "script": [
+        "The second, more interesting one is the **seat-map availability snapshot**. Without a cache, every fan looking at the seat map runs a query over thousands of seat rows. During an on-sale that's the single most expensive read we have, and it competes directly with the writes that sell tickets."
+      ]
+    },
+    {
+      "title": "A compact snapshot per event",
+      "script": [
+        "Instead the Booking Service keeps a **compact snapshot per event**: a bitmap or a small per-section count of available seats. It's rebuilt from the database at most every second or two, and every fan's seat-map request is served from it. A stadium's worth of seat statuses fits in a few kilobytes as a bitmap, so this is cheap to store and cheap to ship."
+      ],
+      "entities": {
+        "items": [
+          { "id": "seats", "name": "Seat rows (Primary DB)", "kind": "data", "fields": ["~50,000 rows per event", "status, hold_id, expiry", "the authoritative copy"] },
+          { "id": "snap", "name": "SeatMapSnapshot (Redis)", "kind": "data", "fields": ["event_id: key", "version: int", "built_at: timestamp", "available: bitmap (1 bit/seat)", "per_section: counts", "≈ a few KB per event"] }
+        ],
+        "relations": [
+          { "from": "seats", "to": "snap", "label": "rebuilt every 1–2 s" }
+        ]
+      }
+    },
+    {
+      "title": "Cache for reads, database for decisions",
+      "script": [
+        "The trade-off is that the map can be **a second or two stale**, so a fan might click a seat that was just taken. That's fine, because the map is only a **hint**. The authoritative check is the conditional update when they try to hold it. If that fails we say \"sorry, someone just grabbed that one\" and refresh their map. **Cache for reads, database for decisions** is the rule throughout."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "fan", "label": "Fan", "kind": "client" },
+          { "id": "booking", "label": "Booking Service", "kind": "service" },
+          { "id": "cache", "label": "Cache", "kind": "data" },
+          { "id": "db", "label": "Primary DB", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "fan", "to": "booking", "label": "GET seat map" },
+          { "from": "booking", "to": "cache", "label": "read snapshot" },
+          { "from": "booking", "to": "fan", "label": "14C available (1 s old)", "reply": true },
+          { "from": "fan", "to": "booking", "label": "hold 14C" },
+          { "from": "booking", "to": "db", "label": "conditional update" },
+          { "from": "db", "to": "booking", "label": "0 rows: already held", "reply": true },
+          { "from": "booking", "to": "fan", "label": "someone just grabbed it · fresh map", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
       "add": ["cdn", "e_client_cdn", "e_cdn_gateway"],
       "title": "Push the read path to the edge with a CDN",
       "script": [
-        "Even with a cache, every request still reaches our gateway and services. The next step is a **CDN** in front of everything.",
-        "Static assets are the obvious part: the JavaScript bundle, images, and the **venue map geometry**, which can be served as a long-cached, versioned file. The bigger win is **event pages and their JSON**. An event page is the same for everyone, so the CDN can cache it for tens of seconds and absorb nearly all the browse traffic at edge locations close to the fans. Only misses go back to the **origin**, which is our API gateway.",
-        "Personalized or inventory-sensitive calls (holds, orders, \"my tickets\") are marked uncacheable and pass straight through. Even the seat-map snapshot can sit at the edge with a one-second TTL if we need to. Ten million fans hitting it then turns into one origin request per edge location per second.",
-        "The CDN also gives us something we'll lean on in a moment: a huge, globally distributed tier that is very good at **serving the same bytes to millions of people**. It handles that cheaply, and it can soak up attack traffic before it ever reaches us. That's exactly the shape of traffic a hot on-sale produces."
+        "Even with a cache, every request still reaches our gateway and services. The next step is a **CDN** in front of everything."
       ]
+    },
+    {
+      "title": "What the CDN caches",
+      "script": [
+        "Static assets are the obvious part: the JavaScript bundle, images, and the **venue map geometry**, which can be served as a long-cached, versioned file. The bigger win is **event pages and their JSON**. An event page is the same for everyone, so the CDN can cache it for tens of seconds and absorb nearly all the browse traffic at edge locations close to the fans. Only misses go back to the **origin**, which is our API gateway."
+      ],
+      "table": {
+        "columns": ["Content", "Edge TTL", "Why"],
+        "rows": [
+          ["**JS bundle, images**", "long, versioned", "static"],
+          ["**Venue map geometry**", "long, versioned", "the layout almost never changes"],
+          ["**Event pages + JSON**", "tens of seconds", "the same for everyone; most browse traffic"],
+          ["**Seat-map snapshot**", "1 s, if needed", "collapses millions of polls"],
+          ["**Holds, orders, my tickets**", "never cached", "personal or inventory-sensitive"]
+        ]
+      }
+    },
+    {
+      "title": "One origin request per edge per second",
+      "script": [
+        "Personalized or inventory-sensitive calls (holds, orders, \"my tickets\") are marked uncacheable and pass straight through. Even the seat-map snapshot can sit at the edge with a one-second TTL if we need to. Ten million fans hitting it then turns into one origin request per edge location per second."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "fans", "label": "Fans", "kind": "client", "sub": "millions" },
+          { "id": "cdn", "label": "CDN edge", "kind": "infra" },
+          { "id": "gw", "label": "API Gateway", "kind": "infra", "sub": "origin" },
+          { "id": "booking", "label": "Booking Service", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "fans", "to": "cdn", "label": "GET seat map ×100,000s" },
+          { "from": "cdn", "to": "gw", "label": "one miss per second" },
+          { "from": "gw", "to": "booking", "label": "snapshot" },
+          { "from": "cdn", "to": "fans", "label": "cached copy to everyone", "reply": true },
+          { "from": "fans", "to": "cdn", "label": "POST /holds (uncacheable)" },
+          { "from": "cdn", "to": "gw", "label": "pass straight through" },
+          { "from": "gw", "to": "booking", "label": "hold" }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Built for the shape of an on-sale",
+      "script": [
+        "The CDN also gives us something we'll lean on in a moment: a huge, globally distributed tier that is very good at **serving the same bytes to millions of people**. It handles that cheaply, and it can soak up attack traffic before it ever reaches us. That's exactly the shape of traffic a hot on-sale produces."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "Huge and **globally distributed**" },
+          { "text": "Great at **the same bytes to millions** of people", "detail": "and cheap at it" },
+          { "text": "**Soaks up attack traffic** before it reaches us" },
+          { "text": "Exactly the shape of a **hot on-sale**", "detail": "we'll lean on it for the waiting room" }
+        ]
+      }
+    },
+    {
+      "title": "The on-sale problem",
+      "script": [
+        "So far the design handles a normal day comfortably. Now it's 9:59 a.m. and **ten million fans** are hovering over the \"Buy\" button for a 50,000-seat show.",
+        "Think about what happens without protection."
+      ],
+      "table": {
+        "columns": ["", "Normal day", "Hot on-sale"],
+        "rows": [
+          ["**Fans**", "spread over the day", "10M in a few minutes"],
+          ["**Seats**", "plenty", "50,000"],
+          ["**Fans per seat**", "≪ 1", "~200"],
+          ["**Hold attempts that fail**", "almost none", "199 of every 200"]
+        ]
+      }
+    },
+    {
+      "title": "The thundering herd",
+      "script": [
+        "At 10:00 everyone requests the seat map and tries to hold seats. Caches help with the map, but **holds are writes** on the same few thousand rows, so the conditional updates fail for 199 out of 200 people. Those 199 immediately retry. Load on the Booking Service and its database shard goes vertical, latency spikes for the few who *could* succeed, and timeouts cause more retries. That's a **thundering herd**, and the usual outcome is that the site falls over and nobody buys anything."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "fans", "label": "10M Fans", "kind": "client" },
+          { "id": "booking", "label": "Booking Service", "kind": "service" },
+          { "id": "db", "label": "Event's DB shard", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "fans", "to": "booking", "label": "10:00 · hold seats (all at once)" },
+          { "from": "booking", "to": "db", "label": "conditional updates on the same rows" },
+          { "from": "db", "to": "booking", "label": "1 in 200 succeed", "reply": true },
+          { "from": "booking", "to": "fans", "label": "199 in 200: seat taken", "reply": true },
+          { "from": "fans", "to": "booking", "label": "retry, immediately" },
+          { "note": "latency spikes → timeouts → more retries", "over": ["booking", "db"] },
+          { "note": "site falls over · nobody buys anything", "over": ["fans", "db"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Why more hardware doesn't help",
+      "script": [
+        "Scaling the database further doesn't help. The contention is on the **same rows**, so throwing hardware at it buys little, and it's pointless anyway: no matter how much capacity we add, only 50,000 seats exist. Most of those requests are **destined to fail**. The right move is to stop them before they start."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "Contention is on the **same rows**", "detail": "more machines don't make one row less contested" },
+          { "text": "Only **50,000 seats** exist, whatever the capacity" },
+          { "text": "Most requests are **destined to fail**" },
+          { "text": "So **stop them before they start**" }
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["waitroom", "queuestore", "e_waitroom_queuestore"],
-      "title": "The on-sale problem and the waiting room",
+      "title": "The virtual waiting room",
       "script": [
-        "So far the design handles a normal day comfortably. Now it's 9:59 a.m. and **ten million fans** are hovering over the \"Buy\" button for a 50,000-seat show.",
-        "Think about what happens without protection. At 10:00 everyone requests the seat map and tries to hold seats. Caches help with the map, but **holds are writes** on the same few thousand rows, so the conditional updates fail for 199 out of 200 people. Those 199 immediately retry. Load on the Booking Service and its database shard goes vertical, latency spikes for the few who *could* succeed, and timeouts cause more retries. That's a **thundering herd**, and the usual outcome is that the site falls over and nobody buys anything.",
-        "Scaling the database further doesn't help. The contention is on the **same rows**, so throwing hardware at it buys little, and it's pointless anyway: no matter how much capacity we add, only 50,000 seats exist. Most of those requests are **destined to fail**. The right move is to stop them before they start.",
-        "That's the **virtual waiting room**. For an event flagged as high-demand, fans who arrive don't get the seat map, they get a place in **line**, kept in a **Queue Store**. We admit people from the front of the line into the purchase flow **at the rate the booking path can actually serve**, typically a few thousand a minute. Everyone else waits on a cheap page that tells them their position. The rest of the system then only ever sees a steady, bounded stream of real shoppers. Let's zoom into how that works."
+        "That's the **virtual waiting room**. For an event flagged as high-demand, fans who arrive don't get the seat map, they get a place in **line**, kept in a **Queue Store**. We admit people from the front of the line into the purchase flow **at the rate the booking path can actually serve**, typically a few thousand a minute."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["client", "e_client_gateway", "gateway", "waitroom", "e_waitroom_queuestore", "queuestore", "booking"],
+      "title": "A steady, bounded stream of shoppers",
+      "script": [
+        "Everyone else waits on a cheap page that tells them their position. The rest of the system then only ever sees a steady, bounded stream of real shoppers. Let's zoom into how that works."
       ]
     },
     {
@@ -358,11 +876,87 @@
       "add": ["fans", "edge", "wrsvc", "queue", "w_fans_edge", "w_edge_wrsvc", "w_wrsvc_queue"],
       "title": "Waiting room: joining the line",
       "script": [
-        "Zooming in. When a fan opens a high-demand event, the edge serves a static **waiting page** instead of the event, and the page calls the **Waiting Room Service** to **join** the queue.",
-        "Joining is a single **ZADD** into a Redis **sorted set** for that event, keyed by a queue ticket ID with a score that sets the order. The service returns the fan's ticket ID and their position, signed so it can't be tampered with. Sorted sets give us O(log N) inserts and \"what's my rank\" lookups, and ten million entries is only a few hundred megabytes. One Redis primary per hot event, with a replica, handles it comfortably. If needed we can shard the line into buckets.",
-        "The interesting choice is **the score**. For people who arrive **after** the on-sale starts, it's simply arrival time: first come, first served. But for the people who showed up early and sat in the **pre-sale lobby**, arrival order mostly measures who has the fastest connection or the most aggressive script. So at the start time we give everyone in the lobby a **random** position, then append later arrivals behind them. That's what Ticketmaster and Queue-it do, and it's both fairer and kinder to the system. Nobody gains anything by hammering refresh at 9:59:59.",
-        "Joining happens **once** per fan, so even ten million joins spread over a few minutes is tens of thousands of writes per second. That's well within a Redis node. The repeated traffic, \"am I there yet?\", is the part we must keep away from this service."
+        "Zooming in. When a fan opens a high-demand event, the edge serves a static **waiting page** instead of the event, and the page calls the **Waiting Room Service** to **join** the queue."
       ]
+    },
+    {
+      "title": "Joining is one ZADD",
+      "script": [
+        "Joining is a single **ZADD** into a Redis **sorted set** for that event, keyed by a queue ticket ID with a score that sets the order. The service returns the fan's ticket ID and their position, signed so it can't be tampered with."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "fan", "label": "Fan", "kind": "client" },
+          { "id": "edge", "label": "Edge / CDN", "kind": "infra" },
+          { "id": "wr", "label": "Waiting Room Svc", "kind": "service" },
+          { "id": "q", "label": "Queue Store", "kind": "data", "sub": "Redis sorted set" }
+        ],
+        "steps": [
+          { "from": "fan", "to": "edge", "label": "open event" },
+          { "from": "edge", "to": "fan", "label": "static waiting page", "reply": true },
+          { "from": "fan", "to": "wr", "label": "join (via edge)" },
+          { "from": "wr", "to": "q", "label": "ZADD q:event score ticket" },
+          { "from": "wr", "to": "q", "label": "ZRANK ticket" },
+          { "from": "q", "to": "wr", "label": "position 48,210", "reply": true },
+          { "from": "wr", "to": "fan", "label": "signed ticket + position", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Why a sorted set",
+      "script": [
+        "Sorted sets give us O(log N) inserts and \"what's my rank\" lookups, and ten million entries is only a few hundred megabytes. One Redis primary per hot event, with a replica, handles it comfortably. If needed we can shard the line into buckets."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**O(log N)** inserts and rank lookups" },
+          { "text": "10M entries ≈ **a few hundred MB**" },
+          { "text": "**One primary + replica** per hot event" },
+          { "text": "If needed, **shard the line into buckets**" }
+        ]
+      }
+    },
+    {
+      "title": "The score decides the order",
+      "script": [
+        "The interesting choice is **the score**. For people who arrive **after** the on-sale starts, it's simply arrival time: first come, first served. But for the people who showed up early and sat in the **pre-sale lobby**, arrival order mostly measures who has the fastest connection or the most aggressive script."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "Arrive **after** the start: score = arrival time", "detail": "first come, first served" },
+          { "text": "Arrive **early**, in the pre-sale lobby: arrival order is noise", "detail": "it measures connection speed and how aggressive your script is" }
+        ]
+      }
+    },
+    {
+      "title": "Randomize the lobby",
+      "script": [
+        "So at the start time we give everyone in the lobby a **random** position, then append later arrivals behind them. That's what Ticketmaster and Queue-it do, and it's both fairer and kinder to the system. Nobody gains anything by hammering refresh at 9:59:59."
+      ],
+      "table": {
+        "columns": ["Who", "Score", "Effect"],
+        "rows": [
+          ["**In the lobby at the start**", "random", "fast connections and scripts gain nothing"],
+          ["**Arrives after the start**", "arrival time, behind the lobby", "first come, first served"],
+          ["**Refreshes at 9:59:59**", "no change", "no reason to hammer us"]
+        ],
+        "highlight": 0
+      }
+    },
+    {
+      "title": "Join once, cheaply",
+      "script": [
+        "Joining happens **once** per fan, so even ten million joins spread over a few minutes is tens of thousands of writes per second. That's well within a Redis node. The repeated traffic, \"am I there yet?\", is the part we must keep away from this service."
+      ],
+      "table": {
+        "columns": ["Traffic", "How often", "Rate", "Handled by"],
+        "rows": [
+          ["**Join**", "once per fan", "tens of thousands/s", "Waiting Room → Redis"],
+          ["**\"Am I there yet?\"**", "every few seconds per fan", "millions/s", "not this service (next)"]
+        ],
+        "highlight": 0
+      }
     },
     {
       "scene": "wait",
@@ -370,31 +964,224 @@
       "title": "Waiting cheaply: status from the edge",
       "script": [
         "Ten million people waiting means ten million browsers asking **\"where am I now?\"**. If each asks the Waiting Room Service every few seconds, we've just rebuilt the thundering herd one layer earlier.",
-        "The trick is to make the answer **the same for everyone**. Each fan already knows their own queue number; it's in the signed ticket they got when they joined. The only thing that changes is a single global value per event: **\"now serving number N\"**, plus an estimated admission rate. We publish that as a tiny **Queue Status** object. The page polls it through the **CDN** with a one-second cache TTL, and works out \"you're 48,210th in line, about 14 minutes\" locally.",
-        "Now ten million polls per few seconds become, at the origin, **one request per edge location per second**. The CDN serves identical bytes to everyone, which is the job it's best at. We could push updates over WebSockets instead, but holding ten million open connections for a queue that changes once a second is far more expensive than letting the CDN answer polls. We'd add a little jitter to poll intervals so clients don't synchronize.",
-        "This is the key insight of the whole waiting room. **Waiting has to be almost free**, because nearly everyone does it and most of them will leave without tickets. We only pay real cost for the small number of people at the front of the line."
+        "The trick is to make the answer **the same for everyone**."
       ]
+    },
+    {
+      "title": "Per fan vs. per event",
+      "script": [
+        "Each fan already knows their own queue number; it's in the signed ticket they got when they joined. The only thing that changes is a single global value per event: **\"now serving number N\"**, plus an estimated admission rate. We publish that as a tiny **Queue Status** object. The page polls it through the **CDN** with a one-second cache TTL, and works out \"you're 48,210th in line, about 14 minutes\" locally."
+      ],
+      "entities": {
+        "items": [
+          { "id": "ticket", "name": "Queue ticket (per fan)", "kind": "client", "fields": ["event_id", "ticket_id", "queue_number: 1,048,210", "issued_at", "signature"] },
+          { "id": "status", "name": "Queue Status (per event)", "kind": "data", "fields": ["event_id", "now_serving: 1,000,000", "admit_rate: 3,400/min", "updated_at"] }
+        ],
+        "relations": [
+          { "from": "ticket", "to": "status", "label": "pos = # − N" }
+        ]
+      }
+    },
+    {
+      "title": "Polls answered at the edge",
+      "script": [
+        "Now ten million polls per few seconds become, at the origin, **one request per edge location per second**. The CDN serves identical bytes to everyone, which is the job it's best at."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "fans", "label": "Fans", "kind": "client", "sub": "10M tabs" },
+          { "id": "edge", "label": "Edge / CDN", "kind": "infra" },
+          { "id": "status", "label": "Queue Status", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "fans", "to": "edge", "label": "GET status (millions/s)" },
+          { "from": "edge", "to": "status", "label": "one miss per second" },
+          { "from": "status", "to": "edge", "label": "now serving N, rate", "reply": true },
+          { "from": "edge", "to": "fans", "label": "same cached bytes for all", "reply": true },
+          { "from": "fans", "to": "fans", "label": "position = my number − N" }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Poll the edge, don't push",
+      "script": [
+        "We could push updates over WebSockets instead, but holding ten million open connections for a queue that changes once a second is far more expensive than letting the CDN answer polls. We'd add a little jitter to poll intervals so clients don't synchronize."
+      ],
+      "table": {
+        "columns": ["Option", "Cost at 10M fans", "Freshness"],
+        "rows": [
+          ["**Poll the CDN, with jitter**", "one origin hit per edge per second", "~1 s"],
+          ["**WebSocket push**", "10M open connections", "instant, for a value that moves once a second"]
+        ],
+        "highlight": 0
+      }
+    },
+    {
+      "title": "Waiting has to be almost free",
+      "script": [
+        "This is the key insight of the whole waiting room. **Waiting has to be almost free**, because nearly everyone does it and most of them will leave without tickets. We only pay real cost for the small number of people at the front of the line."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Nearly everyone waits**", "detail": "10M fans, 50,000 seats" },
+          { "text": "Most **leave without tickets**" },
+          { "text": "So **waiting must be almost free**", "detail": "a static page and a cached number" },
+          { "text": "Real cost only for **the front of the line**" }
+        ]
+      }
     },
     {
       "scene": "wait",
       "add": ["admission", "health", "w_queue_admission", "w_admission_status", "w_health_admission"],
       "title": "Admission control: how fast to let people in",
       "script": [
-        "Something has to decide how fast \"now serving\" advances. That's the **Admission Controller**, and it's essentially a feedback loop.",
-        "The naive version is a fixed rate, say 2,000 fans per minute. The better version watches **capacity signals** from the booking path: how many admitted shoppers are currently active, Booking Service and database latency, hold failure rates, and how many seats are left. It advances N to keep the number of **concurrent shoppers** near a target. If p99 latency on holds starts climbing, it slows down. When shoppers finish or time out, it lets more in. It's the same idea as TCP congestion control, pointed at a database shard.",
-        "A useful rule of thumb for the target: with ~50,000 seats, ~4 tickets per order and a 10-minute hold window, the booking path never needs more than a few tens of thousands of concurrent shoppers. That's a number we can load-test ahead of the on-sale, rather than guessing what ten million people will do.",
-        "Seats left also drives the **endgame**. As inventory runs out we admit fewer people. When everything is sold or held, we stop admitting and flip the status to **\"sold out, but holds may still release\"**. When it's truly gone, we tell everyone still in line *now*, instead of letting them wait an hour for nothing. Being honest early is a big part of making the experience feel fair.",
-        "The controller is a single small process per event, with a standby. If it dies, \"now serving\" just stops advancing for a few seconds, which fails safe."
+        "Something has to decide how fast \"now serving\" advances. That's the **Admission Controller**, and it's essentially a feedback loop."
       ]
+    },
+    {
+      "title": "Capacity signals",
+      "script": [
+        "The naive version is a fixed rate, say 2,000 fans per minute. The better version watches **capacity signals** from the booking path: how many admitted shoppers are currently active, Booking Service and database latency, hold failure rates, and how many seats are left."
+      ],
+      "bullets": {
+        "heading": "Capacity signals from the booking path",
+        "items": [
+          { "text": "**Active shoppers**", "detail": "admitted fans who are still shopping" },
+          { "text": "**Latency**", "detail": "Booking Service and database p99" },
+          { "text": "**Hold failure rate**" },
+          { "text": "**Seats left**" }
+        ]
+      }
+    },
+    {
+      "title": "The feedback loop",
+      "script": [
+        "It advances N to keep the number of **concurrent shoppers** near a target. If p99 latency on holds starts climbing, it slows down. When shoppers finish or time out, it lets more in. It's the same idea as TCP congestion control, pointed at a database shard."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "health", "label": "Capacity Signals", "kind": "data" },
+          { "id": "adm", "label": "Admission Ctrl", "kind": "service" },
+          { "id": "status", "label": "Queue Status", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "health", "to": "adm", "label": "18K shoppers · target 20K" },
+          { "from": "adm", "to": "status", "label": "N += 2,000" },
+          { "from": "health", "to": "adm", "label": "hold p99 climbing" },
+          { "from": "adm", "to": "status", "label": "N += 200 (slow down)" },
+          { "from": "health", "to": "adm", "label": "shoppers finished · timed out" },
+          { "from": "adm", "to": "status", "label": "N += 3,000" }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Sizing the target",
+      "script": [
+        "A useful rule of thumb for the target: with ~50,000 seats, ~4 tickets per order and a 10-minute hold window, the booking path never needs more than a few tens of thousands of concurrent shoppers. That's a number we can load-test ahead of the on-sale, rather than guessing what ten million people will do."
+      ],
+      "table": {
+        "columns": ["Input", "Value"],
+        "rows": [
+          ["**Seats**", "~50,000"],
+          ["**Tickets per order**", "~4 → ~12,500 orders"],
+          ["**Hold window**", "10 minutes"],
+          ["**Concurrent shoppers needed**", "a few tens of thousands, at most"]
+        ],
+        "highlight": 3
+      }
+    },
+    {
+      "title": "The endgame",
+      "script": [
+        "Seats left also drives the **endgame**. As inventory runs out we admit fewer people. When everything is sold or held, we stop admitting and flip the status to **\"sold out, but holds may still release\"**. When it's truly gone, we tell everyone still in line *now*, instead of letting them wait an hour for nothing. Being honest early is a big part of making the experience feel fair."
+      ],
+      "table": {
+        "columns": ["Inventory", "Admission", "Fans in line see"],
+        "rows": [
+          ["**Plenty left**", "at the target rate", "position and ETA"],
+          ["**Running low**", "fewer people", "position and ETA"],
+          ["**All sold or held**", "stopped", "sold out, but holds may still release"],
+          ["**Truly gone**", "closed", "sold out, right now"]
+        ]
+      }
+    },
+    {
+      "title": "The controller fails safe",
+      "script": [
+        "The controller is a single small process per event, with a standby. If it dies, \"now serving\" just stops advancing for a few seconds, which fails safe."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**One small process per event**, with a standby" },
+          { "text": "If it dies, **now serving stops advancing**", "detail": "for a few seconds, until the standby takes over" },
+          { "text": "**Fails safe**", "detail": "nobody is admitted who shouldn't be" }
+        ]
+      }
     },
     {
       "scene": "wait",
       "add": ["gateway", "booking", "w_fans_gateway", "w_gateway_booking", "w_booking_health"],
       "title": "Access tokens: making the line enforceable",
       "script": [
-        "A queue is only real if you **can't skip it**. Anyone can read our JavaScript and call the hold API directly, so the line must be enforced server-side.",
-        "When a fan's page sees that \"now serving\" has passed their number, it **claims** admission from the Waiting Room Service. The service checks their ticket against the current N and issues a short-lived, signed **access token**: a JWT carrying the event ID, the user ID, and an expiry of maybe 15 minutes. Every booking call then goes through the **API Gateway**, which **verifies the token's signature locally**. No database lookup, no call back to the waiting room, so verification costs microseconds even at peak. Requests for a protected event without a valid token are bounced to the waiting page.",
-        "Tokens are bound to the user and the event, so sharing one doesn't help. The Booking Service can also cap holds per token, which stops one admitted user from hoarding the whole floor. When the token expires the shopper's slot frees up, and that shows up in the capacity signals, so the controller admits the next person.",
+        "A queue is only real if you **can't skip it**. Anyone can read our JavaScript and call the hold API directly, so the line must be enforced server-side."
+      ]
+    },
+    {
+      "title": "Claim a token, then book",
+      "script": [
+        "When a fan's page sees that \"now serving\" has passed their number, it **claims** admission from the Waiting Room Service. The service checks their ticket against the current N and issues a short-lived, signed **access token**: a JWT carrying the event ID, the user ID, and an expiry of maybe 15 minutes. Every booking call then goes through the **API Gateway**, which **verifies the token's signature locally**."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "fan", "label": "Fan", "kind": "client" },
+          { "id": "wr", "label": "Waiting Room Svc", "kind": "service" },
+          { "id": "gw", "label": "API Gateway", "kind": "infra" },
+          { "id": "booking", "label": "Booking Service", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "fan", "to": "fan", "label": "now serving ≥ my number" },
+          { "from": "fan", "to": "wr", "label": "claim (signed queue ticket)" },
+          { "from": "wr", "to": "wr", "label": "ticket ≤ N?" },
+          { "from": "wr", "to": "fan", "label": "access token (JWT, 15 min)", "reply": true },
+          { "from": "fan", "to": "gw", "label": "POST /holds + token" },
+          { "from": "gw", "to": "gw", "label": "verify signature locally" },
+          { "from": "gw", "to": "booking", "label": "hold" },
+          { "from": "booking", "to": "fan", "label": "hold confirmed", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "The access token",
+      "script": [
+        "No database lookup, no call back to the waiting room, so verification costs microseconds even at peak. Requests for a protected event without a valid token are bounced to the waiting page."
+      ],
+      "entities": {
+        "items": [
+          { "id": "token", "name": "Access token (JWT)", "kind": "infra", "fields": ["event_id", "user_id", "exp: now + 15 min", "hold_cap: 4 seats", "signature: waiting room key"] }
+        ]
+      }
+    },
+    {
+      "title": "No sharing, no hoarding",
+      "script": [
+        "Tokens are bound to the user and the event, so sharing one doesn't help. The Booking Service can also cap holds per token, which stops one admitted user from hoarding the whole floor. When the token expires the shopper's slot frees up, and that shows up in the capacity signals, so the controller admits the next person."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Bound to user and event**", "detail": "a shared token is useless to anyone else" },
+          { "text": "**Hold cap per token**", "detail": "one admitted user can't hoard the whole floor" },
+          { "text": "**Expiry frees the slot**", "detail": "capacity signals see it, and the next fan is admitted" }
+        ]
+      }
+    },
+    {
+      "scene": "wait",
+      "focus": ["fans", "w_fans_gateway", "gateway", "w_gateway_booking", "booking"],
+      "title": "A hard bound on booking traffic",
+      "script": [
         "This also gives the Booking Service a **hard guarantee**. Its traffic during an on-sale is bounded by the number of live tokens, not by the size of the crowd. That's what lets us keep simple, correct Postgres conditional updates for holds instead of reaching for something exotic. The waiting room isn't just a UX feature. It's what makes the core design viable."
       ]
     },
@@ -404,21 +1191,149 @@
       "title": "Bots, fairness and verified fans",
       "script": [
         "The last piece of the waiting room is keeping the line **human**. Scalpers run thousands of bots to grab inventory and resell it, and every spot a bot takes is a real fan who leaves empty-handed.",
-        "The cheapest place to stop bots is **at join time**, before they hold a spot. The edge calls a **bot defense** service (device fingerprinting, IP reputation, behavioral signals, a challenge when things look suspicious). I'm not designing it, but where it sits matters: in front of the queue, not in front of checkout, where the damage would already be done.",
-        "The second layer is **identity**. We allow **one queue spot per verified account** (and per payment card at checkout), so a thousand browser tabs don't buy a thousand chances. For the biggest tours, Ticketmaster's \"Verified Fan\" goes further: fans **register days in advance**, get screened offline, and receive access codes for a specific on-sale. That turns an unbounded crowd into a known, pre-vetted list, so you can even size the on-sale before it starts.",
-        "Everything else is rate limits at the gateway, per-token hold caps, and order limits per event. None of it is perfect; this is an arms race. But the architecture puts each check in the cheapest place it can go, and keeps the expensive inventory path reserved for people who've already passed all of them. That's the end of the deep dive, so let's zoom back out."
+        "The cheapest place to stop bots is **at join time**, before they hold a spot."
       ]
     },
     {
+      "title": "Screen at the door, not the till",
+      "script": [
+        "The edge calls a **bot defense** service (device fingerprinting, IP reputation, behavioral signals, a challenge when things look suspicious). I'm not designing it, but where it sits matters: in front of the queue, not in front of checkout, where the damage would already be done."
+      ],
+      "table": {
+        "columns": ["Screen bots…", "Cost of a bot that slips through"],
+        "rows": [
+          ["**At join, at the edge**", "none yet: it never gets a spot in line"],
+          ["**At checkout**", "it already took a spot, and maybe held seats"]
+        ],
+        "highlight": 0
+      }
+    },
+    {
+      "title": "Identity and Verified Fan",
+      "script": [
+        "The second layer is **identity**. We allow **one queue spot per verified account** (and per payment card at checkout), so a thousand browser tabs don't buy a thousand chances. For the biggest tours, Ticketmaster's \"Verified Fan\" goes further: fans **register days in advance**, get screened offline, and receive access codes for a specific on-sale. That turns an unbounded crowd into a known, pre-vetted list, so you can even size the on-sale before it starts."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "fan", "label": "Fan", "kind": "client" },
+          { "id": "reg", "label": "Verified Fan", "kind": "service", "sub": "registration" },
+          { "id": "wr", "label": "Waiting Room Svc", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "fan", "to": "reg", "label": "register (days ahead)" },
+          { "from": "reg", "to": "reg", "label": "screen offline" },
+          { "from": "reg", "to": "fan", "label": "access code for this on-sale", "reply": true },
+          { "note": "on-sale day", "over": ["fan", "wr"] },
+          { "from": "fan", "to": "wr", "label": "join + code + verified account" },
+          { "from": "wr", "to": "wr", "label": "one spot per account" },
+          { "from": "wr", "to": "fan", "label": "your place in line", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Each check in the cheapest place",
+      "script": [
+        "Everything else is rate limits at the gateway, per-token hold caps, and order limits per event. None of it is perfect; this is an arms race. But the architecture puts each check in the cheapest place it can go, and keeps the expensive inventory path reserved for people who've already passed all of them. That's the end of the deep dive, so let's zoom back out."
+      ],
+      "table": {
+        "columns": ["Check", "Where", "Stops"],
+        "rows": [
+          ["**Bot screening**", "edge, at join", "scripted joins"],
+          ["**One spot per account**", "waiting room", "tab farms"],
+          ["**Verified Fan codes**", "registration", "an unknown crowd"],
+          ["**Rate limits**", "API gateway", "hammering"],
+          ["**Hold cap per token**", "Booking Service", "hoarding seats"],
+          ["**Order limits per event**", "Order Service", "bulk buying"]
+        ]
+      }
+    },
+    {
       "scene": "main",
-      "add": ["kafka", "notify", "email", "e_db_kafka", "e_kafka_notify", "e_notify_email"],
+      "add": ["kafka", "e_db_kafka"],
       "title": "An event bus for everything after the sale",
       "script": [
-        "Back to the full system. Plenty of things need to happen **because** seats were held, released or sold, and none of them should slow down checkout. The confirmation email, issuing the mobile ticket, updating search's sold-out flag, analytics, payouts to promoters. So we put an **event bus**, Kafka, behind the database.",
-        "The important detail is **how** events get onto it. If the Order Service committed to Postgres and then published to Kafka, a crash between the two would lose the event, or publish one for a transaction that rolled back. Instead we use the **transactional outbox** pattern. The same transaction that marks seats SOLD also inserts an \"OrderConfirmed\" row into an outbox table, and a relay (or CDC on the outbox) publishes it to Kafka. An event exists if and only if the state change committed. Consumers are idempotent, since delivery is at-least-once. Topics are **partitioned by event ID**, so all changes for one show stay in order.",
-        "The first consumer is the **Notification Service**. On OrderConfirmed it generates the tickets and sends the confirmation through third-party email and push providers. Mobile tickets use a **rotating QR code**: the barcode is derived from a secret plus the current time, so a screenshot stops working after a few seconds, which kills a lot of ticket fraud. The same service sends the \"it's your turn\" push for fans who left the waiting page.",
-        "Because this all hangs off the bus, a slow email provider never delays a purchase. It just builds a backlog that drains when the provider recovers."
+        "Back to the full system. Plenty of things need to happen **because** seats were held, released or sold, and none of them should slow down checkout. The confirmation email, issuing the mobile ticket, updating search's sold-out flag, analytics, payouts to promoters. So we put an **event bus**, Kafka, behind the database."
       ]
+    },
+    {
+      "title": "Why not just publish after commit?",
+      "script": [
+        "The important detail is **how** events get onto it. If the Order Service committed to Postgres and then published to Kafka, a crash between the two would lose the event, or publish one for a transaction that rolled back."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "order", "label": "Order Service", "kind": "service" },
+          { "id": "db", "label": "Primary DB", "kind": "data" },
+          { "id": "kafka", "label": "Event Bus", "kind": "stream" }
+        ],
+        "steps": [
+          { "from": "order", "to": "db", "label": "COMMIT seats SOLD" },
+          { "from": "db", "to": "order", "label": "ok", "reply": true },
+          { "note": "crash here", "over": ["order", "db"] },
+          { "from": "order", "to": "kafka", "label": "publish OrderConfirmed (never sent)" },
+          { "note": "seats sold, but no email, no ticket", "over": ["order", "kafka"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "The transactional outbox",
+      "script": [
+        "Instead we use the **transactional outbox** pattern. The same transaction that marks seats SOLD also inserts an \"OrderConfirmed\" row into an outbox table, and a relay (or CDC on the outbox) publishes it to Kafka. An event exists if and only if the state change committed."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "order", "label": "Order Service", "kind": "service" },
+          { "id": "db", "label": "Primary DB", "kind": "data" },
+          { "id": "relay", "label": "Outbox Relay", "kind": "service", "sub": "or CDC" },
+          { "id": "kafka", "label": "Event Bus", "kind": "stream" }
+        ],
+        "steps": [
+          { "from": "order", "to": "db", "label": "BEGIN" },
+          { "from": "order", "to": "db", "label": "seats SOLD + INSERT outbox row" },
+          { "from": "order", "to": "db", "label": "COMMIT (both or neither)" },
+          { "from": "relay", "to": "db", "label": "read new outbox rows" },
+          { "from": "relay", "to": "kafka", "label": "publish OrderConfirmed" },
+          { "from": "relay", "to": "db", "label": "mark row published" }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Delivery guarantees",
+      "script": [
+        "Consumers are idempotent, since delivery is at-least-once. Topics are **partitioned by event ID**, so all changes for one show stay in order."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**At-least-once** delivery", "detail": "a relay crash can publish a row twice" },
+          { "text": "**Idempotent consumers**", "detail": "dedupe by the outbox row's ID" },
+          { "text": "**Partitioned by event ID**", "detail": "every change for one show stays in order" }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "add": ["notify", "email", "e_kafka_notify", "e_notify_email"],
+      "title": "Notifications and tickets",
+      "script": [
+        "The first consumer is the **Notification Service**. On OrderConfirmed it generates the tickets and sends the confirmation through third-party email and push providers."
+      ]
+    },
+    {
+      "title": "Rotating QR codes and a buffer",
+      "script": [
+        "Mobile tickets use a **rotating QR code**: the barcode is derived from a secret plus the current time, so a screenshot stops working after a few seconds, which kills a lot of ticket fraud. The same service sends the \"it's your turn\" push for fans who left the waiting page.",
+        "Because this all hangs off the bus, a slow email provider never delays a purchase. It just builds a backlog that drains when the provider recovers."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Rotating QR code**: secret + current time", "detail": "a screenshot stops working after a few seconds" },
+          { "text": "**\"It's your turn\"** pushes from the waiting room" },
+          { "text": "A slow email provider **never delays a purchase**", "detail": "it builds a backlog that drains when it recovers" }
+        ]
+      }
     },
     {
       "scene": "main",
@@ -426,21 +1341,136 @@
       "title": "A live seat map with server-sent events",
       "script": [
         "Admitted shoppers are staring at the seat map deciding what to buy, and nothing is more frustrating than clicking seat after seat that's already gone. A one-or-two second snapshot is OK, but we can do better for the people who are actually shopping.",
-        "The **Seat Map Stream** service consumes **SeatsHeld, SeatsReleased and SeatsSold** events from Kafka and pushes them to clients over **server-sent events**. A client loads the snapshot, opens a stream for that event, and applies the deltas as they arrive. Seats grey out within a fraction of a second of someone else grabbing them. When the expiry worker frees a lapsed hold, those seats light back up. Each delta carries a sequence number, so a client that misses some just re-fetches the snapshot.",
-        "I chose **SSE over WebSockets** because the traffic is one-way, server to client. SSE is plain HTTP, it works through proxies and the CDN, and browsers reconnect automatically. Polling would also work, but at a one-second interval it's a lot of wasted requests, and it's still less fresh.",
-        "Here the waiting room pays off again. Live streams only go to the **admitted** shoppers, maybe tens of thousands per hot event, not ten million. That's a few stream servers, each fanning one Kafka partition out to many connections. Fans still in line, or browsing low-demand events, keep using the cached snapshot. Push is something we give to the people for whom freshness actually changes the outcome."
+        "The **Seat Map Stream** service consumes **SeatsHeld, SeatsReleased and SeatsSold** events from Kafka and pushes them to clients over **server-sent events**."
       ]
+    },
+    {
+      "title": "Snapshot plus deltas",
+      "script": [
+        "A client loads the snapshot, opens a stream for that event, and applies the deltas as they arrive. Seats grey out within a fraction of a second of someone else grabbing them. When the expiry worker frees a lapsed hold, those seats light back up. Each delta carries a sequence number, so a client that misses some just re-fetches the snapshot."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "fan", "label": "Shopper", "kind": "client" },
+          { "id": "booking", "label": "Booking Service", "kind": "service" },
+          { "id": "stream", "label": "Seat Map Stream", "kind": "service" },
+          { "id": "kafka", "label": "Event Bus", "kind": "stream" }
+        ],
+        "steps": [
+          { "from": "fan", "to": "booking", "label": "GET snapshot" },
+          { "from": "booking", "to": "fan", "label": "snapshot, seq 1042", "reply": true },
+          { "from": "fan", "to": "stream", "label": "open SSE stream (event)" },
+          { "from": "kafka", "to": "stream", "label": "SeatsHeld 14C" },
+          { "from": "stream", "to": "fan", "label": "seq 1043: 14C held (greys out)", "reply": true },
+          { "from": "kafka", "to": "stream", "label": "SeatsReleased 9A–9B" },
+          { "from": "stream", "to": "fan", "label": "seq 1045: 9A–9B free", "reply": true },
+          { "from": "fan", "to": "booking", "label": "missed 1044 → re-fetch snapshot" }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Why server-sent events",
+      "script": [
+        "I chose **SSE over WebSockets** because the traffic is one-way, server to client. SSE is plain HTTP, it works through proxies and the CDN, and browsers reconnect automatically. Polling would also work, but at a one-second interval it's a lot of wasted requests, and it's still less fresh."
+      ],
+      "table": {
+        "columns": ["Option", "Direction", "Trade-off"],
+        "rows": [
+          ["**Server-sent events**", "server → client", "plain HTTP, proxies and CDN, auto-reconnect"],
+          ["**WebSockets**", "both ways", "two-way we don't need; harder through proxies"],
+          ["**Polling every 1 s**", "client asks", "many wasted requests, still less fresh"]
+        ],
+        "highlight": 0
+      }
+    },
+    {
+      "title": "Push only where it changes the outcome",
+      "script": [
+        "Here the waiting room pays off again. Live streams only go to the **admitted** shoppers, maybe tens of thousands per hot event, not ten million. That's a few stream servers, each fanning one Kafka partition out to many connections. Fans still in line, or browsing low-demand events, keep using the cached snapshot. Push is something we give to the people for whom freshness actually changes the outcome."
+      ],
+      "table": {
+        "columns": ["Who", "How many", "Seat map"],
+        "rows": [
+          ["**Admitted shoppers**", "tens of thousands per hot event", "live SSE deltas"],
+          ["**Fans still in line**", "millions", "no seat map yet"],
+          ["**Browsing low-demand events**", "spread out", "cached snapshot"]
+        ],
+        "highlight": 0
+      }
+    },
+    {
+      "title": "Partitioning inventory by event",
+      "script": [
+        "Two scaling questions remain: how the inventory database grows, and what happens across regions.",
+        "The inventory **shards by event ID**. Every query on the hot path (\"availability for event X\", \"hold these seats at event X\", \"sell this hold\") is scoped to a single event, so every transaction stays on **one shard**, with no distributed transactions. An event's seats, holds and the orders that touch them all live together."
+      ],
+      "table": {
+        "columns": ["Hot-path operation", "Touches", "Shard"],
+        "rows": [
+          ["**Availability for event X**", "X's seats", "shard(X)"],
+          ["**Hold these seats at X**", "X's seats", "shard(X)"],
+          ["**Sell this hold**", "X's seats + the order", "shard(X)"]
+        ]
+      }
+    },
+    {
+      "title": "Hot partitions",
+      "script": [
+        "The catch is **hot partitions**: one event can be a million times hotter than its neighbours. So we know the big on-sales in advance and **place them deliberately**, moving a mega-event onto a dedicated shard before its on-sale, with replicas for the read side. Because the waiting room bounds the write rate, a single well-provisioned Postgres primary per hot event is plenty."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "One event can be **a million times hotter**", "detail": "than the events sharing its shard" },
+          { "text": "Big on-sales are **known in advance**" },
+          { "text": "Move a mega-event to a **dedicated shard**", "detail": "before its on-sale, with read replicas" },
+          { "text": "The waiting room bounds writes: **one primary is plenty**" }
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["regions", "e_db_regions"],
-      "title": "Partitioning inventory and going multi-region",
+      "title": "Going multi-region",
       "script": [
-        "Two scaling questions remain: how the inventory database grows, and what happens across regions.",
-        "The inventory **shards by event ID**. Every query on the hot path (\"availability for event X\", \"hold these seats at event X\", \"sell this hold\") is scoped to a single event, so every transaction stays on **one shard**, with no distributed transactions. An event's seats, holds and the orders that touch them all live together. The catch is **hot partitions**: one event can be a million times hotter than its neighbours. So we know the big on-sales in advance and **place them deliberately**, moving a mega-event onto a dedicated shard before its on-sale, with replicas for the read side. Because the waiting room bounds the write rate, a single well-provisioned Postgres primary per hot event is plenty.",
-        "For regions, I'd split along the same consistency line as before. The **catalog** (events, venues, search) is replicated asynchronously to **every region**, so browsing is local and fast everywhere. Each event's **inventory has a single home region**, normally the one closest to the venue, and every hold and sale for it is written there. That costs an extra hundred milliseconds or so for a fan buying a ticket on another continent. In exchange, we never have to reconcile two regions that both sold seat 14C. For a ticketing system that's an easy trade.",
-        "If a home region fails, its events' inventory fails over to a standby replica in another region, with a brief pause in sales for those events. We'd rather pause than risk double-selling."
+        "For regions, I'd split along the same consistency line as before. The **catalog** (events, venues, search) is replicated asynchronously to **every region**, so browsing is local and fast everywhere."
       ]
+    },
+    {
+      "title": "One home region per event",
+      "script": [
+        "Each event's **inventory has a single home region**, normally the one closest to the venue, and every hold and sale for it is written there. That costs an extra hundred milliseconds or so for a fan buying a ticket on another continent. In exchange, we never have to reconcile two regions that both sold seat 14C. For a ticketing system that's an easy trade."
+      ],
+      "table": {
+        "columns": ["Data", "Written in", "Elsewhere", "Cost"],
+        "rows": [
+          ["**Catalog** (events, venues, search)", "primary region", "async replicas everywhere", "a little stale"],
+          ["**Inventory** (seats, holds, orders)", "the event's home region", "standby replica", "~100 ms for far-away fans"]
+        ],
+        "highlight": 1
+      }
+    },
+    {
+      "title": "When a home region fails",
+      "script": [
+        "If a home region fails, its events' inventory fails over to a standby replica in another region, with a brief pause in sales for those events. We'd rather pause than risk double-selling."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "fans", "label": "Fans", "kind": "client" },
+          { "id": "home", "label": "Home Region", "kind": "data" },
+          { "id": "standby", "label": "Standby Region", "kind": "ghost" }
+        ],
+        "steps": [
+          { "from": "fans", "to": "home", "label": "holds and sales" },
+          { "from": "home", "to": "standby", "label": "replicate" },
+          { "note": "home region fails", "over": ["home"] },
+          { "from": "fans", "to": "fans", "label": "sales paused for its events" },
+          { "from": "standby", "to": "standby", "label": "promote replica" },
+          { "from": "fans", "to": "standby", "label": "sales resume" }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
