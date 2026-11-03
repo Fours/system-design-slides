@@ -206,13 +206,6 @@
               "~100K QPS avg, 200K peak",
               "× 1,000 shards ≈ 200M shard lookups/s"
             ]
-          ],
-          [
-            "Results",
-            [
-              "~30% of queries repeat recently",
-              "→ worth caching whole result pages"
-            ]
           ]
         ]
       },
@@ -1162,6 +1155,298 @@
           "suggest"
         ]
       }
+    },
+    "frontier": {
+      "boxes": [
+        {
+          "id": "sched",
+          "x": 40,
+          "y": 120,
+          "w": 190,
+          "h": 54,
+          "label": "Recrawl Scheduler",
+          "kind": "service",
+          "sub": "priority per URL"
+        },
+        {
+          "id": "f1",
+          "x": 300,
+          "y": 40,
+          "w": 190,
+          "h": 54,
+          "label": "Front Queue P1",
+          "kind": "stream",
+          "sub": "most important"
+        },
+        {
+          "id": "f2",
+          "x": 300,
+          "y": 120,
+          "w": 190,
+          "h": 54,
+          "label": "Front Queue P2",
+          "kind": "stream",
+          "sub": "normal"
+        },
+        {
+          "id": "f3",
+          "x": 300,
+          "y": 200,
+          "w": 190,
+          "h": 54,
+          "label": "Front Queue P3",
+          "kind": "stream",
+          "sub": "long tail"
+        },
+        {
+          "id": "router",
+          "x": 560,
+          "y": 40,
+          "w": 190,
+          "h": 214,
+          "label": "Host Router",
+          "kind": "service",
+          "sub": "one host → one queue"
+        },
+        {
+          "id": "b1",
+          "x": 820,
+          "y": 40,
+          "w": 190,
+          "h": 54,
+          "label": "example.com",
+          "kind": "stream",
+          "sub": "≥ 1 s between fetches"
+        },
+        {
+          "id": "b2",
+          "x": 820,
+          "y": 120,
+          "w": 190,
+          "h": 54,
+          "label": "wikipedia.org",
+          "kind": "stream",
+          "sub": "one connection at a time"
+        },
+        {
+          "id": "b3",
+          "x": 820,
+          "y": 200,
+          "w": 190,
+          "h": 54,
+          "label": "slow-host.net",
+          "kind": "stream",
+          "sub": "erroring → longer delay"
+        },
+        {
+          "id": "fetch",
+          "x": 1080,
+          "y": 40,
+          "w": 190,
+          "h": 214,
+          "label": "Fetchers",
+          "kind": "service",
+          "sub": "pull from ready queues"
+        }
+      ],
+      "edges": [
+        {
+          "id": "e_sched_f1",
+          "from": "sched",
+          "to": "f1",
+          "pts": [
+            [
+              230,
+              147
+            ],
+            [
+              265,
+              147
+            ],
+            [
+              265,
+              67
+            ],
+            [
+              300,
+              67
+            ]
+          ]
+        },
+        {
+          "id": "e_sched_f2",
+          "from": "sched",
+          "to": "f2",
+          "pts": [
+            [
+              230,
+              147
+            ],
+            [
+              300,
+              147
+            ]
+          ]
+        },
+        {
+          "id": "e_sched_f3",
+          "from": "sched",
+          "to": "f3",
+          "pts": [
+            [
+              230,
+              147
+            ],
+            [
+              265,
+              147
+            ],
+            [
+              265,
+              227
+            ],
+            [
+              300,
+              227
+            ]
+          ]
+        },
+        {
+          "id": "e_f1_router",
+          "from": "f1",
+          "to": "router",
+          "pts": [
+            [
+              490,
+              67
+            ],
+            [
+              560,
+              67
+            ]
+          ]
+        },
+        {
+          "id": "e_f2_router",
+          "from": "f2",
+          "to": "router",
+          "pts": [
+            [
+              490,
+              147
+            ],
+            [
+              560,
+              147
+            ]
+          ]
+        },
+        {
+          "id": "e_f3_router",
+          "from": "f3",
+          "to": "router",
+          "pts": [
+            [
+              490,
+              227
+            ],
+            [
+              560,
+              227
+            ]
+          ]
+        },
+        {
+          "id": "e_router_b1",
+          "from": "router",
+          "to": "b1",
+          "pts": [
+            [
+              750,
+              67
+            ],
+            [
+              820,
+              67
+            ]
+          ]
+        },
+        {
+          "id": "e_router_b2",
+          "from": "router",
+          "to": "b2",
+          "pts": [
+            [
+              750,
+              147
+            ],
+            [
+              820,
+              147
+            ]
+          ]
+        },
+        {
+          "id": "e_router_b3",
+          "from": "router",
+          "to": "b3",
+          "pts": [
+            [
+              750,
+              227
+            ],
+            [
+              820,
+              227
+            ]
+          ]
+        },
+        {
+          "id": "e_b1_fetch",
+          "from": "b1",
+          "to": "fetch",
+          "pts": [
+            [
+              1010,
+              67
+            ],
+            [
+              1080,
+              67
+            ]
+          ]
+        },
+        {
+          "id": "e_b2_fetch",
+          "from": "b2",
+          "to": "fetch",
+          "pts": [
+            [
+              1010,
+              147
+            ],
+            [
+              1080,
+              147
+            ]
+          ]
+        },
+        {
+          "id": "e_b3_fetch",
+          "from": "b3",
+          "to": "fetch",
+          "pts": [
+            [
+              1010,
+              227
+            ],
+            [
+              1080,
+              227
+            ]
+          ]
+        }
+      ]
     }
   },
   "slides": [
@@ -1186,9 +1471,43 @@
       ],
       "title": "Get pages by crawling the web",
       "script": [
-        "Where do the pages come from? The server **crawls the web** itself: start from a few seed URLs, download each page, find the links in it, and add those to a to-do list. Repeat forever.",
-        "Already there's a problem with keeping this in one box. **Crawling** is a throughput job: slow network calls, petabytes of data, and it's fine if it's a bit behind. **Serving** queries is a latency job: tiny requests that must be answered in milliseconds. Put them on the same machine and a big crawl batch makes searches slow. So the first move is to pull them apart."
+        "Where do the pages come from? The server **crawls the web** itself: start from a few seed URLs, download each page, find the links in it, and add those to a to-do list. Repeat forever."
       ]
+    },
+    {
+      "title": "Crawling and serving pull apart",
+      "script": [
+        "Already there's a problem with keeping this in one box. **Crawling** is a throughput job: slow network calls, petabytes of data, and it's fine if it's a bit behind. **Serving** queries is a latency job: tiny requests that must be answered in milliseconds. Put them on the same machine and a big crawl batch makes searches slow. So the first move is to pull them apart."
+      ],
+      "table": {
+        "columns": [
+          "",
+          "Crawling",
+          "Serving"
+        ],
+        "rows": [
+          [
+            "**Optimizes for**",
+            "throughput",
+            "latency"
+          ],
+          [
+            "**Work**",
+            "slow network calls, petabytes",
+            "tiny requests"
+          ],
+          [
+            "**Deadline**",
+            "fine if a bit behind",
+            "milliseconds"
+          ],
+          [
+            "**On one box**",
+            "a big crawl batch…",
+            "…makes searches slow"
+          ]
+        ]
+      }
     },
     {
       "scene": "main",
@@ -1201,9 +1520,34 @@
       ],
       "title": "Split the crawler out",
       "script": [
-        "So the crawl moves to its own fleet of **fetchers**. A fetcher's job is narrow: take a URL, download it, hand the bytes on. It's almost all waiting on the network, so each machine runs **thousands of asynchronous connections** at once.",
-        "At 60,000 pages a second, and with a typical fetch taking a second or so end to end, we need tens of thousands of downloads in flight. A few hundred machines does it. And they're **stateless**: if one dies, its URLs just get handed out again."
+        "So the crawl moves to its own fleet of **fetchers**. A fetcher's job is narrow: take a URL, download it, hand the bytes on. It's almost all waiting on the network, so each machine runs **thousands of asynchronous connections** at once."
       ]
+    },
+    {
+      "title": "Sizing the fetcher fleet",
+      "script": [
+        "At 60,000 pages a second, and with a typical fetch taking a second or so end to end, we need tens of thousands of downloads in flight. A few hundred machines does it. And they're **stateless**: if one dies, its URLs just get handed out again."
+      ],
+      "bullets": {
+        "items": [
+          {
+            "text": "**60,000 pages/s** to fetch",
+            "detail": "each fetch takes ~1 s end to end"
+          },
+          {
+            "text": "**Tens of thousands** of downloads in flight",
+            "detail": "rate × latency"
+          },
+          {
+            "text": "**A few hundred machines**",
+            "detail": "thousands of async connections each"
+          },
+          {
+            "text": "**Stateless**",
+            "detail": "a dead fetcher's URLs are handed out again"
+          }
+        ]
+      }
     },
     {
       "scene": "main",
@@ -1213,9 +1557,30 @@
       ],
       "title": "The URL frontier",
       "script": [
-        "The fetchers need to know **what to download next**. That's the **URL frontier**, the crawler's to-do list. In the toy version it was a FIFO queue, which gives us a breadth-first crawl of the web.",
-        "At our scale it isn't a simple queue, though. It has to answer two questions every time a fetcher asks for work: which URLs are **most important** to fetch now, and which ones can we fetch **without hammering any single site**. I'll come back to both in a moment; for now, the frontier hands out batches of URLs and the fetchers pull from it."
+        "The fetchers need to know **what to download next**. That's the **URL frontier**, the crawler's to-do list. In the toy version it was a FIFO queue, which gives us a breadth-first crawl of the web."
       ]
+    },
+    {
+      "title": "Two questions per batch",
+      "script": [
+        "At our scale it isn't a simple queue, though. It has to answer two questions every time a fetcher asks for work: which URLs are **most important** to fetch now, and which ones can we fetch **without hammering any single site**. I'll come back to both in a moment; for now, the frontier hands out batches of URLs and the fetchers pull from it."
+      ],
+      "bullets": {
+        "items": [
+          {
+            "text": "**Which URLs matter most** right now?",
+            "detail": "priority"
+          },
+          {
+            "text": "**Which hosts can we hit** without hammering them?",
+            "detail": "politeness"
+          },
+          {
+            "text": "**Hand out batches** of URLs",
+            "detail": "fetchers pull work; the frontier never pushes"
+          }
+        ]
+      }
     },
     {
       "scene": "main",
@@ -1262,9 +1627,74 @@
       ],
       "title": "A scheduler closes the crawl loop",
       "script": [
-        "Now the loop closes with a **recrawl scheduler**. It reads the URL DB and decides **what to fetch next, and when**. New URLs get a priority based on how important their linking pages are. Known URLs get a next-fetch time based on how often they've changed in the past and how much people care about them.",
-        "This is where the freshness requirement lives. A news homepage that changes every few minutes gets fetched every few minutes; a page that hasn't changed in a year drifts to the back. If a fetch shows a page didn't change, we stretch its interval; if it did change, we shrink it. The scheduler pushes due URLs into the frontier, and the cycle runs forever."
+        "Now the loop closes with a **recrawl scheduler**. It reads the URL DB and decides **what to fetch next, and when**. New URLs get a priority based on how important their linking pages are. Known URLs get a next-fetch time based on how often they've changed in the past and how much people care about them."
       ]
+    },
+    {
+      "title": "Adaptive recrawl intervals",
+      "script": [
+        "This is where the freshness requirement lives. A news homepage that changes every few minutes gets fetched every few minutes; a page that hasn't changed in a year drifts to the back. If a fetch shows a page didn't change, we stretch its interval; if it did change, we shrink it. The scheduler pushes due URLs into the frontier, and the cycle runs forever."
+      ],
+      "sequence": {
+        "actors": [
+          {
+            "id": "sched",
+            "label": "Recrawl Scheduler",
+            "kind": "service"
+          },
+          {
+            "id": "frontier",
+            "label": "URL Frontier",
+            "kind": "stream"
+          },
+          {
+            "id": "fetcher",
+            "label": "Fetchers",
+            "kind": "service"
+          },
+          {
+            "id": "urldb",
+            "label": "URL DB",
+            "kind": "data"
+          }
+        ],
+        "steps": [
+          {
+            "from": "sched",
+            "to": "frontier",
+            "label": "enqueue URL (next fetch is due)"
+          },
+          {
+            "from": "frontier",
+            "to": "fetcher",
+            "label": "next URLs"
+          },
+          {
+            "from": "fetcher",
+            "to": "urldb",
+            "label": "fetched: new content hash"
+          },
+          {
+            "from": "urldb",
+            "to": "sched",
+            "label": "changed since last fetch?",
+            "reply": true
+          },
+          {
+            "note": "unchanged → stretch the interval · changed → shrink it",
+            "over": [
+              "sched",
+              "frontier"
+            ]
+          },
+          {
+            "from": "sched",
+            "to": "frontier",
+            "label": "enqueue again when due"
+          }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
@@ -1274,9 +1704,49 @@
       ],
       "title": "Politeness: robots.txt and rate limits",
       "script": [
-        "Now **politeness**. Before fetching from a host, we check its **robots.txt**, which says which paths crawlers may visit. We fetch it once per host, keep it in a **robots cache** for a day or so, and check every URL against it.",
-        "Rate limiting lives in the frontier: **front queues by priority**, **back queues by host**. Each back queue holds one host's URLs and enforces a minimum delay between requests, so a big site is crawled one connection at a time while thousands of others run in parallel. Slow or erroring hosts get longer delays."
+        "Now **politeness**. Before fetching from a host, we check its **robots.txt**, which says which paths crawlers may visit. We fetch it once per host, keep it in a **robots cache** for a day or so, and check every URL against it."
       ]
+    },
+    {
+      "scene": "frontier",
+      "add": [
+        "sched",
+        "f1",
+        "f2",
+        "f3",
+        "e_sched_f1",
+        "e_sched_f2",
+        "e_sched_f3"
+      ],
+      "title": "Inside the frontier: front queues",
+      "script": [
+        "Rate limiting lives in the frontier, so let's zoom in. Its first layer is **front queues by priority**: the scheduler drops each URL into the queue that matches its importance, and the most important queue is drained most often."
+      ],
+      "fadeMs": 600
+    },
+    {
+      "scene": "frontier",
+      "add": [
+        "router",
+        "e_f1_router",
+        "e_f2_router",
+        "e_f3_router",
+        "b1",
+        "b2",
+        "b3",
+        "e_router_b1",
+        "e_router_b2",
+        "e_router_b3",
+        "fetch",
+        "e_b1_fetch",
+        "e_b2_fetch",
+        "e_b3_fetch"
+      ],
+      "title": "Back queues: one per host",
+      "script": [
+        "The second layer is **back queues by host**. Each back queue holds one host's URLs and enforces a minimum delay between requests, so a big site is crawled one connection at a time while thousands of others run in parallel. Slow or erroring hosts get longer delays."
+      ],
+      "fadeMs": 400
     },
     {
       "scene": "main",
@@ -1286,9 +1756,91 @@
       ],
       "title": "Cache DNS lookups",
       "script": [
-        "A less obvious bottleneck: **DNS**. Every fetch needs the host's IP address, and public resolvers are slow and rate-limited. At 60,000 fetches a second, DNS would quickly become the crawler's slowest step.",
-        "So we run our own **DNS cache** for the crawler. Because back queues already group URLs by host, one lookup usually serves many fetches. It's a small component, but it's the kind of thing that decides whether a crawler reaches its throughput target."
+        "A less obvious bottleneck: **DNS**. Every fetch needs the host's IP address, and public resolvers are slow and rate-limited. At 60,000 fetches a second, DNS would quickly become the crawler's slowest step."
       ]
+    },
+    {
+      "title": "One lookup, many fetches",
+      "script": [
+        "So we run our own **DNS cache** for the crawler. Because back queues already group URLs by host, one lookup usually serves many fetches. It's a small component, but it's the kind of thing that decides whether a crawler reaches its throughput target."
+      ],
+      "sequence": {
+        "actors": [
+          {
+            "id": "fetcher",
+            "label": "Fetchers",
+            "kind": "service"
+          },
+          {
+            "id": "dns",
+            "label": "DNS Cache",
+            "kind": "infra"
+          },
+          {
+            "id": "resolver",
+            "label": "Public DNS",
+            "kind": "infra ghost"
+          },
+          {
+            "id": "host",
+            "label": "example.com",
+            "kind": "client ghost"
+          }
+        ],
+        "steps": [
+          {
+            "from": "fetcher",
+            "to": "dns",
+            "label": "resolve example.com"
+          },
+          {
+            "from": "dns",
+            "to": "resolver",
+            "label": "cache miss: look it up"
+          },
+          {
+            "from": "resolver",
+            "to": "dns",
+            "label": "IP address + TTL",
+            "reply": true
+          },
+          {
+            "from": "dns",
+            "to": "fetcher",
+            "label": "IP address",
+            "reply": true
+          },
+          {
+            "from": "fetcher",
+            "to": "host",
+            "label": "GET /page-1"
+          },
+          {
+            "note": "next URL from the same host's back queue",
+            "over": [
+              "fetcher",
+              "dns"
+            ]
+          },
+          {
+            "from": "fetcher",
+            "to": "dns",
+            "label": "resolve example.com"
+          },
+          {
+            "from": "dns",
+            "to": "fetcher",
+            "label": "IP address (cache hit)",
+            "reply": true
+          },
+          {
+            "from": "fetcher",
+            "to": "host",
+            "label": "GET /page-2"
+          }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
@@ -1301,9 +1853,34 @@
       ],
       "title": "Duplicates and crawler traps",
       "script": [
-        "Two problems for the parser and URL DB. First, **duplicate content**: maybe a third of the web is copies and mirrors. Exact copies are a content hash; for near-duplicates a **SimHash** fingerprint differs by only a few bits when pages differ by an ad or a date. We index one canonical page per cluster.",
-        "Second, **crawler traps**, like a calendar with \"next month\" forever. We cap depth and URLs per host, spot repeating path patterns, and give each site a **crawl budget** based on how valuable its pages are."
+        "Two problems for the parser and URL DB. First, **duplicate content**: maybe a third of the web is copies and mirrors. Exact copies are a content hash; for near-duplicates a **SimHash** fingerprint differs by only a few bits when pages differ by an ad or a date. We index one canonical page per cluster."
       ]
+    },
+    {
+      "title": "Escaping crawler traps",
+      "script": [
+        "Second, **crawler traps**, like a calendar with \"next month\" forever. We cap depth and URLs per host, spot repeating path patterns, and give each site a **crawl budget** based on how valuable its pages are."
+      ],
+      "bullets": {
+        "heading": "Crawler traps",
+        "items": [
+          {
+            "text": "**The trap**: endless generated URLs",
+            "detail": "a calendar with \"next month\" forever"
+          },
+          {
+            "text": "**Cap depth** and URLs per host"
+          },
+          {
+            "text": "**Spot repeating path patterns**",
+            "detail": "/cal/2031/01/cal/2031/02/…"
+          },
+          {
+            "text": "**Crawl budget** per site",
+            "detail": "scaled by how valuable its pages are"
+          }
+        ]
+      }
     },
     {
       "scene": "main",
@@ -1332,9 +1909,38 @@
       ],
       "title": "Shard the index by document",
       "script": [
-        "Three hundred terabytes means about **1,000 shards**. **Term partitioning** gives each shard some of the words. A query touches few shards, but \"cat AND dog\" ships huge posting lists between machines, and popular words become hot spots.",
-        "**Document partitioning** gives each shard a slice of the **documents**, with a complete index for them. Every query hits **every shard**, but each returns only its local **top few results**, so little crosses the network and load is even. That's what we'll use, with every shard **replicated** for availability and throughput."
+        "Three hundred terabytes means about **1,000 shards**. The question is how to split the index, and there are two classic ways."
       ]
+    },
+    {
+      "title": "Partition by term or by document",
+      "script": [
+        "**Term partitioning** gives each shard some of the words. A query touches few shards, but \"cat AND dog\" ships huge posting lists between machines, and popular words become hot spots.",
+        "**Document partitioning** gives each shard a slice of the **documents**, with a complete index for them. Every query hits **every shard**, but each returns only its local **top few results**, so little crosses the network and load is even. That's what we'll use, with every shard **replicated** for availability and throughput."
+      ],
+      "table": {
+        "columns": [
+          "Partition by",
+          "Each shard holds",
+          "A query hits",
+          "Catch"
+        ],
+        "rows": [
+          [
+            "**Term**",
+            "some words, all docs",
+            "a few shards",
+            "huge posting lists cross the network; hot words"
+          ],
+          [
+            "**Document**",
+            "some docs, all words",
+            "every shard",
+            "fan-out, but each shard returns only its top few"
+          ]
+        ],
+        "highlight": 1
+      }
     },
     {
       "scene": "main",
@@ -1350,9 +1956,38 @@
       ],
       "title": "A search service and a root mixer",
       "script": [
-        "The single server now splits in two. A **search service** owns the user's request: it parses the query, calls the backends, and builds the results page. Behind it, a **root mixer** does the distributed part: it sends the query to a replica of every shard, waits for their answers, and **merges** the per-shard top results into one global list.",
-        "Separating them keeps the fan-out logic in one place. Product features, layout and experiments change constantly in the search service. The root mixer is a tight, performance-critical piece of infrastructure that changes rarely."
+        "The single server now splits in two. A **search service** owns the user's request: it parses the query, calls the backends, and builds the results page. Behind it, a **root mixer** does the distributed part: it sends the query to a replica of every shard, waits for their answers, and **merges** the per-shard top results into one global list."
       ]
+    },
+    {
+      "title": "Why two services",
+      "script": [
+        "Separating them keeps the fan-out logic in one place. Product features, layout and experiments change constantly in the search service. The root mixer is a tight, performance-critical piece of infrastructure that changes rarely."
+      ],
+      "table": {
+        "columns": [
+          "",
+          "Search Service",
+          "Root Mixer"
+        ],
+        "rows": [
+          [
+            "**Owns**",
+            "the user's request, the results page",
+            "fan-out to shards, merging"
+          ],
+          [
+            "**Changes**",
+            "constantly: features, layout, experiments",
+            "rarely"
+          ],
+          [
+            "**Tuned for**",
+            "product velocity",
+            "raw performance"
+          ]
+        ]
+      }
     },
     {
       "scene": "main",
@@ -1363,9 +1998,30 @@
       ],
       "title": "Scatter-gather and the tail",
       "script": [
-        "The fan-out's weak spot: a query is only as fast as its **slowest shard**. If each shard is slow one time in a hundred, a query touching a thousand is slow **almost every time**.",
-        "Defenses: **intermediate aggregators**, so the root talks to ~30 mixers of ~30 shards each instead of a thousand machines. **Hedged requests**: if a shard is slower than its usual p95, ask another replica and take the first answer. And **partial results**: past the deadline, answer without the straggler. Losing one shard in a thousand costs a little recall nobody notices; a slow page, everybody notices."
+        "The fan-out's weak spot: a query is only as fast as its **slowest shard**. If each shard is slow one time in a hundred, a query touching a thousand is slow **almost every time**."
       ]
+    },
+    {
+      "title": "Taming the tail",
+      "script": [
+        "Defenses: **intermediate aggregators**, so the root talks to ~30 mixers of ~30 shards each instead of a thousand machines. **Hedged requests**: if a shard is slower than its usual p95, ask another replica and take the first answer. And **partial results**: past the deadline, answer without the straggler. Losing one shard in a thousand costs a little recall nobody notices; a slow page, everybody notices."
+      ],
+      "bullets": {
+        "items": [
+          {
+            "text": "**Intermediate aggregators**",
+            "detail": "root → ~30 mixers → ~30 shards each"
+          },
+          {
+            "text": "**Hedged requests**",
+            "detail": "slower than its p95? ask another replica, take the first"
+          },
+          {
+            "text": "**Partial results**",
+            "detail": "past the deadline, answer without the straggler"
+          }
+        ]
+      }
     },
     {
       "scene": "main",
@@ -1388,9 +2044,106 @@
       ],
       "title": "Rank in two phases",
       "script": [
-        "Ranking every match carefully is impossible: a common query matches millions of pages. So ranking happens in **two phases**. In the first, each shard uses a **cheap score**, text match like BM25 combined with the static quality score, to pick its local best handful of candidates. That's fast because posting lists are already ordered by quality, so a shard can often stop early.",
-        "In the second phase, the root sends the merged top **thousand or so** candidates to an **ML re-ranker**. Here we can afford hundreds of features per document: where the terms appear, how close together, anchor text, freshness, the language and location match, spam scores, and how users interacted with this result before. A learned model turns those into the final order of the top ten."
+        "Ranking every match carefully is impossible: a common query matches millions of pages. So ranking happens in **two phases**."
       ]
+    },
+    {
+      "title": "Phase one on every shard",
+      "script": [
+        "In the first, each shard uses a **cheap score**, text match like BM25 combined with the static quality score, to pick its local best handful of candidates. That's fast because posting lists are already ordered by quality, so a shard can often stop early."
+      ],
+      "sequence": {
+        "actors": [
+          {
+            "id": "root",
+            "label": "Root Mixer",
+            "kind": "service"
+          },
+          {
+            "id": "shard",
+            "label": "Index Shard",
+            "kind": "data",
+            "sub": "× ~1,000"
+          },
+          {
+            "id": "ranker",
+            "label": "ML Re-ranker",
+            "kind": "ml"
+          }
+        ],
+        "steps": [
+          {
+            "from": "root",
+            "to": "shard",
+            "label": "query"
+          },
+          {
+            "from": "shard",
+            "to": "shard",
+            "label": "BM25 + static quality score"
+          },
+          {
+            "note": "posting lists are best-first, so stop early",
+            "over": [
+              "root",
+              "shard"
+            ]
+          },
+          {
+            "from": "shard",
+            "to": "root",
+            "label": "local top handful",
+            "reply": true
+          },
+          {
+            "from": "root",
+            "to": "root",
+            "label": "merge → top ~1,000"
+          },
+          {
+            "from": "root",
+            "to": "ranker",
+            "label": "~1,000 candidates"
+          },
+          {
+            "from": "ranker",
+            "to": "root",
+            "label": "final top 10",
+            "reply": true
+          }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Phase two: the ML re-ranker",
+      "script": [
+        "In the second phase, the root sends the merged top **thousand or so** candidates to an **ML re-ranker**. Here we can afford hundreds of features per document: where the terms appear, how close together, anchor text, freshness, the language and location match, spam scores, and how users interacted with this result before. A learned model turns those into the final order of the top ten."
+      ],
+      "bullets": {
+        "heading": "Hundreds of features per candidate",
+        "items": [
+          {
+            "text": "**Where** the terms appear",
+            "detail": "title, URL, headings, body"
+          },
+          {
+            "text": "**How close together** they are"
+          },
+          {
+            "text": "**Anchor text** from linking pages"
+          },
+          {
+            "text": "**Freshness**, language and location match"
+          },
+          {
+            "text": "**Spam scores**"
+          },
+          {
+            "text": "**Past clicks** on this result"
+          }
+        ]
+      }
     },
     {
       "scene": "main",
@@ -1400,9 +2153,88 @@
       ],
       "title": "Doc servers for titles and snippets",
       "script": [
-        "Once we know the top ten document IDs, we need what's actually shown: the **title, URL and snippet**. Snippets are **query-dependent**: we pick the sentences from the page that best match this particular query, and highlight the words. So we can't precompute them.",
-        "That's the job of the **doc servers**: a second sharded store, partitioned by document ID, holding a compressed copy of each page's text. The root asks only the doc servers holding those ten documents, so it's a small, targeted lookup, unlike the full fan-out to the index. The indexer builds these alongside the index shards."
+        "Once we know the top ten document IDs, we need what's actually shown: the **title, URL and snippet**. Snippets are **query-dependent**: we pick the sentences from the page that best match this particular query, and highlight the words. So we can't precompute them."
       ]
+    },
+    {
+      "title": "Fetching snippets for the top ten",
+      "script": [
+        "That's the job of the **doc servers**: a second sharded store, partitioned by document ID, holding a compressed copy of each page's text. The root asks only the doc servers holding those ten documents, so it's a small, targeted lookup, unlike the full fan-out to the index. The indexer builds these alongside the index shards."
+      ],
+      "sequence": {
+        "actors": [
+          {
+            "id": "search",
+            "label": "Search Service",
+            "kind": "service"
+          },
+          {
+            "id": "root",
+            "label": "Root Mixer",
+            "kind": "service"
+          },
+          {
+            "id": "d1",
+            "label": "Doc Server 17",
+            "kind": "data"
+          },
+          {
+            "id": "d2",
+            "label": "Doc Server 342",
+            "kind": "data"
+          }
+        ],
+        "steps": [
+          {
+            "from": "search",
+            "to": "root",
+            "label": "query"
+          },
+          {
+            "note": "fan-out, merge and re-rank → top 10 doc IDs",
+            "over": [
+              "search",
+              "root"
+            ]
+          },
+          {
+            "from": "root",
+            "to": "d1",
+            "label": "docs 4, 9 + query"
+          },
+          {
+            "from": "root",
+            "to": "d2",
+            "label": "docs 1, 7 + query"
+          },
+          {
+            "from": "d1",
+            "to": "root",
+            "label": "title · URL · snippet",
+            "reply": true
+          },
+          {
+            "from": "d2",
+            "to": "root",
+            "label": "title · URL · snippet",
+            "reply": true
+          },
+          {
+            "note": "only the servers holding the top 10, not a full fan-out",
+            "over": [
+              "d1",
+              "d2"
+            ]
+          },
+          {
+            "from": "root",
+            "to": "search",
+            "label": "top 10 with snippets",
+            "reply": true
+          }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
@@ -1439,9 +2271,44 @@
       ],
       "title": "Rewrite the query first",
       "script": [
-        "What users type is often not the best thing to search for. A **query rewriter** runs before the fan-out. It fixes **spelling**, \"recieve\" to \"receive\", using a model built from billions of past queries and their corrections. It adds **synonyms** and word variants, so \"running shoes\" also matches \"run\" and \"sneakers\". And it notices things like a place or language in the query.",
-        "This one step adds a lot of recall: the best page for a misspelled query usually doesn't contain the misspelling. When the correction is confident we search for it directly; otherwise we show \"did you mean\"."
+        "What users type is often not the best thing to search for. A **query rewriter** runs before the fan-out."
       ]
+    },
+    {
+      "title": "What the rewriter does",
+      "script": [
+        "It fixes **spelling**, \"recieve\" to \"receive\", using a model built from billions of past queries and their corrections. It adds **synonyms** and word variants, so \"running shoes\" also matches \"run\" and \"sneakers\". And it notices things like a place or language in the query.",
+        "This one step adds a lot of recall: the best page for a misspelled query usually doesn't contain the misspelling. When the correction is confident we search for it directly; otherwise we show \"did you mean\"."
+      ],
+      "table": {
+        "columns": [
+          "Rewrite",
+          "User types",
+          "We search for"
+        ],
+        "rows": [
+          [
+            "**Spelling**",
+            "recieve",
+            "receive"
+          ],
+          [
+            "**Synonyms, variants**",
+            "running shoes",
+            "+ run, sneakers"
+          ],
+          [
+            "**Place, language**",
+            "cafés paris",
+            "cafés · place: Paris · lang: fr"
+          ],
+          [
+            "**Low confidence**",
+            "jaguar spead",
+            "show \"did you mean: jaguar speed\""
+          ]
+        ]
+      }
     },
     {
       "scene": "main",
@@ -1451,9 +2318,36 @@
       ],
       "title": "A streaming path for fresh pages",
       "script": [
-        "Now the freshness problem. Rebuilding a 300-terabyte index with MapReduce takes hours, and rolling it out takes longer. That's fine for most of the web, but not for a news story that broke five minutes ago.",
-        "So we add a second, **streaming** path. When the scheduler marks a page as hot, a news site or something trending, the parser also sends it to a **fresh indexer**, which indexes documents one at a time as they arrive. This is roughly the move Google made from batch indexing to its incremental **Caffeine** system: process each document as it's crawled instead of waiting for the next big rebuild."
+        "Now the freshness problem. Rebuilding a 300-terabyte index with MapReduce takes hours, and rolling it out takes longer. That's fine for most of the web, but not for a news story that broke five minutes ago. So we add a second, **streaming** path."
       ]
+    },
+    {
+      "title": "Batch and streaming indexing",
+      "script": [
+        "When the scheduler marks a page as hot, a news site or something trending, the parser also sends it to a **fresh indexer**, which indexes documents one at a time as they arrive. This is roughly the move Google made from batch indexing to its incremental **Caffeine** system: process each document as it's crawled instead of waiting for the next big rebuild."
+      ],
+      "table": {
+        "columns": [
+          "Path",
+          "Unit of work",
+          "Delay",
+          "Covers"
+        ],
+        "rows": [
+          [
+            "**Batch Indexer**",
+            "rebuild the whole index",
+            "hours",
+            "all ~50 billion pages"
+          ],
+          [
+            "**Fresh Indexer**",
+            "one document as it's crawled",
+            "seconds",
+            "hot pages: news, trending"
+          ]
+        ]
+      }
     },
     {
       "scene": "main",
@@ -1476,25 +2370,109 @@
         "search",
         "rcache",
         "qu",
-        "root",
-        "shards",
-        "fresh",
-        "ranker",
-        "docsrv",
         "e_user_gfe",
         "e_search_rcache",
-        "e_search_qu",
-        "e_search_root",
-        "e_root_shards",
-        "e_root_fresh",
-        "e_root_ranker",
-        "e_root_docs"
+        "e_search_qu"
       ],
       "title": "Trace one search end to end",
       "script": [
-        "Let's trace one query through what we've built. The user's request lands on the nearest **front end**, which picks a **search service** machine. It checks the **results cache**; on a miss, the **query rewriter** fixes and expands the query.",
-        "The **root mixer** scatters it to every **index shard** and the **fresh index**, merges their top candidates, has the **ML re-ranker** order the best thousand, and fetches **snippets** for the top ten. The search service renders the page and caches it. Fan-out and re-ranking take about **100 ms** of the budget."
+        "Let's trace one query through what we've built. The user's request lands on the nearest **front end**, which picks a **search service** machine. It checks the **results cache**; on a miss, the **query rewriter** fixes and expands the query."
       ]
+    },
+    {
+      "title": "Scatter, rank, and render",
+      "script": [
+        "The **root mixer** scatters it to every **index shard** and the **fresh index**, merges their top candidates, has the **ML re-ranker** order the best thousand, and fetches **snippets** for the top ten. The search service renders the page and caches it. Fan-out and re-ranking take about **100 ms** of the budget."
+      ],
+      "sequence": {
+        "actors": [
+          {
+            "id": "search",
+            "label": "Search Service",
+            "kind": "service"
+          },
+          {
+            "id": "root",
+            "label": "Root Mixer",
+            "kind": "service"
+          },
+          {
+            "id": "shards",
+            "label": "Index Shards",
+            "kind": "data",
+            "sub": "+ Fresh Index"
+          },
+          {
+            "id": "ranker",
+            "label": "ML Re-ranker",
+            "kind": "ml"
+          },
+          {
+            "id": "docs",
+            "label": "Doc Servers",
+            "kind": "data"
+          }
+        ],
+        "steps": [
+          {
+            "from": "search",
+            "to": "root",
+            "label": "rewritten query"
+          },
+          {
+            "from": "root",
+            "to": "shards",
+            "label": "scatter to every shard"
+          },
+          {
+            "from": "shards",
+            "to": "root",
+            "label": "local top candidates",
+            "reply": true
+          },
+          {
+            "from": "root",
+            "to": "ranker",
+            "label": "best ~1,000"
+          },
+          {
+            "from": "ranker",
+            "to": "root",
+            "label": "ordered top 10",
+            "reply": true
+          },
+          {
+            "from": "root",
+            "to": "docs",
+            "label": "10 doc IDs + query"
+          },
+          {
+            "from": "docs",
+            "to": "root",
+            "label": "titles · snippets",
+            "reply": true
+          },
+          {
+            "from": "root",
+            "to": "search",
+            "label": "results",
+            "reply": true
+          },
+          {
+            "note": "fan-out + re-ranking ≈ 100 ms",
+            "over": [
+              "root",
+              "docs"
+            ]
+          },
+          {
+            "from": "search",
+            "to": "search",
+            "label": "render page · write results cache"
+          }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
@@ -1540,9 +2518,77 @@
       ],
       "title": "Roll out a new index safely",
       "script": [
-        "One more detail on the boundary between the offline and online worlds: how a freshly built index gets to the shards. We never update a serving shard in place. The indexer writes a complete new **immutable** version of each shard, the shard servers copy it in the background, and then swap to it.",
-        "We roll that out **replica by replica**, so most replicas keep serving while some swap, and we check result quality on the new version before going further. If something looks wrong, we **roll back** to the previous version, which is still on disk. During the rollout, different replicas serve different versions, which is exactly the eventual consistency we agreed was acceptable."
+        "One more detail on the boundary between the offline and online worlds: how a freshly built index gets to the shards. We never update a serving shard in place. The indexer writes a complete new **immutable** version of each shard, the shard servers copy it in the background, and then swap to it."
       ]
+    },
+    {
+      "title": "Replica by replica",
+      "script": [
+        "We roll that out **replica by replica**, so most replicas keep serving while some swap, and we check result quality on the new version before going further. If something looks wrong, we **roll back** to the previous version, which is still on disk. During the rollout, different replicas serve different versions, which is exactly the eventual consistency we agreed was acceptable."
+      ],
+      "sequence": {
+        "actors": [
+          {
+            "id": "indexer",
+            "label": "Batch Indexer",
+            "kind": "ml"
+          },
+          {
+            "id": "ra",
+            "label": "Shard 7 · Replica A",
+            "kind": "data"
+          },
+          {
+            "id": "rb",
+            "label": "Shard 7 · Replica B",
+            "kind": "data"
+          }
+        ],
+        "steps": [
+          {
+            "from": "indexer",
+            "to": "ra",
+            "label": "copy index v42 (immutable)"
+          },
+          {
+            "from": "ra",
+            "to": "ra",
+            "label": "swap v41 → v42"
+          },
+          {
+            "note": "B keeps serving v41 while A swaps",
+            "over": [
+              "ra",
+              "rb"
+            ]
+          },
+          {
+            "note": "check result quality on v42",
+            "over": [
+              "indexer",
+              "ra"
+            ]
+          },
+          {
+            "from": "indexer",
+            "to": "rb",
+            "label": "copy index v42"
+          },
+          {
+            "from": "rb",
+            "to": "rb",
+            "label": "swap v41 → v42"
+          },
+          {
+            "note": "looks wrong? roll back to v41, still on disk",
+            "over": [
+              "ra",
+              "rb"
+            ]
+          }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
@@ -1552,9 +2598,30 @@
       ],
       "title": "Replicate across datacenters",
       "script": [
-        "Finally, **availability at Google scale**. The whole serving stack, front ends, search services, index shards, doc servers, caches, is replicated in **many datacenters** around the world, each holding a full copy of the index. Users go to the nearest one, which also saves latency.",
-        "If a datacenter fails or needs maintenance, the front end layer and DNS route its traffic to others. Since serving is read-only and the index is just copied out, replicating it is easy; there's no cross-region write coordination to worry about. The crawl and index pipeline doesn't need this: it can run in a few big datacenters and ship finished indexes everywhere."
+        "Finally, **availability at Google scale**. The whole serving stack, front ends, search services, index shards, doc servers, caches, is replicated in **many datacenters** around the world, each holding a full copy of the index. Users go to the nearest one, which also saves latency."
       ]
+    },
+    {
+      "title": "Read-only serving makes failover easy",
+      "script": [
+        "If a datacenter fails or needs maintenance, the front end layer and DNS route its traffic to others. Since serving is read-only and the index is just copied out, replicating it is easy; there's no cross-region write coordination to worry about. The crawl and index pipeline doesn't need this: it can run in a few big datacenters and ship finished indexes everywhere."
+      ],
+      "bullets": {
+        "items": [
+          {
+            "text": "**Failover**: DNS and front ends route around",
+            "detail": "a failed or drained datacenter"
+          },
+          {
+            "text": "**Read-only serving**",
+            "detail": "the index is just copied out; no cross-region writes"
+          },
+          {
+            "text": "**Pipeline in a few big datacenters**",
+            "detail": "ships finished indexes everywhere"
+          }
+        ]
+      }
     },
     {
       "scene": "main",
