@@ -229,19 +229,69 @@
       "add": ["mdb", "e_server_mdb"],
       "title": "A database for the file tree",
       "script": [
-        "The first thing the server needs is somewhere to keep the **file tree**: which files exist, in which folders, with what size, modification time and version. That's classic relational data, so I'd put it in **MySQL**, with a files table keyed by user and path.",
-        "Getting the tree into its own store pays off right away for the folder operations. A **rename or a move is a metadata update**: we change a row, or a set of rows for a folder, and the file contents don't move at all. Listing a folder is an indexed query. Keep this split in mind, the tree on one side and the bytes on the other, because it's the backbone of the whole design."
+        "The first thing the server needs is somewhere to keep the **file tree**: which files exist, in which folders, with what size, modification time and version. That's classic relational data, so I'd put it in **MySQL**, with a files table keyed by user and path."
       ]
+    },
+    {
+      "title": "Renames touch only rows",
+      "script": [
+        "Getting the tree into its own store pays off right away for the folder operations. A **rename or a move is a metadata update**: we change a row, or a set of rows for a folder, and the file contents don't move at all. Listing a folder is an indexed query. Keep this split in mind, the tree on one side and the bytes on the other, because it's the backbone of the whole design."
+      ],
+      "entities": {
+        "items": [
+          { "id": "user", "name": "users", "kind": "client", "fields": ["user_id: bigint  PK", "email: text", "quota_bytes: bigint"] },
+          { "id": "file", "name": "files", "kind": "data", "fields": ["user_id: bigint  PK", "path: text  PK", "size: bigint", "mtime: timestamp", "version: int", "blob_key: text"] }
+        ],
+        "relations": [
+          { "from": "user", "to": "file", "label": "1 — *" }
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["store", "e_server_store"],
       "title": "File bytes go in blob storage",
       "script": [
-        "The **file contents** definitely don't belong in MySQL. Exabytes of opaque bytes want an **object store**: something like S3, where we put and get blobs by key, and that's built for capacity and durability rather than queries.",
-        "So now an upload writes the bytes to blob storage and then a row in the database pointing at them. Notice the order: **bytes first, metadata second**. If we crash in between, we've leaked some storage that a cleanup job can find later. Doing it the other way round would leave a row pointing at a file that doesn't exist, which is much worse.",
-        "We're still uploading and storing **whole files**, though. That's the next thing to fix."
+        "The **file contents** definitely don't belong in MySQL. Exabytes of opaque bytes want an **object store**: something like S3, where we put and get blobs by key, and that's built for capacity and durability rather than queries."
       ]
+    },
+    {
+      "title": "Bytes first, metadata second",
+      "script": [
+        "So now an upload writes the bytes to blob storage and then a row in the database pointing at them. Notice the order: **bytes first, metadata second**."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Desktop Client", "kind": "client" },
+          { "id": "server", "label": "Server", "kind": "service" },
+          { "id": "store", "label": "Blob Storage", "kind": "data" },
+          { "id": "db", "label": "Metadata DB", "kind": "data", "sub": "MySQL" }
+        ],
+        "steps": [
+          { "from": "client", "to": "server", "label": "upload report.pdf (whole file)" },
+          { "from": "server", "to": "store", "label": "PUT blob (bytes first)" },
+          { "from": "store", "to": "server", "label": "stored", "reply": true },
+          { "from": "server", "to": "db", "label": "INSERT row → blob key (then metadata)" },
+          { "from": "db", "to": "server", "label": "committed", "reply": true },
+          { "from": "server", "to": "client", "label": "saved", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "If we crash in between",
+      "script": [
+        "If we crash in between, we've leaked some storage that a cleanup job can find later. Doing it the other way round would leave a row pointing at a file that doesn't exist, which is much worse.",
+        "We're still uploading and storing **whole files**, though. That's the next thing to fix."
+      ],
+      "table": {
+        "columns": ["Write order", "A crash in between leaves", "Damage"],
+        "rows": [
+          ["**Bytes, then row**", "an orphan blob nobody points at", "a little leaked storage; cleanup finds it"],
+          ["**Row, then bytes**", "a row pointing at nothing", "a broken file the user can see"]
+        ],
+        "highlight": 0
+      }
     },
     {
       "scene": "main",
@@ -259,8 +309,43 @@
       "add": ["blocksvc", "e_block_store"],
       "title": "Split files into content-addressed blocks",
       "script": [
-        "Now the big idea. Instead of treating a file as one blob, the client **splits it into blocks of up to 4 MB** and computes a **SHA-256 hash** of each block. A file becomes simply an **ordered list of block hashes**.",
-        "We store blocks in blob storage **keyed by their hash**. That's called **content addressing**, and it gives us a lot. Blocks are **immutable**, because a block's name *is* its content, so we can cache them anywhere forever. A failed upload of a 10 GB file resumes from the last block, not from zero. Blocks upload in parallel. And when one byte changes, only the one block containing it gets a new hash.",
+        "Now the big idea. Instead of treating a file as one blob, the client **splits it into blocks of up to 4 MB** and computes a **SHA-256 hash** of each block. A file becomes simply an **ordered list of block hashes**."
+      ]
+    },
+    {
+      "title": "Content addressing",
+      "script": [
+        "We store blocks in blob storage **keyed by their hash**. That's called **content addressing**, and it gives us a lot."
+      ],
+      "entities": {
+        "items": [
+          { "id": "file", "name": "File version", "kind": "service", "fields": ["path: /Deck.pptx", "size: 10.2 MB", "blocks: [h1, h2, h3]"] },
+          { "id": "block", "name": "Block", "kind": "data", "fields": ["hash: sha256  (the key)", "bytes: ≤ 4 MB", "immutable"] }
+        ],
+        "relations": [
+          { "from": "file", "to": "block", "label": "ordered hashes" }
+        ]
+      }
+    },
+    {
+      "title": "What content addressing buys us",
+      "script": [
+        "Blocks are **immutable**, because a block's name *is* its content, so we can cache them anywhere forever. A failed upload of a 10 GB file resumes from the last block, not from zero. Blocks upload in parallel. And when one byte changes, only the one block containing it gets a new hash."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Immutable**: the name *is* the content", "detail": "cache any block anywhere, forever" },
+          { "text": "**Resumable**: a failed 10 GB upload restarts mid-way", "detail": "from the last block, not from zero" },
+          { "text": "**Parallel**: blocks upload side by side", "detail": "fills the pipe on fast links" },
+          { "text": "**Small edits stay small**", "detail": "one changed byte → one new block hash" }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "focus": ["lb", "blocksvc", "store", "e_block_store"],
+      "title": "The Block Service: the data plane",
+      "script": [
         "The bytes now flow through a dedicated **Block Service** with a simple API: put a block, get a block. It's the data plane, and it scales on bandwidth, independently of everything else."
       ]
     },
@@ -270,30 +355,139 @@
       "add": ["metasvc", "e_meta_mdb"],
       "title": "The Metadata Service and the commit",
       "script": [
-        "What's left of the old server becomes the **Metadata Service**, the control plane. It owns the file tree and knows nothing about bytes.",
-        "Saving a file is now a **commit**: the client sends \"this path is now this list of block hashes\", along with the version it last saw. The Metadata Service records the new version in a single transaction. A file version is just a row pointing at hashes, which makes versions almost free; we'll come back to that.",
-        "Separating the planes means each one scales on its own axis: the Block Service on **bandwidth**, the Metadata Service on **transactions per second**, and a 50 GB upload never ties up the service that answers \"list this folder\"."
+        "What's left of the old server becomes the **Metadata Service**, the control plane. It owns the file tree and knows nothing about bytes."
       ]
+    },
+    {
+      "title": "Saving a file is a commit",
+      "script": [
+        "Saving a file is now a **commit**: the client sends \"this path is now this list of block hashes\", along with the version it last saw. The Metadata Service records the new version in a single transaction. A file version is just a row pointing at hashes, which makes versions almost free; we'll come back to that."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Desktop Client", "kind": "client" },
+          { "id": "meta", "label": "Metadata Service", "kind": "service" },
+          { "id": "db", "label": "Metadata DB", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "client", "to": "meta", "label": "commit /report.pdf = [h1, h2, h3], base v7" },
+          { "from": "meta", "to": "db", "label": "BEGIN · INSERT v8 → [h1, h2, h3] · COMMIT" },
+          { "from": "db", "to": "meta", "label": "ok", "reply": true },
+          { "from": "meta", "to": "client", "label": "committed · v8", "reply": true },
+          { "note": "a version is a row of hashes: almost free", "over": ["meta", "db"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Two planes, two scaling axes",
+      "script": [
+        "Separating the planes means each one scales on its own axis: the Block Service on **bandwidth**, the Metadata Service on **transactions per second**, and a 50 GB upload never ties up the service that answers \"list this folder\"."
+      ],
+      "table": {
+        "columns": ["Plane", "Service", "Scales on", "Handles"],
+        "rows": [
+          ["**Data plane**", "Block Service", "bandwidth", "put / get 4 MB blocks"],
+          ["**Control plane**", "Metadata Service", "transactions per second", "commits, listings, permissions"]
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["blockidx", "e_meta_idx", "e_block_idx"],
       "title": "Upload only what's missing: the Block Index",
       "script": [
-        "Here's how a commit avoids moving bytes. We keep a **Block Index**: a big key-value table from **hash to storage location**, with a reference count.",
-        "The client commits first, optimistically, with just the list of hashes. The Metadata Service checks the index and answers: \"I'm **missing** these three blocks.\" The client uploads only those three to the Block Service, which records them in the index, and then retries the commit, which now succeeds. An edit to one slide of a big deck uploads one 4 MB block.",
-        "The same check gives us **dedupe for free**. If anyone has ever uploaded those exact bytes, we already have the block, so a popular installer or a forwarded video gets stored once. One caution: if we tell a client \"we already have this block\" for a block someone *else* uploaded, we leak whether a file exists in Dropbox. So we only skip the upload when the block is already in **one of this user's own files**, and dedupe across users quietly, on the server side."
+        "Here's how a commit avoids moving bytes. We keep a **Block Index**: a big key-value table from **hash to storage location**, with a reference count."
       ]
+    },
+    {
+      "title": "Commit, upload what's missing, commit again",
+      "script": [
+        "The client commits first, optimistically, with just the list of hashes. The Metadata Service checks the index and answers: \"I'm **missing** these three blocks.\" The client uploads only those three to the Block Service, which records them in the index, and then retries the commit, which now succeeds. An edit to one slide of a big deck uploads one 4 MB block."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Desktop Client", "kind": "client" },
+          { "id": "meta", "label": "Metadata Service", "kind": "service" },
+          { "id": "idx", "label": "Block Index", "kind": "data" },
+          { "id": "block", "label": "Block Service", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "client", "to": "meta", "label": "commit [h1 … h9]" },
+          { "from": "meta", "to": "idx", "label": "which of h1 … h9 exist?" },
+          { "from": "idx", "to": "meta", "label": "all but h4, h7, h8", "reply": true },
+          { "from": "meta", "to": "client", "label": "missing: h4, h7, h8", "reply": true },
+          { "from": "client", "to": "block", "label": "put h4, h7, h8" },
+          { "from": "block", "to": "idx", "label": "record h4, h7, h8" },
+          { "from": "client", "to": "meta", "label": "commit [h1 … h9] (retry)" },
+          { "from": "meta", "to": "client", "label": "committed", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Dedupe for free",
+      "script": [
+        "The same check gives us **dedupe for free**. If anyone has ever uploaded those exact bytes, we already have the block, so a popular installer or a forwarded video gets stored once."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "Same bytes → same hash → **one stored block**", "detail": "no matter who uploaded it, or how many times" },
+          { "text": "A popular installer is stored once", "detail": "not once per user who downloaded it" },
+          { "text": "A forwarded video is stored once", "detail": "every copy is a list of the same hashes" }
+        ]
+      }
+    },
+    {
+      "title": "Don't leak what others store",
+      "script": [
+        "One caution: if we tell a client \"we already have this block\" for a block someone *else* uploaded, we leak whether a file exists in Dropbox. So we only skip the upload when the block is already in **one of this user's own files**, and dedupe across users quietly, on the server side."
+      ],
+      "table": {
+        "columns": ["Skip the upload when the block is…", "Leaks whether a file exists?"],
+        "rows": [
+          ["in **anyone's** files", "yes: a probe for any file's contents"],
+          ["in **this user's own** files", "no: they already have it"],
+          ["in someone else's (dedupe on the server)", "no: the client uploads anyway"]
+        ],
+        "highlight": 1
+      }
     },
     {
       "scene": "main",
       "add": ["localdb", "e_desktop_local"],
       "title": "The client is half the system",
       "script": [
-        "Let's look at the client, because in Dropbox **the client is half the system**. Its **sync engine** watches the folder using OS file-system events, hashes changed files into blocks, and runs the commit protocol we just saw.",
-        "It keeps a **local index**, a small SQLite database recording, for every file, the path, the block hashes and the server version it last synced. That's how it knows what changed while it was closed: on startup it compares the folder on disk against the local index, and only rehashes files whose size or modification time moved.",
-        "The client also does the expensive work for us: **hashing, chunking and compression happen on the user's machine**, which spreads that CPU over hundreds of millions of devices instead of our data centers. And it's why a short outage on our side doesn't hurt much: the user's files are all still right there."
+        "Let's look at the client, because in Dropbox **the client is half the system**. Its **sync engine** watches the folder using OS file-system events, hashes changed files into blocks, and runs the commit protocol we just saw."
       ]
+    },
+    {
+      "title": "The local index",
+      "script": [
+        "It keeps a **local index**, a small SQLite database recording, for every file, the path, the block hashes and the server version it last synced. That's how it knows what changed while it was closed: on startup it compares the folder on disk against the local index, and only rehashes files whose size or modification time moved."
+      ],
+      "entities": {
+        "items": [
+          { "id": "disk", "name": "Folder on disk", "kind": "client", "fields": ["path", "size", "mtime"] },
+          { "id": "local", "name": "Local Index (SQLite)", "kind": "data", "fields": ["path: text  PK", "block_hashes: [h1, h2, …]", "server_version: int", "size: bigint", "mtime: timestamp"] }
+        ],
+        "relations": [
+          { "from": "disk", "to": "local", "label": "size · mtime?" }
+        ]
+      }
+    },
+    {
+      "title": "The user's machine does the heavy lifting",
+      "script": [
+        "The client also does the expensive work for us: **hashing, chunking and compression happen on the user's machine**, which spreads that CPU over hundreds of millions of devices instead of our data centers. And it's why a short outage on our side doesn't hurt much: the user's files are all still right there."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Hashing, chunking, compression** on the client", "detail": "CPU spread over hundreds of millions of devices" },
+          { "text": "Our servers only check, store and serve", "detail": "no per-byte work in our data centers" },
+          { "text": "**Outages are soft**: the files are still local", "detail": "sync pauses, the user keeps working" }
+        ]
+      }
     },
     {
       "scene": "main",
@@ -301,50 +495,251 @@
       "add": ["journal", "e_meta_journal"],
       "title": "The metadata is a journal",
       "script": [
-        "Now, how do other devices find out what changed? Rather than a table of current state that clients have to diff, we model the metadata as an **append-only journal**.",
-        "Every change, whether an edit, a rename or a delete, is appended as a journal entry with a **monotonically increasing ID**. The scope of ordering is a **namespace**: a user's home folder is one namespace, and as we'll see, each shared folder is another. Within a namespace, every change has a strict order.",
-        "Each device remembers a **cursor**, the last journal ID it applied. Syncing is then trivial: \"give me everything in this namespace after cursor 81,442\". A device that was offline for a week just asks for a longer list. Every device replays the **same changes in the same order**, which is exactly the convergence guarantee we asked for."
+        "Now, how do other devices find out what changed? Rather than a table of current state that clients have to diff, we model the metadata as an **append-only journal**."
       ]
+    },
+    {
+      "title": "Journal entries, ordered per namespace",
+      "script": [
+        "Every change, whether an edit, a rename or a delete, is appended as a journal entry with a **monotonically increasing ID**. The scope of ordering is a **namespace**: a user's home folder is one namespace, and as we'll see, each shared folder is another. Within a namespace, every change has a strict order."
+      ],
+      "entities": {
+        "items": [
+          { "id": "ns", "name": "namespace", "kind": "service", "fields": ["ns_id: bigint  PK", "kind: home | shared", "owner_id: bigint"] },
+          { "id": "entry", "name": "journal_entry", "kind": "data", "fields": ["ns_id: bigint  PK", "journal_id: bigint  PK (increasing)", "op: edit | rename | delete", "path: text", "blocks: [hash, …]"] }
+        ],
+        "relations": [
+          { "from": "ns", "to": "entry", "label": "1 — * ordered" }
+        ]
+      }
+    },
+    {
+      "title": "Syncing from a cursor",
+      "script": [
+        "Each device remembers a **cursor**, the last journal ID it applied. Syncing is then trivial: \"give me everything in this namespace after cursor 81,442\". A device that was offline for a week just asks for a longer list. Every device replays the **same changes in the same order**, which is exactly the convergence guarantee we asked for."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "device", "label": "Desktop Client", "kind": "client", "sub": "cursor 81,442" },
+          { "id": "meta", "label": "Metadata Service", "kind": "service" },
+          { "id": "journal", "label": "Metadata DB", "kind": "data", "sub": "journal per namespace" }
+        ],
+        "steps": [
+          { "from": "device", "to": "meta", "label": "list_changes(ns 12, after 81,442)" },
+          { "from": "meta", "to": "journal", "label": "entries > 81,442" },
+          { "from": "journal", "to": "meta", "label": "81,443 … 81,451", "reply": true },
+          { "from": "meta", "to": "device", "label": "9 entries, in order", "reply": true },
+          { "from": "device", "to": "device", "label": "apply in order · cursor = 81,451" },
+          { "note": "offline for a week? just a longer list", "over": ["device", "journal"] }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
       "add": ["notif", "e_meta_notif"],
       "title": "Telling devices something changed",
       "script": [
-        "Devices could poll the journal every few seconds, but 100 million devices polling would be a lot of load, almost all of it answering \"nothing new\". Instead, each device holds a **long-poll** connection to a **Notification Service**: \"tell me when anything after my cursor shows up in my namespaces.\"",
-        "When a commit lands, the Metadata Service pings the Notification Service that the namespace changed, and the waiting connections return immediately. The device then calls **list_changes** on the Metadata Service to fetch the actual entries.",
-        "Notice the notification **carries no data**, it's just a nudge. That keeps it cheap and makes it safe to lose: if a ping is dropped, the device's long poll times out after about 90 seconds, it checks anyway, and catches up from its cursor. Correctness lives in the journal; notifications are only for speed. Long-poll is plain HTTP, which works through corporate proxies better than WebSockets, and holding 100 million mostly idle connections is a job for a small fleet of event-driven servers."
+        "Devices could poll the journal every few seconds, but 100 million devices polling would be a lot of load, almost all of it answering \"nothing new\". Instead, each device holds a **long-poll** connection to a **Notification Service**: \"tell me when anything after my cursor shows up in my namespaces.\""
       ]
+    },
+    {
+      "title": "Long poll, then list_changes",
+      "script": [
+        "When a commit lands, the Metadata Service pings the Notification Service that the namespace changed, and the waiting connections return immediately. The device then calls **list_changes** on the Metadata Service to fetch the actual entries."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "device", "label": "Desktop Client", "kind": "client" },
+          { "id": "notif", "label": "Notification Service", "kind": "service" },
+          { "id": "meta", "label": "Metadata Service", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "device", "to": "notif", "label": "wait: ns 12 after 81,451" },
+          { "note": "connection held open, up to ~90 s", "over": ["device", "notif"] },
+          { "from": "meta", "to": "meta", "label": "commit lands in ns 12" },
+          { "from": "meta", "to": "notif", "label": "ns 12 changed" },
+          { "from": "notif", "to": "device", "label": "changed", "reply": true },
+          { "from": "device", "to": "meta", "label": "list_changes(ns 12, after 81,451)" },
+          { "from": "meta", "to": "device", "label": "new entries", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "A nudge, not a message",
+      "script": [
+        "Notice the notification **carries no data**, it's just a nudge. That keeps it cheap and makes it safe to lose: if a ping is dropped, the device's long poll times out after about 90 seconds, it checks anyway, and catches up from its cursor. Correctness lives in the journal; notifications are only for speed."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Carries no data**: just \"namespace 12 changed\"", "detail": "tiny, cheap to fan out" },
+          { "text": "**Safe to lose**: the long poll times out at ~90 s", "detail": "the device checks anyway and catches up from its cursor" },
+          { "text": "**Correctness lives in the journal**", "detail": "notifications are only for speed" }
+        ]
+      }
+    },
+    {
+      "title": "Why long-poll",
+      "script": [
+        "Long-poll is plain HTTP, which works through corporate proxies better than WebSockets, and holding 100 million mostly idle connections is a job for a small fleet of event-driven servers."
+      ],
+      "table": {
+        "columns": ["Option", "Latency", "Trade-off"],
+        "rows": [
+          ["Poll every few seconds", "seconds", "100M devices asking, almost always \"nothing new\""],
+          ["**Long-poll**", "instant", "plain HTTP, proxy-friendly; idle connections are cheap"],
+          ["WebSockets", "instant", "trouble with some corporate proxies"]
+        ],
+        "highlight": 1
+      }
     },
     {
       "scene": "main",
       "add": ["mobile", "e_mobile_lb"],
       "title": "A second device: the download path",
       "script": [
-        "Now add the user's **phone or a web browser**. Let's follow an edit made on the laptop to the phone.",
-        "The laptop uploads its missing blocks and commits. The journal gets a new entry, the Notification Service wakes the phone's long poll, and the phone calls list_changes and learns \"report.pdf is now blocks A, B and C\". It compares that with what it has locally and **downloads only the blocks it doesn't already have**, by hash, straight from the Block Service.",
-        "Phones and web clients don't keep a full copy of the folder; they **sync the metadata eagerly and the bytes lazily**, downloading a file only when the user opens it. Dropbox's desktop client can do the same with placeholder files. The tree is cheap, so every device has all of it; the bytes are expensive, so each device fetches only what it needs."
+        "Now add the user's **phone or a web browser**. Let's follow an edit made on the laptop to the phone."
       ]
+    },
+    {
+      "title": "From the laptop to the phone",
+      "script": [
+        "The laptop uploads its missing blocks and commits. The journal gets a new entry, the Notification Service wakes the phone's long poll, and the phone calls list_changes and learns \"report.pdf is now blocks A, B and C\". It compares that with what it has locally and **downloads only the blocks it doesn't already have**, by hash, straight from the Block Service."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "laptop", "label": "Desktop Client", "kind": "client" },
+          { "id": "meta", "label": "Metadata Service", "kind": "service" },
+          { "id": "notif", "label": "Notification Service", "kind": "service" },
+          { "id": "phone", "label": "Mobile Client", "kind": "client" },
+          { "id": "block", "label": "Block Service", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "laptop", "to": "meta", "label": "commit report.pdf = [A, B, C]" },
+          { "from": "meta", "to": "notif", "label": "ns changed" },
+          { "from": "notif", "to": "phone", "label": "wake up", "reply": true },
+          { "from": "phone", "to": "meta", "label": "list_changes" },
+          { "from": "meta", "to": "phone", "label": "report.pdf = [A, B, C]", "reply": true },
+          { "from": "phone", "to": "phone", "label": "have A, B · need C" },
+          { "from": "phone", "to": "block", "label": "get C" },
+          { "from": "block", "to": "phone", "label": "block C", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Eager metadata, lazy bytes",
+      "script": [
+        "Phones and web clients don't keep a full copy of the folder; they **sync the metadata eagerly and the bytes lazily**, downloading a file only when the user opens it. Dropbox's desktop client can do the same with placeholder files. The tree is cheap, so every device has all of it; the bytes are expensive, so each device fetches only what it needs."
+      ],
+      "table": {
+        "columns": ["", "Size", "Synced to every device", "When"],
+        "rows": [
+          ["**File tree**", "cheap: KBs per folder", "all of it", "eagerly, on every change"],
+          ["**File bytes**", "expensive: GBs", "only what's needed", "lazily, when a file is opened"]
+        ]
+      }
     },
     {
       "scene": "main",
       "focus": ["desktop", "mobile", "lb", "metasvc", "journal", "e_desktop_lb", "e_mobile_lb", "e_meta_journal"],
       "title": "Offline edits and conflicts",
       "script": [
-        "Now the hard case: the laptop is on a plane and edits **report.docx**, while the phone edits the same file. Both started from version 7.",
-        "Every commit says which version it's based on: \"make this file these blocks, **if it's still version 7**\". The phone commits first and wins, creating version 8. When the laptop lands and commits on top of version 7, the Metadata Service rejects it, because the base is stale. That's **optimistic concurrency**, a conditional write on the journal.",
-        "The laptop can't merge two Word files, and we promised never to silently drop an edit. So the client pulls version 8, and saves its own edit as **\"report (Sam's conflicted copy).docx\"** right next to it, and commits that as a new file. The user sees both and decides. It's not elegant, but it's **simple, predictable and never loses data**, which is the right trade-off for arbitrary binary files."
+        "Now the hard case: the laptop is on a plane and edits **report.docx**, while the phone edits the same file. Both started from version 7."
       ]
+    },
+    {
+      "title": "Optimistic concurrency",
+      "script": [
+        "Every commit says which version it's based on: \"make this file these blocks, **if it's still version 7**\". The phone commits first and wins, creating version 8. When the laptop lands and commits on top of version 7, the Metadata Service rejects it, because the base is stale. That's **optimistic concurrency**, a conditional write on the journal."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "laptop", "label": "Desktop Client", "kind": "client", "sub": "offline, edited v7" },
+          { "id": "meta", "label": "Metadata Service", "kind": "service" },
+          { "id": "phone", "label": "Mobile Client", "kind": "client", "sub": "edited v7" }
+        ],
+        "steps": [
+          { "note": "both edits start from report.docx v7", "over": ["laptop", "phone"] },
+          { "from": "phone", "to": "meta", "label": "commit [X, Y] if still v7" },
+          { "from": "meta", "to": "phone", "label": "ok · v8", "reply": true },
+          { "note": "the laptop lands", "over": ["laptop", "meta"] },
+          { "from": "laptop", "to": "meta", "label": "commit [P, Q] if still v7" },
+          { "from": "meta", "to": "laptop", "label": "rejected: stale base (now v8)", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "The conflicted copy",
+      "script": [
+        "The laptop can't merge two Word files, and we promised never to silently drop an edit. So the client pulls version 8, and saves its own edit as **\"report (Sam's conflicted copy).docx\"** right next to it, and commits that as a new file. The user sees both and decides. It's not elegant, but it's **simple, predictable and never loses data**, which is the right trade-off for arbitrary binary files."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "laptop", "label": "Desktop Client", "kind": "client" },
+          { "id": "meta", "label": "Metadata Service", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "laptop", "to": "meta", "label": "list_changes" },
+          { "from": "meta", "to": "laptop", "label": "report.docx v8", "reply": true },
+          { "from": "laptop", "to": "laptop", "label": "save own edit as \"report (Sam's conflicted copy).docx\"" },
+          { "from": "laptop", "to": "meta", "label": "commit new file [P, Q]" },
+          { "from": "meta", "to": "laptop", "label": "ok", "reply": true },
+          { "note": "both files side by side; the user decides", "over": ["laptop", "meta"] }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
       "add": ["collab", "e_collab_lb"],
       "title": "Shared folders are namespaces",
       "script": [
-        "Now sharing. When a user shares a folder, we **turn that folder into its own namespace**, with its own journal, and record who the members are and whether they can edit or only view.",
-        "Each member's home namespace gets a **mount point**: \"namespace 77 appears at /Team Projects\". A teammate's client subscribes to their home namespace *and* to every shared namespace mounted in it, each with its own cursor. An edit in the shared folder is one append to one journal, and every member's devices pick it up through exactly the same long-poll and list_changes path.",
-        "This is why the namespace is the unit of ordering: it's the **unit of sharing**. Permission checks happen in the Metadata Service on every commit and every list, against the namespace's member list. And because blocks are content-addressed, a teammate joining a folder with 50 GB in it doesn't copy anything on our side; they just get access to hashes we already store."
+        "Now sharing. When a user shares a folder, we **turn that folder into its own namespace**, with its own journal, and record who the members are and whether they can edit or only view."
       ]
+    },
+    {
+      "title": "Members and mount points",
+      "script": [
+        "Each member's home namespace gets a **mount point**: \"namespace 77 appears at /Team Projects\". A teammate's client subscribes to their home namespace *and* to every shared namespace mounted in it, each with its own cursor."
+      ],
+      "entities": {
+        "items": [
+          { "id": "home", "name": "namespace 12 (home)", "kind": "client", "fields": ["kind: home", "owner: Sam"] },
+          { "id": "mount", "name": "mount", "kind": "service", "fields": ["home_ns: 12", "path: /Team Projects", "target_ns: 77"] },
+          { "id": "shared", "name": "namespace 77 (shared)", "kind": "data", "fields": ["kind: shared", "journal: its own"] },
+          { "id": "member", "name": "member", "kind": "service", "fields": ["ns_id: 77  PK", "user_id  PK", "role: edit | view"] }
+        ],
+        "relations": [
+          { "from": "home", "to": "mount", "label": "has" },
+          { "from": "mount", "to": "shared", "label": "points at" },
+          { "from": "shared", "to": "member", "label": "1 — *" }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "focus": ["desktop", "collab", "lb", "notif", "metasvc", "journal", "e_desktop_lb", "e_collab_lb", "e_meta_journal", "e_meta_notif"],
+      "title": "One append, every member",
+      "script": [
+        "An edit in the shared folder is one append to one journal, and every member's devices pick it up through exactly the same long-poll and list_changes path.",
+        "This is why the namespace is the unit of ordering: it's the **unit of sharing**."
+      ]
+    },
+    {
+      "title": "Permissions, and joining for free",
+      "script": [
+        "Permission checks happen in the Metadata Service on every commit and every list, against the namespace's member list. And because blocks are content-addressed, a teammate joining a folder with 50 GB in it doesn't copy anything on our side; they just get access to hashes we already store."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Every commit and every list** checks the members", "detail": "in the Metadata Service, per namespace" },
+          { "text": "View-only members can list, but not commit", "detail": "the role lives on the member row" },
+          { "text": "**Joining a 50 GB folder copies nothing**", "detail": "the new member just gets access to hashes we store" }
+        ]
+      }
     },
     {
       "scene": "main",
@@ -352,10 +747,36 @@
       "add": ["mdbs", "e_meta_mdbs"],
       "title": "Shard the metadata by namespace",
       "script": [
-        "One MySQL database won't hold a trillion file entries and 70,000 commits a second at peak. We **shard the metadata**, and the namespace makes the shard key obvious: **shard by namespace ID**.",
-        "Everything that needs to be ordered or transactional, a namespace's journal, its file rows, its cursors, lives on **one shard**, so a commit is a single-shard transaction and the journal ID is just an auto-increment on that shard. Nothing ever needs a cross-shard transaction to stay correct.",
-        "We'd use many logical shards mapped onto fewer physical MySQL clusters, each with a primary and replicas, so we can move hot namespaces around. The awkward case is a **huge shared namespace**, a whole company's shared drive with millions of files; it can't be split across shards, so it gets a dedicated cluster. That's the trade-off for clean per-namespace ordering, and I think it's the right one."
+        "One MySQL database won't hold a trillion file entries and 70,000 commits a second at peak. We **shard the metadata**, and the namespace makes the shard key obvious: **shard by namespace ID**."
       ]
+    },
+    {
+      "title": "A namespace lives on one shard",
+      "script": [
+        "Everything that needs to be ordered or transactional, a namespace's journal, its file rows, its cursors, lives on **one shard**, so a commit is a single-shard transaction and the journal ID is just an auto-increment on that shard. Nothing ever needs a cross-shard transaction to stay correct."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "Journal, file rows, members: **one shard per namespace**", "detail": "everything ordered or transactional, together" },
+          { "text": "A commit is a **single-shard transaction**", "detail": "no two-phase commit, ever" },
+          { "text": "The journal ID is an **auto-increment** on that shard", "detail": "strict order for free" }
+        ]
+      }
+    },
+    {
+      "title": "Logical shards, physical clusters",
+      "script": [
+        "We'd use many logical shards mapped onto fewer physical MySQL clusters, each with a primary and replicas, so we can move hot namespaces around. The awkward case is a **huge shared namespace**, a whole company's shared drive with millions of files; it can't be split across shards, so it gets a dedicated cluster. That's the trade-off for clean per-namespace ordering, and I think it's the right one."
+      ],
+      "table": {
+        "columns": ["Namespace", "Logical shard", "Physical cluster"],
+        "rows": [
+          ["ns 12 · Sam's home folder", "shard 4,117", "cluster 9 (shared with ~2,000 shards)"],
+          ["ns 77 · Team Projects", "shard 911", "cluster 2"],
+          ["ns 5 · a company drive, millions of files", "its own shard", "cluster 31, **dedicated**"]
+        ],
+        "highlight": 2
+      }
     },
     {
       "scene": "main",
@@ -363,9 +784,47 @@
       "title": "A cache in front of the metadata",
       "script": [
         "Reads vastly outnumber writes on the metadata side: every list_changes call, every folder listing on the web, every permission check, and every \"which of these blocks are missing\" lookup.",
-        "So we put a **cache tier**, memcache, in front of both the metadata shards and the Block Index. Block Index entries are perfect cache material, because a hash's location never changes. Namespace membership and folder listings are cached too, and **invalidated on commit**.",
-        "The rule I'd keep is that the cache is only for **reads that can tolerate staleness**. The commit itself, the conditional \"if it's still version 7\" write, always goes to the shard's primary. A stale cache can make a device sync a moment late, but it can never make two devices disagree about the journal."
+        "So we put a **cache tier**, memcache, in front of both the metadata shards and the Block Index."
       ]
+    },
+    {
+      "title": "What goes in the cache",
+      "script": [
+        "Block Index entries are perfect cache material, because a hash's location never changes. Namespace membership and folder listings are cached too, and **invalidated on commit**."
+      ],
+      "table": {
+        "columns": ["Cached", "Changes when", "Invalidation"],
+        "rows": [
+          ["**Block Index** entries (hash → location)", "never", "none needed"],
+          ["**Namespace membership**", "someone joins or leaves", "on commit"],
+          ["**Folder listings**", "any change in the folder", "on commit"]
+        ]
+      }
+    },
+    {
+      "title": "Reads from cache, commits to the primary",
+      "script": [
+        "The rule I'd keep is that the cache is only for **reads that can tolerate staleness**. The commit itself, the conditional \"if it's still version 7\" write, always goes to the shard's primary. A stale cache can make a device sync a moment late, but it can never make two devices disagree about the journal."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "device", "label": "Client", "kind": "client" },
+          { "id": "meta", "label": "Metadata Service", "kind": "service" },
+          { "id": "cache", "label": "Cache", "kind": "data", "sub": "memcache" },
+          { "id": "primary", "label": "Shard Primary", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "device", "to": "meta", "label": "list /Team Projects" },
+          { "from": "meta", "to": "cache", "label": "get listing" },
+          { "from": "cache", "to": "meta", "label": "hit", "reply": true },
+          { "from": "device", "to": "meta", "label": "commit, if still v7" },
+          { "from": "meta", "to": "primary", "label": "conditional write" },
+          { "from": "primary", "to": "meta", "label": "ok · v8", "reply": true },
+          { "from": "meta", "to": "cache", "label": "invalidate listing" },
+          { "note": "stale cache → a late sync, never a disagreement", "over": ["device", "primary"] }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
@@ -373,60 +832,278 @@
       "add": ["kafka", "e_mdbs_kafka", "e_kafka_notif"],
       "title": "A change log for everything downstream",
       "script": [
-        "Right now the Metadata Service pings the Notification Service directly. That's fragile: if the ping fails after the commit, devices wait for their poll timeout. And notifications aren't the only thing that cares about commits: version cleanup, search indexing, thumbnails, audit logs and analytics all want the same stream.",
-        "So every committed journal entry is also published to a **change log**, a Kafka topic **keyed by namespace**. Publishing comes from the database's own commit log, so an event exists **if and only if** the commit happened. Keying by namespace keeps each namespace's events in order within a partition.",
-        "The Notification Service is now just one consumer. Each feature I put out of scope, like search or previews, would be another consumer of this same log. That's where it plugs in, without adding work to the commit path."
+        "Right now the Metadata Service pings the Notification Service directly. That's fragile: if the ping fails after the commit, devices wait for their poll timeout. And notifications aren't the only thing that cares about commits: version cleanup, search indexing, thumbnails, audit logs and analytics all want the same stream."
       ]
+    },
+    {
+      "title": "Publish from the commit log",
+      "script": [
+        "So every committed journal entry is also published to a **change log**, a Kafka topic **keyed by namespace**. Publishing comes from the database's own commit log, so an event exists **if and only if** the commit happened. Keying by namespace keeps each namespace's events in order within a partition."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "meta", "label": "Metadata Service", "kind": "service" },
+          { "id": "db", "label": "Metadata DB", "kind": "data", "sub": "sharded" },
+          { "id": "kafka", "label": "Change Log", "kind": "stream", "sub": "Kafka" },
+          { "id": "notif", "label": "Notification Service", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "meta", "to": "db", "label": "append entry to ns 12" },
+          { "from": "db", "to": "meta", "label": "committed", "reply": true },
+          { "from": "db", "to": "kafka", "label": "from the DB's commit log, key = ns 12" },
+          { "note": "event exists if and only if the commit happened", "over": ["db", "kafka"] },
+          { "from": "kafka", "to": "notif", "label": "ns 12 changed (in order per partition)" }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "One log, many consumers",
+      "script": [
+        "The Notification Service is now just one consumer. Each feature I put out of scope, like search or previews, would be another consumer of this same log. That's where it plugs in, without adding work to the commit path."
+      ],
+      "bullets": {
+        "heading": "Consumers of the change log",
+        "items": [
+          { "text": "**Notification Service**: wake waiting devices", "detail": "the first consumer" },
+          { "text": "**Version cleanup**: garbage collection", "detail": "next slide" },
+          { "text": "**Search indexing, previews, thumbnails**", "detail": "out of scope, but this is where they plug in" },
+          { "text": "**Audit logs and analytics**", "detail": "no extra work on the commit path" }
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["gc", "e_kafka_gc", "e_gc_idx", "e_gc_store"],
       "title": "Version history and garbage collection",
       "script": [
-        "Version history mostly falls out of the design already. A file version is a journal entry pointing at a list of hashes, and **blocks are immutable**, so keeping old versions costs a few hundred bytes of metadata plus whatever blocks changed. **Restoring** version 3 is just a new commit pointing at version 3's hashes; no bytes move.",
-        "Deletes work the same way: a delete is a journal entry, and the file's blocks stay put for the 30-day window.",
-        "What we need is a **GC worker**. It consumes the change log, and when a version ages past the retention window it **decrements the reference counts** of its blocks in the Block Index. When a block's count reaches zero, it's deleted from storage. GC is where data loss bugs hide, so I'd make it deliberately slow and paranoid: mark blocks first, wait days, re-verify that nothing references them, and only then delete. Leaking some storage is cheap; deleting a live block is unforgivable."
+        "Version history mostly falls out of the design already. A file version is a journal entry pointing at a list of hashes, and **blocks are immutable**, so keeping old versions costs a few hundred bytes of metadata plus whatever blocks changed."
       ]
+    },
+    {
+      "title": "Restores and deletes are just commits",
+      "script": [
+        "**Restoring** version 3 is just a new commit pointing at version 3's hashes; no bytes move.",
+        "Deletes work the same way: a delete is a journal entry, and the file's blocks stay put for the 30-day window."
+      ],
+      "table": {
+        "heading": "Journal for report.pdf",
+        "columns": ["Journal ID", "Entry", "Blocks"],
+        "rows": [
+          ["81,201", "edit → **v3**", "A · B · C"],
+          ["81,377", "edit → **v4**", "A · B′ · C"],
+          ["81,452", "**restore v3** → v5", "A · B · C  (no bytes move)"],
+          ["81,610", "**delete**", "— (blocks kept for 30 days)"]
+        ]
+      }
+    },
+    {
+      "title": "The GC worker",
+      "script": [
+        "What we need is a **GC worker**. It consumes the change log, and when a version ages past the retention window it **decrements the reference counts** of its blocks in the Block Index. When a block's count reaches zero, it's deleted from storage."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "kafka", "label": "Change Log", "kind": "stream" },
+          { "id": "gc", "label": "GC Worker", "kind": "service" },
+          { "id": "idx", "label": "Block Index", "kind": "data" },
+          { "id": "store", "label": "Block Storage", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "kafka", "to": "gc", "label": "v4 of report.pdf past retention" },
+          { "from": "gc", "to": "idx", "label": "refcount −1 for A, B′, C" },
+          { "from": "idx", "to": "gc", "label": "B′ now at 0", "reply": true },
+          { "from": "gc", "to": "store", "label": "delete B′" },
+          { "note": "A and C are still referenced by v5", "over": ["idx", "store"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Slow and paranoid",
+      "script": [
+        "GC is where data loss bugs hide, so I'd make it deliberately slow and paranoid: mark blocks first, wait days, re-verify that nothing references them, and only then delete. Leaking some storage is cheap; deleting a live block is unforgivable."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Mark** blocks at refcount zero", "detail": "don't delete anything yet" },
+          { "text": "**Wait days**", "detail": "let in-flight commits and lagging consumers catch up" },
+          { "text": "**Re-verify** that nothing references them", "detail": "scan, don't trust the counter alone" },
+          { "text": "Only then **delete**", "detail": "leaked storage is cheap; a deleted live block is not" }
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["visitor", "cdn", "e_visitor_cdn", "e_cdn_block"],
       "title": "Share links and the CDN",
       "script": [
-        "Now **share links**. A link is a random, unguessable token that maps to a file or folder at a path, plus settings like expiry or a password. Resolving it is a cheap metadata lookup.",
-        "The bytes are the interesting part. A link posted on social media can be downloaded by a million strangers in an hour, and we don't want that traffic hammering the Block Service. So link downloads go through a **CDN**. When a visitor clicks, we resolve the link, check it's still valid, and redirect them to a short-lived, **signed CDN URL**; the CDN fetches from the Block Service once and serves everyone else from the edge.",
-        "Content addressing makes this unusually easy: a block never changes, so it can be **cached forever** with no invalidation. If the owner edits the file, the link resolves to new hashes, and therefore new cache keys."
+        "Now **share links**. A link is a random, unguessable token that maps to a file or folder at a path, plus settings like expiry or a password. Resolving it is a cheap metadata lookup."
       ]
+    },
+    {
+      "title": "Resolve, redirect, serve from the edge",
+      "script": [
+        "The bytes are the interesting part. A link posted on social media can be downloaded by a million strangers in an hour, and we don't want that traffic hammering the Block Service. So link downloads go through a **CDN**.",
+        "When a visitor clicks, we resolve the link, check it's still valid, and redirect them to a short-lived, **signed CDN URL**; the CDN fetches from the Block Service once and serves everyone else from the edge."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "visitor", "label": "Link Visitor", "kind": "client" },
+          { "id": "meta", "label": "Metadata Service", "kind": "service" },
+          { "id": "cdn", "label": "CDN", "kind": "infra" },
+          { "id": "block", "label": "Block Service", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "visitor", "to": "meta", "label": "GET /s/k3x9q…" },
+          { "from": "meta", "to": "meta", "label": "resolve token · check expiry" },
+          { "from": "meta", "to": "visitor", "label": "302 → signed CDN URL", "reply": true },
+          { "from": "visitor", "to": "cdn", "label": "GET signed URL" },
+          { "from": "cdn", "to": "block", "label": "origin fetch (first visitor only)" },
+          { "from": "block", "to": "cdn", "label": "blocks", "reply": true },
+          { "from": "cdn", "to": "visitor", "label": "file", "reply": true },
+          { "note": "everyone after that is served from the edge", "over": ["visitor", "cdn"] }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Cached forever",
+      "script": [
+        "Content addressing makes this unusually easy: a block never changes, so it can be **cached forever** with no invalidation. If the owner edits the file, the link resolves to new hashes, and therefore new cache keys."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "A block **never changes**", "detail": "so the CDN can cache it forever" },
+          { "text": "**No invalidation**, ever", "detail": "the hardest part of CDN caching disappears" },
+          { "text": "An edit means **new hashes, new cache keys**", "detail": "the link resolves to the new version" }
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["regions", "e_store_regions"],
       "title": "Eleven nines: erasure coding and regions",
       "script": [
-        "Durability lives in **Block Storage**. At exabyte scale, I'd seriously consider **building our own** storage layer instead of renting S3, as Dropbox did with Magic Pocket; at this size, it's cheaper.",
-        "Inside a region, instead of keeping three full copies, we use **erasure coding**: split a group of blocks into, say, 8 data fragments plus 4 parity fragments, spread across racks and zones. Any 8 of the 12 can rebuild the data, so we survive several simultaneous disk or rack failures with about **1.5× overhead instead of 3×**. On 3 exabytes, that difference is billions of dollars in hardware.",
-        "And every block is **replicated asynchronously to another region**, so losing an entire data center loses nothing. Background **scrubbers** constantly re-read blocks and verify them against their hashes, which content addressing gives us for free, and repair anything that's rotted before a second failure finds it."
+        "Durability lives in **Block Storage**. At exabyte scale, I'd seriously consider **building our own** storage layer instead of renting S3, as Dropbox did with Magic Pocket; at this size, it's cheaper."
       ]
+    },
+    {
+      "title": "Erasure coding instead of three copies",
+      "script": [
+        "Inside a region, instead of keeping three full copies, we use **erasure coding**: split a group of blocks into, say, 8 data fragments plus 4 parity fragments, spread across racks and zones. Any 8 of the 12 can rebuild the data, so we survive several simultaneous disk or rack failures with about **1.5× overhead instead of 3×**. On 3 exabytes, that difference is billions of dollars in hardware."
+      ],
+      "table": {
+        "columns": ["Scheme", "Survives", "Overhead", "Raw disk for 3 EB"],
+        "rows": [
+          ["**3× replication**", "2 lost copies", "3×", "≈ 9 EB"],
+          ["**Erasure coding, 8 + 4**", "any 4 of 12 fragments lost", "1.5×", "≈ 4.5 EB"]
+        ],
+        "highlight": 1
+      }
+    },
+    {
+      "title": "Other regions and scrubbers",
+      "script": [
+        "And every block is **replicated asynchronously to another region**, so losing an entire data center loses nothing. Background **scrubbers** constantly re-read blocks and verify them against their hashes, which content addressing gives us for free, and repair anything that's rotted before a second failure finds it."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Async replica in another region**", "detail": "losing a whole data center loses nothing" },
+          { "text": "**Scrubbers** re-read every block, all the time", "detail": "and check it against its hash, for free" },
+          { "text": "**Repair rot early**", "detail": "before a second failure finds it" }
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["cold", "e_store_cold"],
       "title": "Cold storage for cold blocks",
       "script": [
-        "Storage is our biggest cost, and most of it is **cold**: old photos, finished projects, files nobody has opened in a year. Access follows a steep curve, with most reads hitting recently written data.",
-        "So blocks that haven't been read in a while **age out to a cold tier**: denser disks, wider erasure codes with less overhead, and fewer replicas in hot regions. Reads from the cold tier are a bit slower, a few hundred milliseconds more, which is fine for a file nobody has touched since 2019.",
-        "Because blocks are addressed by hash, moving one between tiers is invisible to everything above: only its location in the Block Index changes. None of the metadata, the journal, the clients or the links ever notice."
+        "Storage is our biggest cost, and most of it is **cold**: old photos, finished projects, files nobody has opened in a year. Access follows a steep curve, with most reads hitting recently written data."
       ]
+    },
+    {
+      "title": "Hot tier vs cold tier",
+      "script": [
+        "So blocks that haven't been read in a while **age out to a cold tier**: denser disks, wider erasure codes with less overhead, and fewer replicas in hot regions. Reads from the cold tier are a bit slower, a few hundred milliseconds more, which is fine for a file nobody has touched since 2019."
+      ],
+      "table": {
+        "columns": ["", "Block Storage (hot)", "Cold Storage"],
+        "rows": [
+          ["**Holds**", "recently written or read blocks", "blocks not read in a while"],
+          ["**Disks**", "standard", "denser, cheaper per TB"],
+          ["**Erasure code**", "8 + 4", "wider, less overhead"],
+          ["**Replicas in hot regions**", "more", "fewer"],
+          ["**Read latency**", "baseline", "+ a few hundred ms"]
+        ]
+      }
+    },
+    {
+      "title": "Moving a block is invisible",
+      "script": [
+        "Because blocks are addressed by hash, moving one between tiers is invisible to everything above: only its location in the Block Index changes. None of the metadata, the journal, the clients or the links ever notice."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "store", "label": "Block Storage", "kind": "data" },
+          { "id": "cold", "label": "Cold Storage", "kind": "data" },
+          { "id": "idx", "label": "Block Index", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "store", "to": "cold", "label": "copy block h7 (unread for a year)" },
+          { "from": "cold", "to": "store", "label": "stored", "reply": true },
+          { "from": "store", "to": "idx", "label": "h7 → cold location" },
+          { "from": "store", "to": "store", "label": "free the hot copy" },
+          { "note": "journal, clients and links still just say \"h7\"", "over": ["store", "idx"] }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
       "add": ["e_mdbs_regions"],
       "title": "Metadata across regions",
       "script": [
-        "The last piece is the **metadata across regions**. Block replication alone isn't enough: if a region goes down, we also need the file tree to keep working.",
-        "Each metadata shard has a **primary in one region** and replicas in another, kept up to date by MySQL replication. Writes for a namespace always go to its primary, which preserves the single order per namespace that the whole design depends on. If a region fails, we **promote the replicas** in the other region. We might lose the last second or so of commits, but the clients still hold those changes locally and will simply commit them again.",
-        "I would **not** make the metadata multi-master. Two regions both accepting commits to the same namespace would break the ordering guarantee, and we'd be back to resolving conflicts on the server. A short failover is a much better trade-off for four nines."
+        "The last piece is the **metadata across regions**. Block replication alone isn't enough: if a region goes down, we also need the file tree to keep working."
       ]
+    },
+    {
+      "title": "Primary, replica, failover",
+      "script": [
+        "Each metadata shard has a **primary in one region** and replicas in another, kept up to date by MySQL replication. Writes for a namespace always go to its primary, which preserves the single order per namespace that the whole design depends on. If a region fails, we **promote the replicas** in the other region. We might lose the last second or so of commits, but the clients still hold those changes locally and will simply commit them again."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "client", "label": "Client", "kind": "client" },
+          { "id": "primary", "label": "Shard Primary", "kind": "data", "sub": "region A" },
+          { "id": "replica", "label": "Shard Replica", "kind": "data", "sub": "region B" }
+        ],
+        "steps": [
+          { "from": "client", "to": "primary", "label": "commit (ns 12 → its primary)" },
+          { "from": "primary", "to": "client", "label": "ok", "reply": true },
+          { "from": "primary", "to": "replica", "label": "MySQL replication (async)" },
+          { "note": "region A fails; the last ~1 s never arrived", "over": ["primary", "replica"] },
+          { "from": "replica", "to": "replica", "label": "promote to primary" },
+          { "from": "client", "to": "replica", "label": "commit the unsynced changes again" },
+          { "from": "replica", "to": "client", "label": "ok", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Why not multi-master",
+      "script": [
+        "I would **not** make the metadata multi-master. Two regions both accepting commits to the same namespace would break the ordering guarantee, and we'd be back to resolving conflicts on the server. A short failover is a much better trade-off for four nines."
+      ],
+      "table": {
+        "columns": ["Option", "Order per namespace", "On a region failure"],
+        "rows": [
+          ["**Single primary + failover**", "one order, always", "short failover; clients re-commit ~1 s"],
+          ["**Multi-master**", "two regions, two orders", "no failover, but conflicts on the server"]
+        ],
+        "highlight": 0
+      }
     },
     {
       "scene": "main",
