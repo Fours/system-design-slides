@@ -1,0 +1,2926 @@
+{
+  "title": "Key-Value Store",
+  "topic": "System Design Deep Dive: Key-Value Store",
+  "intro": {
+    "title": "Distributed Key-Value Store",
+    "script": [
+      "Welcome to a system design deep dive on a **distributed key-value store** in the style of Amazon's **Dynamo**."
+    ]
+  },
+  "requirements": {
+    "functional": {
+      "intro": {
+        "title": "Functional requirements",
+        "emoji": [
+          "🔑",
+          "📦",
+          "🌐"
+        ],
+        "script": [
+          "A key-value store is the simplest database there is: you put a value under a key and get it back later. Making it span **hundreds of machines**, stay writable through failures, and answer in milliseconds is where the design lives.",
+          "We'll design it the way Dynamo was designed: for something like a **shopping cart**, where losing a write costs money and an error page costs more. Let's agree on what it must do."
+        ]
+      },
+      "cards": [
+        {
+          "title": "Get and put by key",
+          "lines": [
+            "get(key) · put(key, value) · delete",
+            "opaque values up to ~1 MB"
+          ],
+          "script": [
+            "The API is just **get**, **put** and **delete** by primary key. Values are **opaque blobs** up to about a megabyte; the store doesn't know or care that they're carts. That simplicity is what lets the rest of the design scale."
+          ]
+        },
+        {
+          "title": "Always writable",
+          "lines": [
+            "Accept writes through node failures",
+            "and network partitions"
+          ],
+          "script": [
+            "Writes are **never refused** because some nodes are down or the network is split. A customer who clicks add to cart during an outage should see it work. This is the requirement that shapes everything else."
+          ]
+        },
+        {
+          "title": "Tunable consistency",
+          "lines": [
+            "N replicas, R reads, W writes",
+            "chosen per table or request"
+          ],
+          "script": [
+            "Callers choose their trade-off: how many **replicas** to keep, and how many must answer a **read** or a **write**. One table can favor speed and availability, another can favor reading the latest write."
+          ]
+        },
+        {
+          "title": "Detect and resolve conflicts",
+          "lines": [
+            "Concurrent versions are kept, not lost",
+            "merged by the app, or last-write-wins"
+          ],
+          "script": [
+            "Since we accept writes everywhere, two updates to the same key can happen **concurrently**. The store must **detect** that and keep both versions, then let the application merge them, or fall back to last-write-wins where that's good enough."
+          ]
+        },
+        {
+          "title": "Elastic membership",
+          "lines": [
+            "Add or remove nodes anytime",
+            "only a small share of keys moves"
+          ],
+          "script": [
+            "We must be able to **add or remove nodes** while serving traffic, with only a proportional slice of the data moving and no manual resharding."
+          ]
+        },
+        {
+          "title": "Self-healing",
+          "lines": [
+            "Detect failures automatically",
+            "bring replicas back in sync"
+          ],
+          "script": [
+            "The cluster **notices** failed nodes by itself, routes around them, and **repairs** replicas that missed writes, without an operator getting involved for every reboot."
+          ]
+        }
+      ],
+      "outOfScope": {
+        "title": "Out of scope",
+        "lines": [
+          "Range scans and secondary indexes  ·  Multi-key transactions  ·  Linearizable reads  ·  Auth and multi-tenancy  ·  Byzantine faults"
+        ],
+        "script": [
+          "Out of scope: **range scans and secondary indexes**, since we hash keys and lose their order; **transactions** across keys; **linearizable** reads, which need consensus like Raft or Spanner and are a different design; **auth and multi-tenancy**; and **Byzantine** faults, since we trust our own nodes."
+        ]
+      }
+    },
+    "nonFunctional": {
+      "intro": {
+        "title": "Non-functional requirements",
+        "script": [
+          "Now the qualities. For a store like this they are the whole problem: availability and latency first, and consistency as something we can **tune**, not something we assume."
+        ]
+      },
+      "cards": [
+        {
+          "title": "Scale",
+          "lines": [
+            "1M ops/s at peak, ~70% reads",
+            "10B keys, ~100 TB"
+          ],
+          "script": [
+            "Assume **a million operations a second** at peak, about 70% reads, over **10 billion keys** averaging around 10 kilobytes: roughly **100 terabytes** of data before replication."
+          ]
+        },
+        {
+          "title": "Latency",
+          "lines": [
+            "p99.9 < 10 ms for get and put",
+            "within a region"
+          ],
+          "script": [
+            "Gets and puts must finish in **under 10 milliseconds at the 99.9th percentile**. We target the tail, not the average, because one page view may call the store dozens of times, so the slow outliers are what users actually feel."
+          ]
+        },
+        {
+          "title": "Availability",
+          "lines": [
+            "99.99%+",
+            "writes survive replica failures"
+          ],
+          "script": [
+            "At least **four nines**, and in particular a failed replica, or even a failed rack, must not make writes fail."
+          ]
+        },
+        {
+          "title": "Durability",
+          "lines": [
+            "An acked write survives node loss",
+            "3 replicas in 3 zones"
+          ],
+          "script": [
+            "Once we say OK, the write must survive losing a machine or even a whole **availability zone**, so it's stored on **three replicas** in three zones."
+          ]
+        },
+        {
+          "title": "Consistency",
+          "lines": [
+            "Eventual by default",
+            "R + W > N to read your writes"
+          ],
+          "script": [
+            "**Eventually consistent** by default: replicas may briefly disagree but converge. Callers that need to read their own writes can ask for overlapping read and write quorums."
+          ]
+        },
+        {
+          "title": "Decentralized",
+          "lines": [
+            "Symmetric nodes, no master",
+            "mixed hardware allowed"
+          ],
+          "script": [
+            "Every node runs the same code with the same responsibilities: **no master**, no special node whose failure stops the cluster. Machines of different sizes should be able to carry proportionate load."
+          ]
+        }
+      ],
+      "estimates": {
+        "title": "Back-of-the-envelope",
+        "rows": [
+          [
+            "Data",
+            [
+              "10B keys × ~10 KB ≈ 100 TB",
+              "× 3 replicas ≈ 300 TB"
+            ]
+          ],
+          [
+            "Nodes",
+            [
+              "~4 TB usable per node",
+              "→ ~100 nodes, with headroom"
+            ]
+          ],
+          [
+            "Traffic",
+            [
+              "1M ops/s × 3 replicas = 3M/s",
+              "≈ 30K replica ops/s per node"
+            ]
+          ],
+          [
+            "Ring",
+            [
+              "100 nodes × 256 vnodes ≈ 25,600 tokens",
+              "gossip: log₂ 100 ≈ 7 rounds to all"
+            ]
+          ]
+        ],
+        "script": [
+          "Some numbers. 10 billion keys at about 10 kilobytes is **100 terabytes**; three replicas make it **300**. At about 4 terabytes of usable disk per node, that's roughly **a hundred nodes**, more with headroom.",
+          "A million operations a second, each touching three replicas, is **3 million replica operations** a second, or about **30 thousand per node**, which is comfortable for one machine with SSDs.",
+          "And two numbers we'll meet later: with **256 virtual nodes** each, the ring has about **25,000 tokens**; and gossip, at one round a second, reaches all hundred nodes in about **seven rounds**."
+        ]
+      },
+      "takeaway": {
+        "title": "What shapes the design",
+        "lines": [
+          "No master, nodes come and go → consistent hashing with virtual nodes, gossip membership",
+          "Writes are never refused → sloppy quorums, hinted handoff, vector clocks",
+          "p99.9 < 10 ms → wait for the fastest W or R of N replicas; LSM-tree storage"
+        ],
+        "script": [
+          "So three decisions follow. With no master and a changing cluster, we place data by **consistent hashing** and spread membership by **gossip**. Since writes must never be refused, we use **sloppy quorums**, **hinted handoff** and **vector clocks**, resolving conflicts later instead of preventing them. And for the tail latency, we wait only for the **fastest replicas** and store data in a write-optimized **LSM tree**."
+        ]
+      }
+    }
+  },
+  "scenes": {
+    "main": {
+      "boxes": [
+        {
+          "id": "client",
+          "x": 40,
+          "y": 272,
+          "w": 180,
+          "h": 56,
+          "label": "Cart Service",
+          "kind": "client",
+          "sub": "client library"
+        },
+        {
+          "id": "single",
+          "x": 410,
+          "y": 262,
+          "w": 200,
+          "h": 76,
+          "label": "KV Server",
+          "kind": "data",
+          "sub": "one machine · hash table"
+        },
+        {
+          "id": "n1",
+          "x": 410,
+          "y": 180,
+          "w": 180,
+          "h": 56,
+          "label": "Node 1",
+          "kind": "data",
+          "sub": "keys with hash mod N = 0"
+        },
+        {
+          "id": "n2",
+          "x": 410,
+          "y": 272,
+          "w": 180,
+          "h": 56,
+          "label": "Node 2",
+          "kind": "data",
+          "sub": "keys with hash mod N = 1"
+        },
+        {
+          "id": "n3",
+          "x": 410,
+          "y": 364,
+          "w": 180,
+          "h": 56,
+          "label": "Node 3",
+          "kind": "data",
+          "sub": "keys with hash mod N = 2"
+        },
+        {
+          "id": "n4",
+          "x": 410,
+          "y": 456,
+          "w": 180,
+          "h": 56,
+          "label": "Node 4",
+          "kind": "data",
+          "sub": "keys with hash mod N = 3"
+        },
+        {
+          "id": "A",
+          "x": 410,
+          "y": 272,
+          "w": 140,
+          "h": 56,
+          "label": "Node A",
+          "kind": "data",
+          "sub": "256 vnodes"
+        },
+        {
+          "id": "B",
+          "x": 550,
+          "y": 82,
+          "w": 140,
+          "h": 56,
+          "label": "Node B",
+          "kind": "data",
+          "sub": "256 vnodes"
+        },
+        {
+          "id": "C",
+          "x": 830,
+          "y": 82,
+          "w": 140,
+          "h": 56,
+          "label": "Node C",
+          "kind": "data",
+          "sub": "256 vnodes"
+        },
+        {
+          "id": "cdown",
+          "x": 830,
+          "y": 82,
+          "w": 140,
+          "h": 56,
+          "label": "Node C  ✕",
+          "kind": "ghost",
+          "sub": "unreachable"
+        },
+        {
+          "id": "D",
+          "x": 970,
+          "y": 272,
+          "w": 140,
+          "h": 56,
+          "label": "Node D",
+          "kind": "data",
+          "sub": "256 vnodes"
+        },
+        {
+          "id": "E",
+          "x": 830,
+          "y": 462,
+          "w": 140,
+          "h": 56,
+          "label": "Node E",
+          "kind": "data",
+          "sub": "256 vnodes"
+        },
+        {
+          "id": "F",
+          "x": 550,
+          "y": 462,
+          "w": 140,
+          "h": 56,
+          "label": "Node F",
+          "kind": "data",
+          "sub": "256 vnodes"
+        },
+        {
+          "id": "key",
+          "x": 260,
+          "y": 400,
+          "w": 160,
+          "h": 50,
+          "label": "cart:42",
+          "kind": "ghost",
+          "sub": "hash → ring position"
+        },
+        {
+          "id": "dc",
+          "x": 1190,
+          "y": 262,
+          "w": 200,
+          "h": 76,
+          "label": "Other Datacenters",
+          "kind": "ghost",
+          "sub": "a full replica set each"
+        }
+      ],
+      "edges": [
+        {
+          "id": "e_client_single",
+          "from": "client",
+          "to": "single",
+          "pts": [
+            [
+              220,
+              300
+            ],
+            [
+              410,
+              300
+            ]
+          ],
+          "label": "get / put"
+        },
+        {
+          "id": "e_client_n1",
+          "from": "client",
+          "to": "n1",
+          "pts": [
+            [
+              220,
+              300
+            ],
+            [
+              360,
+              300
+            ],
+            [
+              360,
+              208
+            ],
+            [
+              410,
+              208
+            ]
+          ]
+        },
+        {
+          "id": "e_client_n2",
+          "from": "client",
+          "to": "n2",
+          "pts": [
+            [
+              220,
+              300
+            ],
+            [
+              410,
+              300
+            ]
+          ],
+          "label": "hash(key) mod N",
+          "lp": [
+            285,
+            292,
+            "middle"
+          ]
+        },
+        {
+          "id": "e_client_n3",
+          "from": "client",
+          "to": "n3",
+          "pts": [
+            [
+              220,
+              300
+            ],
+            [
+              360,
+              300
+            ],
+            [
+              360,
+              392
+            ],
+            [
+              410,
+              392
+            ]
+          ]
+        },
+        {
+          "id": "e_client_n4",
+          "from": "client",
+          "to": "n4",
+          "pts": [
+            [
+              220,
+              300
+            ],
+            [
+              360,
+              300
+            ],
+            [
+              360,
+              484
+            ],
+            [
+              410,
+              484
+            ]
+          ]
+        },
+        {
+          "id": "e_A_B",
+          "from": "A",
+          "to": "B",
+          "pts": [
+            [
+              480,
+              272
+            ],
+            [
+              480,
+              110
+            ],
+            [
+              550,
+              110
+            ]
+          ]
+        },
+        {
+          "id": "e_B_C",
+          "from": "B",
+          "to": "C",
+          "pts": [
+            [
+              690,
+              110
+            ],
+            [
+              830,
+              110
+            ]
+          ]
+        },
+        {
+          "id": "e_C_D",
+          "from": "C",
+          "to": "D",
+          "pts": [
+            [
+              970,
+              110
+            ],
+            [
+              1040,
+              110
+            ],
+            [
+              1040,
+              272
+            ]
+          ]
+        },
+        {
+          "id": "e_D_E",
+          "from": "D",
+          "to": "E",
+          "pts": [
+            [
+              1040,
+              328
+            ],
+            [
+              1040,
+              490
+            ],
+            [
+              970,
+              490
+            ]
+          ]
+        },
+        {
+          "id": "e_E_F",
+          "from": "E",
+          "to": "F",
+          "pts": [
+            [
+              830,
+              490
+            ],
+            [
+              690,
+              490
+            ]
+          ]
+        },
+        {
+          "id": "e_F_A",
+          "from": "F",
+          "to": "A",
+          "pts": [
+            [
+              550,
+              490
+            ],
+            [
+              480,
+              490
+            ],
+            [
+              480,
+              328
+            ]
+          ]
+        },
+        {
+          "id": "e_client_A",
+          "from": "client",
+          "to": "A",
+          "pts": [
+            [
+              220,
+              300
+            ],
+            [
+              410,
+              300
+            ]
+          ],
+          "label": "get / put"
+        },
+        {
+          "id": "e_key_A",
+          "from": "key",
+          "to": "A",
+          "pts": [
+            [
+              420,
+              425
+            ],
+            [
+              455,
+              425
+            ],
+            [
+              455,
+              328
+            ]
+          ]
+        },
+        {
+          "id": "r_A_B",
+          "from": "A",
+          "to": "B",
+          "pts": [
+            [
+              550,
+              285
+            ],
+            [
+              600,
+              285
+            ],
+            [
+              600,
+              138
+            ]
+          ],
+          "label": "replica 2"
+        },
+        {
+          "id": "r_A_C",
+          "from": "A",
+          "to": "C",
+          "pts": [
+            [
+              550,
+              300
+            ],
+            [
+              900,
+              300
+            ],
+            [
+              900,
+              138
+            ]
+          ],
+          "label": "replica 3"
+        },
+        {
+          "id": "h_A_D",
+          "from": "A",
+          "to": "D",
+          "pts": [
+            [
+              550,
+              316
+            ],
+            [
+              970,
+              316
+            ]
+          ],
+          "label": "write + hint for C",
+          "lp": [
+            760,
+            332,
+            "middle"
+          ]
+        },
+        {
+          "id": "h_D_C",
+          "from": "D",
+          "to": "C",
+          "pts": [
+            [
+              970,
+              286
+            ],
+            [
+              940,
+              286
+            ],
+            [
+              940,
+              138
+            ]
+          ],
+          "label": "replay",
+          "async": true
+        },
+        {
+          "id": "m_B_C",
+          "from": "B",
+          "to": "C",
+          "pts": [
+            [
+              660,
+              82
+            ],
+            [
+              660,
+              60
+            ],
+            [
+              900,
+              60
+            ],
+            [
+              900,
+              82
+            ]
+          ],
+          "label": "Merkle sync",
+          "lp": [
+            780,
+            52,
+            "middle"
+          ],
+          "both": true,
+          "async": true
+        },
+        {
+          "id": "g_B_D",
+          "from": "B",
+          "to": "D",
+          "pts": [
+            [
+              620,
+              82
+            ],
+            [
+              620,
+              30
+            ],
+            [
+              1080,
+              30
+            ],
+            [
+              1080,
+              272
+            ]
+          ],
+          "label": "gossip",
+          "lp": [
+            850,
+            22,
+            "middle"
+          ],
+          "both": true,
+          "async": true
+        },
+        {
+          "id": "g_A_E",
+          "from": "A",
+          "to": "E",
+          "pts": [
+            [
+              530,
+              328
+            ],
+            [
+              530,
+              430
+            ],
+            [
+              870,
+              430
+            ],
+            [
+              870,
+              462
+            ]
+          ],
+          "label": "gossip",
+          "both": true,
+          "async": true
+        },
+        {
+          "id": "e_D_dc",
+          "from": "D",
+          "to": "dc",
+          "pts": [
+            [
+              1110,
+              300
+            ],
+            [
+              1190,
+              300
+            ]
+          ],
+          "label": "async",
+          "both": true,
+          "async": true
+        }
+      ]
+    },
+    "versions": {
+      "boxes": [
+        {
+          "id": "v1",
+          "x": 40,
+          "y": 150,
+          "w": 200,
+          "h": 60,
+          "label": "v1  [A:1]",
+          "kind": "service",
+          "sub": "cart: {book}"
+        },
+        {
+          "id": "v2",
+          "x": 340,
+          "y": 150,
+          "w": 200,
+          "h": 60,
+          "label": "v2  [A:2]",
+          "kind": "service",
+          "sub": "cart: {book, pen}"
+        },
+        {
+          "id": "v3",
+          "x": 660,
+          "y": 60,
+          "w": 220,
+          "h": 60,
+          "label": "v3  [A:2, B:1]",
+          "kind": "service",
+          "sub": "{book, pen, mug}"
+        },
+        {
+          "id": "v4",
+          "x": 660,
+          "y": 240,
+          "w": 220,
+          "h": 60,
+          "label": "v4  [A:2, C:1]",
+          "kind": "service",
+          "sub": "{book}  (pen removed)"
+        },
+        {
+          "id": "v5",
+          "x": 1000,
+          "y": 150,
+          "w": 220,
+          "h": 60,
+          "label": "v5  [A:3,B:1,C:1]",
+          "kind": "service",
+          "sub": "{book, pen, mug}"
+        }
+      ],
+      "edges": [
+        {
+          "id": "e_v1_v2",
+          "from": "v1",
+          "to": "v2",
+          "pts": [
+            [
+              240,
+              180
+            ],
+            [
+              340,
+              180
+            ]
+          ],
+          "label": "write via A"
+        },
+        {
+          "id": "e_v2_v3",
+          "from": "v2",
+          "to": "v3",
+          "pts": [
+            [
+              540,
+              170
+            ],
+            [
+              600,
+              170
+            ],
+            [
+              600,
+              90
+            ],
+            [
+              660,
+              90
+            ]
+          ],
+          "label": "via B"
+        },
+        {
+          "id": "e_v2_v4",
+          "from": "v2",
+          "to": "v4",
+          "pts": [
+            [
+              540,
+              190
+            ],
+            [
+              600,
+              190
+            ],
+            [
+              600,
+              270
+            ],
+            [
+              660,
+              270
+            ]
+          ],
+          "label": "via C"
+        },
+        {
+          "id": "e_v3_v5",
+          "from": "v3",
+          "to": "v5",
+          "pts": [
+            [
+              880,
+              90
+            ],
+            [
+              940,
+              90
+            ],
+            [
+              940,
+              170
+            ],
+            [
+              1000,
+              170
+            ]
+          ],
+          "label": "merge"
+        },
+        {
+          "id": "e_v4_v5",
+          "from": "v4",
+          "to": "v5",
+          "pts": [
+            [
+              880,
+              270
+            ],
+            [
+              940,
+              270
+            ],
+            [
+              940,
+              190
+            ],
+            [
+              1000,
+              190
+            ]
+          ]
+        }
+      ]
+    },
+    "merkle": {
+      "boxes": [
+        {
+          "id": "broot",
+          "x": 230,
+          "y": 40,
+          "w": 160,
+          "h": 54,
+          "label": "Node B root",
+          "kind": "data",
+          "sub": "hash 9f3a"
+        },
+        {
+          "id": "bm1",
+          "x": 100,
+          "y": 150,
+          "w": 140,
+          "h": 54,
+          "label": "Ranges 1–2",
+          "kind": "data",
+          "sub": "hash 51c0"
+        },
+        {
+          "id": "bm2",
+          "x": 380,
+          "y": 150,
+          "w": 140,
+          "h": 54,
+          "label": "Ranges 3–4",
+          "kind": "data",
+          "sub": "hash d27e"
+        },
+        {
+          "id": "bl1",
+          "x": 40,
+          "y": 260,
+          "w": 120,
+          "h": 54,
+          "label": "Range 1",
+          "kind": "data",
+          "sub": "hash 4c1e"
+        },
+        {
+          "id": "bl2",
+          "x": 180,
+          "y": 260,
+          "w": 120,
+          "h": 54,
+          "label": "Range 2",
+          "kind": "data",
+          "sub": "hash 88a2"
+        },
+        {
+          "id": "bl3",
+          "x": 320,
+          "y": 260,
+          "w": 120,
+          "h": 54,
+          "label": "Range 3",
+          "kind": "data",
+          "sub": "hash 1b07"
+        },
+        {
+          "id": "bl4",
+          "x": 460,
+          "y": 260,
+          "w": 120,
+          "h": 54,
+          "label": "Range 4",
+          "kind": "data",
+          "sub": "hash e6f9"
+        },
+        {
+          "id": "croot",
+          "x": 870,
+          "y": 40,
+          "w": 160,
+          "h": 54,
+          "label": "Node C root",
+          "kind": "data",
+          "sub": "hash 07bd"
+        },
+        {
+          "id": "cm1",
+          "x": 740,
+          "y": 150,
+          "w": 140,
+          "h": 54,
+          "label": "Ranges 1–2",
+          "kind": "data",
+          "sub": "hash 51c0"
+        },
+        {
+          "id": "cm2",
+          "x": 1020,
+          "y": 150,
+          "w": 140,
+          "h": 54,
+          "label": "Ranges 3–4",
+          "kind": "data",
+          "sub": "hash a410"
+        },
+        {
+          "id": "cl1",
+          "x": 680,
+          "y": 260,
+          "w": 120,
+          "h": 54,
+          "label": "Range 1",
+          "kind": "data",
+          "sub": "hash 4c1e"
+        },
+        {
+          "id": "cl2",
+          "x": 820,
+          "y": 260,
+          "w": 120,
+          "h": 54,
+          "label": "Range 2",
+          "kind": "data",
+          "sub": "hash 88a2"
+        },
+        {
+          "id": "cl3",
+          "x": 960,
+          "y": 260,
+          "w": 120,
+          "h": 54,
+          "label": "Range 3",
+          "kind": "data",
+          "sub": "hash 1b07"
+        },
+        {
+          "id": "cl4",
+          "x": 1100,
+          "y": 260,
+          "w": 120,
+          "h": 54,
+          "label": "Range 4",
+          "kind": "data",
+          "sub": "hash 3d52"
+        }
+      ],
+      "edges": [
+        {
+          "id": "be_r_m1",
+          "from": "broot",
+          "to": "bm1",
+          "pts": [
+            [
+              310,
+              94
+            ],
+            [
+              310,
+              122
+            ],
+            [
+              170,
+              122
+            ],
+            [
+              170,
+              150
+            ]
+          ]
+        },
+        {
+          "id": "be_r_m2",
+          "from": "broot",
+          "to": "bm2",
+          "pts": [
+            [
+              310,
+              94
+            ],
+            [
+              310,
+              122
+            ],
+            [
+              450,
+              122
+            ],
+            [
+              450,
+              150
+            ]
+          ]
+        },
+        {
+          "id": "be_m1_l1",
+          "from": "bm1",
+          "to": "bl1",
+          "pts": [
+            [
+              170,
+              204
+            ],
+            [
+              170,
+              232
+            ],
+            [
+              100,
+              232
+            ],
+            [
+              100,
+              260
+            ]
+          ]
+        },
+        {
+          "id": "be_m1_l2",
+          "from": "bm1",
+          "to": "bl2",
+          "pts": [
+            [
+              170,
+              204
+            ],
+            [
+              170,
+              232
+            ],
+            [
+              240,
+              232
+            ],
+            [
+              240,
+              260
+            ]
+          ]
+        },
+        {
+          "id": "be_m2_l3",
+          "from": "bm2",
+          "to": "bl3",
+          "pts": [
+            [
+              450,
+              204
+            ],
+            [
+              450,
+              232
+            ],
+            [
+              380,
+              232
+            ],
+            [
+              380,
+              260
+            ]
+          ]
+        },
+        {
+          "id": "be_m2_l4",
+          "from": "bm2",
+          "to": "bl4",
+          "pts": [
+            [
+              450,
+              204
+            ],
+            [
+              450,
+              232
+            ],
+            [
+              520,
+              232
+            ],
+            [
+              520,
+              260
+            ]
+          ]
+        },
+        {
+          "id": "ce_r_m1",
+          "from": "croot",
+          "to": "cm1",
+          "pts": [
+            [
+              950,
+              94
+            ],
+            [
+              950,
+              122
+            ],
+            [
+              810,
+              122
+            ],
+            [
+              810,
+              150
+            ]
+          ]
+        },
+        {
+          "id": "ce_r_m2",
+          "from": "croot",
+          "to": "cm2",
+          "pts": [
+            [
+              950,
+              94
+            ],
+            [
+              950,
+              122
+            ],
+            [
+              1090,
+              122
+            ],
+            [
+              1090,
+              150
+            ]
+          ]
+        },
+        {
+          "id": "ce_m1_l1",
+          "from": "cm1",
+          "to": "cl1",
+          "pts": [
+            [
+              810,
+              204
+            ],
+            [
+              810,
+              232
+            ],
+            [
+              740,
+              232
+            ],
+            [
+              740,
+              260
+            ]
+          ]
+        },
+        {
+          "id": "ce_m1_l2",
+          "from": "cm1",
+          "to": "cl2",
+          "pts": [
+            [
+              810,
+              204
+            ],
+            [
+              810,
+              232
+            ],
+            [
+              880,
+              232
+            ],
+            [
+              880,
+              260
+            ]
+          ]
+        },
+        {
+          "id": "ce_m2_l3",
+          "from": "cm2",
+          "to": "cl3",
+          "pts": [
+            [
+              1090,
+              204
+            ],
+            [
+              1090,
+              232
+            ],
+            [
+              1020,
+              232
+            ],
+            [
+              1020,
+              260
+            ]
+          ]
+        },
+        {
+          "id": "ce_m2_l4",
+          "from": "cm2",
+          "to": "cl4",
+          "pts": [
+            [
+              1090,
+              204
+            ],
+            [
+              1090,
+              232
+            ],
+            [
+              1160,
+              232
+            ],
+            [
+              1160,
+              260
+            ]
+          ]
+        },
+        {
+          "id": "cmp_root",
+          "from": "broot",
+          "to": "croot",
+          "pts": [
+            [
+              390,
+              67
+            ],
+            [
+              870,
+              67
+            ]
+          ],
+          "label": "compare roots",
+          "both": true,
+          "async": true
+        },
+        {
+          "id": "sync_l4",
+          "from": "bl4",
+          "to": "cl4",
+          "pts": [
+            [
+              520,
+              314
+            ],
+            [
+              520,
+              350
+            ],
+            [
+              1160,
+              350
+            ],
+            [
+              1160,
+              314
+            ]
+          ],
+          "label": "stream Range 4 only",
+          "both": true,
+          "async": true
+        }
+      ]
+    },
+    "node": {
+      "boxes": [
+        {
+          "id": "req",
+          "x": 40,
+          "y": 180,
+          "w": 180,
+          "h": 60,
+          "label": "Coordinator",
+          "kind": "service",
+          "sub": "writes · reads"
+        },
+        {
+          "id": "wal",
+          "x": 330,
+          "y": 40,
+          "w": 190,
+          "h": 60,
+          "label": "Commit Log",
+          "kind": "data",
+          "sub": "append-only · fsync"
+        },
+        {
+          "id": "mem",
+          "x": 330,
+          "y": 180,
+          "w": 190,
+          "h": 60,
+          "label": "Memtable",
+          "kind": "data",
+          "sub": "sorted · in RAM"
+        },
+        {
+          "id": "bloom",
+          "x": 330,
+          "y": 320,
+          "w": 190,
+          "h": 60,
+          "label": "Bloom Filters",
+          "kind": "data",
+          "sub": "one per SSTable · RAM"
+        },
+        {
+          "id": "l0",
+          "x": 640,
+          "y": 180,
+          "w": 200,
+          "h": 60,
+          "label": "New SSTables",
+          "kind": "data",
+          "sub": "small · immutable · disk"
+        },
+        {
+          "id": "compact",
+          "x": 930,
+          "y": 250,
+          "w": 180,
+          "h": 60,
+          "label": "Compaction",
+          "kind": "service",
+          "sub": "merge · drop old versions"
+        },
+        {
+          "id": "l1",
+          "x": 640,
+          "y": 320,
+          "w": 200,
+          "h": 60,
+          "label": "Merged SSTables",
+          "kind": "data",
+          "sub": "large · sorted runs"
+        }
+      ],
+      "edges": [
+        {
+          "id": "e_req_wal",
+          "from": "req",
+          "to": "wal",
+          "pts": [
+            [
+              100,
+              180
+            ],
+            [
+              100,
+              70
+            ],
+            [
+              330,
+              70
+            ]
+          ],
+          "label": "1  append",
+          "lp": [
+            215,
+            63,
+            "middle"
+          ]
+        },
+        {
+          "id": "e_req_mem",
+          "from": "req",
+          "to": "mem",
+          "pts": [
+            [
+              220,
+              210
+            ],
+            [
+              330,
+              210
+            ]
+          ],
+          "label": "2  insert"
+        },
+        {
+          "id": "e_mem_l0",
+          "from": "mem",
+          "to": "l0",
+          "pts": [
+            [
+              520,
+              210
+            ],
+            [
+              640,
+              210
+            ]
+          ],
+          "label": "flush"
+        },
+        {
+          "id": "e_l0_compact",
+          "from": "l0",
+          "to": "compact",
+          "pts": [
+            [
+              840,
+              210
+            ],
+            [
+              1020,
+              210
+            ],
+            [
+              1020,
+              250
+            ]
+          ],
+          "label": "merge"
+        },
+        {
+          "id": "e_compact_l1",
+          "from": "compact",
+          "to": "l1",
+          "pts": [
+            [
+              1020,
+              310
+            ],
+            [
+              1020,
+              350
+            ],
+            [
+              840,
+              350
+            ]
+          ],
+          "label": "rewrite"
+        },
+        {
+          "id": "e_req_bloom",
+          "from": "req",
+          "to": "bloom",
+          "pts": [
+            [
+              100,
+              240
+            ],
+            [
+              100,
+              350
+            ],
+            [
+              330,
+              350
+            ]
+          ],
+          "label": "get: check",
+          "lp": [
+            215,
+            343,
+            "middle"
+          ]
+        },
+        {
+          "id": "e_bloom_l1",
+          "from": "bloom",
+          "to": "l1",
+          "pts": [
+            [
+              520,
+              350
+            ],
+            [
+              640,
+              350
+            ]
+          ],
+          "label": "maybe here"
+        }
+      ]
+    }
+  },
+  "slides": [
+    {
+      "scene": "main",
+      "add": [
+        "client",
+        "single",
+        "e_client_single"
+      ],
+      "title": "Start: one node",
+      "script": [
+        "Let's start with the simplest key-value store there is: our **cart service** calls **get** and **put** on a single **KV server**, which keeps a hash table on disk. A put writes the value under its key; a get looks the key up. One machine, one copy, and it's perfectly consistent, because there's only one place a value can live.",
+        "It fails every one of our requirements, though. One machine can't hold **100 terabytes** or serve **a million operations a second**, and when it dies, the carts are gone. So we need many machines, and the first question is which machine owns which key."
+      ]
+    },
+    {
+      "scene": "main",
+      "remove": [
+        "single"
+      ],
+      "add": [
+        "n1",
+        "n2",
+        "n3",
+        "e_client_n1",
+        "e_client_n2",
+        "e_client_n3"
+      ],
+      "title": "Shard by hash mod N",
+      "script": [
+        "The obvious answer is to **hash the key and take it modulo the number of nodes**: node = hash(key) mod N. A good hash spreads keys evenly, every client can compute the owner without asking anyone, and there's no directory to keep up to date.",
+        "With three nodes, each one gets a third of the keys and a third of the traffic. It looks great until the cluster has to change size."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "n4",
+        "e_client_n4"
+      ],
+      "title": "Adding a fourth node",
+      "script": [
+        "Our data grows, so we add a **fourth node**. Now the formula is hash mod 4 instead of hash mod 3, and for most keys the answer changes.",
+        "A key stays put only when its hash mod 3 happens to equal its hash mod 4, which is about **one key in four**. The other three quarters have to move, all at once, while we're serving traffic."
+      ]
+    },
+    {
+      "title": "How many keys move?",
+      "script": [
+        "Here are six keys. Going from 3 to 4 nodes, only two keep their owner; the rest move. At 300 terabytes that's over **200 terabytes** of data shuffling across the network just to add one machine, and the same thing happens when a node dies and N shrinks.",
+        "We need a mapping where adding or removing one node moves only **that node's share**, about 1/N of the keys, and nothing else."
+      ],
+      "table": {
+        "columns": [
+          "Key",
+          "hash",
+          "hash mod 3",
+          "hash mod 4",
+          "Moves?"
+        ],
+        "rows": [
+          [
+            "cart:13",
+            "13",
+            "node 1",
+            "node 1",
+            "stays"
+          ],
+          [
+            "cart:17",
+            "17",
+            "node 2",
+            "node 1",
+            "**moves**"
+          ],
+          [
+            "cart:22",
+            "22",
+            "node 1",
+            "node 2",
+            "**moves**"
+          ],
+          [
+            "cart:24",
+            "24",
+            "node 0",
+            "node 0",
+            "stays"
+          ],
+          [
+            "cart:30",
+            "30",
+            "node 0",
+            "node 2",
+            "**moves**"
+          ],
+          [
+            "cart:41",
+            "41",
+            "node 2",
+            "node 1",
+            "**moves**"
+          ]
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "remove": [
+        "n1",
+        "n2",
+        "n3",
+        "n4"
+      ],
+      "add": [
+        "A",
+        "e_client_A",
+        "B",
+        "e_A_B",
+        "C",
+        "e_B_C",
+        "D",
+        "e_C_D",
+        "E",
+        "e_D_E",
+        "F",
+        "e_E_F",
+        "e_F_A"
+      ],
+      "title": "Consistent hashing: the ring",
+      "script": [
+        "That mapping is **consistent hashing**. Picture the output of the hash function, say 0 to 2^128, bent into a **ring**. Each node hashes its own id to get a **token**, a position on the ring, and it owns the arc of the ring that ends at its token.",
+        "The arrows show the clockwise direction. Six nodes, six arcs, and every node can compute the whole picture from the list of tokens, so there's still no directory to ask."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "key",
+        "e_key_A"
+      ],
+      "title": "Finding a key's home",
+      "script": [
+        "To find a key, hash it onto the same ring and **walk clockwise** to the first token. Our key **cart:42** lands in the arc between F and A, so **Node A** owns it.",
+        "Now add a node, say G between F and A. G takes over only the part of A's arc that lies before G's token; every other key stays exactly where it was. Adding or removing one node moves **about 1/N** of the data, and only between ring neighbors, which is exactly the property we wanted."
+      ]
+    },
+    {
+      "title": "One token per node isn't enough",
+      "script": [
+        "But one token per node has real problems. Random tokens give **uneven arcs**, so one node can own two or three times its fair share, and a hot arc becomes a hot node.",
+        "Failure is worse: when a node dies, its whole arc falls onto **one neighbor**, which doubles that neighbor's load at the worst possible moment. And it can't express that a new machine has twice the disk of an old one."
+      ],
+      "bullets": {
+        "items": [
+          {
+            "text": "**Uneven arcs**",
+            "detail": "random tokens give some nodes 2–3× their fair share of keys"
+          },
+          {
+            "text": "**One neighbor absorbs a failure**",
+            "detail": "a dead node's whole arc lands on its clockwise successor"
+          },
+          {
+            "text": "**Slow, lopsided rebuilds**",
+            "detail": "a new node streams all its data from one or two neighbors"
+          },
+          {
+            "text": "**No room for mixed hardware**",
+            "detail": "a node with 2× the disk still gets one arc"
+          }
+        ]
+      }
+    },
+    {
+      "title": "Virtual nodes",
+      "script": [
+        "The fix is **virtual nodes**: each physical node takes **many tokens**, say 256, scattered around the ring. With about a hundred nodes that's roughly 25,000 small arcs, and the law of large numbers evens out everyone's share to within a few percent.",
+        "When a node fails, its 256 small arcs are picked up by many different neighbors, so the load spreads across the cluster. A bigger machine simply gets more tokens. In our diagram each box is a physical node holding 256 vnodes."
+      ],
+      "table": {
+        "columns": [
+          "",
+          "1 token per node",
+          "256 vnodes per node"
+        ],
+        "rows": [
+          [
+            "Share of keys",
+            "uneven, up to 2–3×",
+            "within a few % of fair"
+          ],
+          [
+            "A node fails",
+            "1 neighbor takes it all",
+            "spread over the cluster"
+          ],
+          [
+            "A node joins",
+            "streams from 1–2 nodes",
+            "streams from many, in parallel"
+          ],
+          [
+            "Mixed hardware",
+            "not expressible",
+            "more tokens for bigger nodes"
+          ]
+        ],
+        "highlight": 0
+      }
+    },
+    {
+      "scene": "main",
+      "add": [
+        "r_A_B",
+        "r_A_C"
+      ],
+      "title": "Replicate to the next nodes",
+      "script": [
+        "One copy isn't durable, so every key is stored on **N = 3** nodes. Keep walking clockwise past the owner: cart:42 lives on **A, B and C**. That ordered list is the key's **preference list**, and A, the first healthy node in it, acts as the **coordinator** for the request.",
+        "The coordinator writes locally and sends the write to the other two replicas, which is what the new arrows show."
+      ]
+    },
+    {
+      "title": "The preference list",
+      "script": [
+        "A few rules make the preference list useful. With vnodes, the next tokens clockwise may belong to the **same physical machine**, so we skip ahead until we have N **distinct** nodes, and ideally three different racks or availability zones.",
+        "The list is also **longer than N**; the extra nodes are stand-ins for when one of the first three is down, as we'll see shortly. And since every node knows the ring, any node can compute any key's list locally."
+      ],
+      "bullets": {
+        "items": [
+          {
+            "text": "**Walk clockwise from hash(key)**",
+            "detail": "the first N distinct nodes hold the replicas; the first healthy one coordinates"
+          },
+          {
+            "text": "**Skip duplicate machines**",
+            "detail": "several vnodes in a row may belong to one physical node"
+          },
+          {
+            "text": "**Spread across zones**",
+            "detail": "3 replicas in 3 availability zones survive losing a whole zone"
+          },
+          {
+            "text": "**Longer than N**",
+            "detail": "the extra nodes stand in when a replica is down"
+          },
+          {
+            "text": "**Computed locally**",
+            "detail": "every node knows the ring, so there is no lookup service"
+          }
+        ]
+      }
+    },
+    {
+      "title": "Who coordinates a request?",
+      "script": [
+        "How does the request reach Node A? One option is a plain **load balancer** that sends it to any node, which forwards it to the coordinator. That keeps clients simple but costs an **extra hop** and some latency.",
+        "The other is a **partition-aware client library** that downloads the ring and talks straight to the coordinator. That's one hop, which matters at p99.9, so our cart service uses the library; external or simpler clients go through the load balancer."
+      ],
+      "table": {
+        "columns": [
+          "Routing",
+          "Hops",
+          "Client",
+          "Trade-off"
+        ],
+        "rows": [
+          [
+            "Load balancer → any node",
+            "2",
+            "any HTTP client",
+            "simple, but an extra hop"
+          ],
+          [
+            "**Partition-aware library**",
+            "1",
+            "knows the ring",
+            "fastest; client must track membership"
+          ]
+        ],
+        "highlight": 1
+      }
+    },
+    {
+      "title": "Quorum writes: W = 2",
+      "script": [
+        "The coordinator doesn't wait for all three replicas. We pick a **write quorum W**: the put succeeds as soon as **W = 2** replicas, counting the coordinator itself, have it on disk.",
+        "Here A writes locally and B acknowledges, so the client gets its OK; C's acknowledgment arrives later and nobody waits for it. Waiting for the **fastest two of three** is what keeps tail latency down: one slow or garbage-collecting replica doesn't slow the request."
+      ],
+      "sequence": {
+        "actors": [
+          {
+            "id": "cl",
+            "label": "Cart Service",
+            "kind": "client"
+          },
+          {
+            "id": "a",
+            "label": "Node A",
+            "kind": "data",
+            "sub": "coordinator"
+          },
+          {
+            "id": "b",
+            "label": "Node B",
+            "kind": "data"
+          },
+          {
+            "id": "c",
+            "label": "Node C",
+            "kind": "data"
+          }
+        ],
+        "steps": [
+          {
+            "from": "cl",
+            "to": "a",
+            "label": "put(cart:42, {book, pen})"
+          },
+          {
+            "from": "a",
+            "to": "a",
+            "label": "write locally (1 of 2)"
+          },
+          {
+            "from": "a",
+            "to": "b",
+            "label": "replicate"
+          },
+          {
+            "from": "a",
+            "to": "c",
+            "label": "replicate"
+          },
+          {
+            "from": "b",
+            "to": "a",
+            "label": "ack (2 of 2)",
+            "reply": true
+          },
+          {
+            "from": "a",
+            "to": "cl",
+            "label": "OK",
+            "reply": true
+          },
+          {
+            "from": "c",
+            "to": "a",
+            "label": "ack (late, ignored)",
+            "reply": true
+          },
+          {
+            "note": "W = 2: done after the fastest two",
+            "over": [
+              "a",
+              "c"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "title": "Quorum reads: R = 2",
+      "script": [
+        "Reads mirror writes. The coordinator asks the replicas and answers once **R = 2** have replied. If they disagree, it returns the **newest** version, or all the versions if it can't tell which is newer.",
+        "Why 2? With **R + W > N**, any two replicas we read overlap any two we wrote in at least one node, so a read always sees the latest acknowledged write, as long as the same three nodes are involved. Hold on to that caveat."
+      ],
+      "sequence": {
+        "actors": [
+          {
+            "id": "cl",
+            "label": "Cart Service",
+            "kind": "client"
+          },
+          {
+            "id": "a",
+            "label": "Node A",
+            "kind": "data",
+            "sub": "coordinator"
+          },
+          {
+            "id": "b",
+            "label": "Node B",
+            "kind": "data"
+          },
+          {
+            "id": "c",
+            "label": "Node C",
+            "kind": "data"
+          }
+        ],
+        "steps": [
+          {
+            "from": "cl",
+            "to": "a",
+            "label": "get(cart:42)"
+          },
+          {
+            "from": "a",
+            "to": "a",
+            "label": "read locally: v2"
+          },
+          {
+            "from": "a",
+            "to": "b",
+            "label": "read"
+          },
+          {
+            "from": "a",
+            "to": "c",
+            "label": "read"
+          },
+          {
+            "from": "c",
+            "to": "a",
+            "label": "v2",
+            "reply": true
+          },
+          {
+            "from": "a",
+            "to": "cl",
+            "label": "{book, pen}  (v2)",
+            "reply": true
+          },
+          {
+            "from": "b",
+            "to": "a",
+            "label": "v1 (late)",
+            "reply": true
+          },
+          {
+            "note": "R + W > N: every read quorum overlaps every write quorum",
+            "over": [
+              "a",
+              "c"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "title": "Tuning N, R and W",
+      "script": [
+        "N, R and W are **knobs**, set per table or even per request. **2, 2 of 3** is the balanced default: reads see the latest write, and we tolerate one slow or failed replica on both paths.",
+        "A read-heavy catalog might use **R = 1, W = 3** for the fastest reads; a write-heavy log might use **W = 1**. And **R = 1, W = 1** gives the lowest latency and highest availability at the price of reading stale data. This tunability is the heart of the Dynamo design."
+      ],
+      "table": {
+        "columns": [
+          "N, R, W",
+          "Reads",
+          "Writes",
+          "Good for"
+        ],
+        "rows": [
+          [
+            "**3, 2, 2**",
+            "see latest write",
+            "survive 1 replica down",
+            "the default; carts"
+          ],
+          [
+            "3, 1, 3",
+            "fastest",
+            "need all 3 up",
+            "read-heavy, rarely written data"
+          ],
+          [
+            "3, 3, 1",
+            "need all 3 up",
+            "fastest",
+            "write-heavy logs"
+          ],
+          [
+            "3, 1, 1",
+            "may be stale",
+            "fastest",
+            "max availability; caches, sessions"
+          ]
+        ],
+        "highlight": 0
+      }
+    },
+    {
+      "scene": "main",
+      "remove": [
+        "C"
+      ],
+      "add": [
+        "cdown",
+        "h_A_D"
+      ],
+      "title": "Sloppy quorum and hinted handoff",
+      "script": [
+        "Now **Node C becomes unreachable**: it crashed, or a switch dropped it. A strict quorum would still work here with A and B, but if B failed too, strict quorums would start **rejecting carts**, and our first requirement is that writes are always accepted.",
+        "So we use a **sloppy quorum**: the write goes to the first N **healthy** nodes in the preference list. **Node D** takes C's copy, stored with a **hint** that says it really belongs to C."
+      ]
+    },
+    {
+      "title": "Hinted handoff",
+      "script": [
+        "Here's the flow. The coordinator's write to C times out, so it sends the same write to D, the next node in the preference list, marked **\"for C\"**. D keeps it in a separate **hints** store and counts toward W, so the client still gets its OK.",
+        "D also watches the membership state. When C comes back, D **replays** the hint to C and deletes its copy. The write was never refused, and it ends up where it belongs."
+      ],
+      "sequence": {
+        "actors": [
+          {
+            "id": "cl",
+            "label": "Cart Service",
+            "kind": "client"
+          },
+          {
+            "id": "a",
+            "label": "Node A",
+            "kind": "data",
+            "sub": "coordinator"
+          },
+          {
+            "id": "c",
+            "label": "Node C",
+            "kind": "ghost",
+            "sub": "down"
+          },
+          {
+            "id": "d",
+            "label": "Node D",
+            "kind": "data",
+            "sub": "stand-in"
+          }
+        ],
+        "steps": [
+          {
+            "from": "cl",
+            "to": "a",
+            "label": "put(cart:42)"
+          },
+          {
+            "from": "a",
+            "to": "c",
+            "label": "replicate"
+          },
+          {
+            "note": "timeout: C is unreachable",
+            "over": [
+              "a",
+              "c"
+            ]
+          },
+          {
+            "from": "a",
+            "to": "d",
+            "label": "replicate, hint = C"
+          },
+          {
+            "from": "d",
+            "to": "d",
+            "label": "store in hints table"
+          },
+          {
+            "from": "d",
+            "to": "a",
+            "label": "ack",
+            "reply": true
+          },
+          {
+            "from": "a",
+            "to": "cl",
+            "label": "OK (W = 2: A + D)",
+            "reply": true
+          },
+          {
+            "note": "later: C is back",
+            "over": [
+              "c",
+              "d"
+            ]
+          },
+          {
+            "from": "d",
+            "to": "c",
+            "label": "replay hinted write"
+          },
+          {
+            "from": "c",
+            "to": "d",
+            "label": "ack",
+            "reply": true
+          },
+          {
+            "from": "d",
+            "to": "d",
+            "label": "delete hint"
+          }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "remove": [
+        "cdown"
+      ],
+      "add": [
+        "C",
+        "h_D_C"
+      ],
+      "title": "The replica comes back",
+      "script": [
+        "C is back on the ring, and the dashed arrow is D **handing off** the hinted writes it held. C's own arrows return with it.",
+        "Hinted handoff covers **short outages**, minutes to hours. Hints are capped, and if D itself dies before replaying them, they're lost. So it's a fast path back to consistency, not a guarantee; we'll need something stronger for that."
+      ]
+    },
+    {
+      "title": "The price of always writable",
+      "script": [
+        "Let's be honest about what we've given up. With a sloppy quorum, the nodes we write to may not be the nodes we later read from, so **R + W > N no longer guarantees** that a read sees the latest write.",
+        "Worse, during a network partition **two clients can update the same cart** on different sides, and both writes succeed. Replicas will **diverge**. Rather than prevent that, which would mean refusing writes, we'll let it happen and make sure we can **detect and resolve** it afterwards."
+      ],
+      "bullets": {
+        "items": [
+          {
+            "text": "**Reads can be stale**",
+            "detail": "the write went to stand-ins; the read may hit the old replicas"
+          },
+          {
+            "text": "**Concurrent writes both succeed**",
+            "detail": "two sides of a partition each accept an update to cart:42"
+          },
+          {
+            "text": "**Replicas diverge**",
+            "detail": "so every value needs a version that says what it has seen"
+          },
+          {
+            "text": "**Resolve later, not prevent**",
+            "detail": "preventing it means refusing writes, which we said we would not do"
+          }
+        ]
+      }
+    },
+    {
+      "scene": "versions",
+      "add": [
+        "v1",
+        "v2",
+        "e_v1_v2"
+      ],
+      "title": "Versioning with vector clocks",
+      "script": [
+        "Timestamps can't tell us whether two writes were **concurrent**, and server clocks drift anyway. So every value carries a **vector clock**: a small list of (node, counter) pairs, one per coordinator that has updated it.",
+        "The user adds a book through coordinator A: **v1 [A:1]**. Then a pen, also through A: **v2 [A:2]**. v2's clock is greater than or equal to v1's in every entry, so v2 **descends from** v1, and v1 can be thrown away safely."
+      ]
+    },
+    {
+      "scene": "versions",
+      "add": [
+        "v3",
+        "e_v2_v3",
+        "v4",
+        "e_v2_v4"
+      ],
+      "title": "Concurrent versions",
+      "script": [
+        "Now a partition. On one side, the user adds a mug through coordinator B: **v3 [A:2, B:1]**. On the other side, the pen is removed through coordinator C: **v4 [A:2, C:1]**. Both writes succeed.",
+        "Compare the clocks: v3 has a B entry that v4 lacks, and v4 has a C entry that v3 lacks. Neither descends from the other, so they're **concurrent siblings**, and the store **keeps both**. It never silently throws away a write it acknowledged."
+      ]
+    },
+    {
+      "scene": "versions",
+      "add": [
+        "v5",
+        "e_v3_v5",
+        "e_v4_v5"
+      ],
+      "title": "Reconciling siblings",
+      "script": [
+        "On the next read, the coordinator returns **both siblings** along with their clocks. The cart service knows what a cart means, so it **merges** them, here by taking the union, and writes back **v5 [A:3, B:1, C:1]**, which descends from both and replaces them.",
+        "Notice the catch: the union brings back the **pen the user removed**. Merging adds is easy and safe; merging deletes needs more care. Amazon chose this deliberately: a deleted item reappearing is a much smaller problem than a lost **add to cart**."
+      ]
+    },
+    {
+      "title": "Resolving conflicts",
+      "script": [
+        "There are three common ways to resolve siblings. **Last-write-wins** keeps the version with the highest timestamp; it's simple, and Cassandra uses it, but concurrent writes are **silently lost**.",
+        "**Vector clocks with application merge**, our choice for carts, never loses a write but pushes the merge into the client. **CRDTs**, data types like counters and sets with a built-in merge, give automatic merges that handle deletes correctly, at the cost of supporting only those types. We make the strategy a per-table setting."
+      ],
+      "table": {
+        "columns": [
+          "Strategy",
+          "Lost writes?",
+          "Who merges",
+          "Used for"
+        ],
+        "rows": [
+          [
+            "Last-write-wins",
+            "yes, silently",
+            "nobody",
+            "caches, idempotent overwrites"
+          ],
+          [
+            "**Vector clocks + app merge**",
+            "never",
+            "the application",
+            "carts, user data"
+          ],
+          [
+            "CRDTs",
+            "never",
+            "the data type",
+            "counters, sets, flags"
+          ]
+        ],
+        "highlight": 1
+      }
+    },
+    {
+      "title": "Read repair",
+      "script": [
+        "Reads also **heal** replicas. The coordinator compares the versions it gets back; if one replica returns an older version, the coordinator writes the newest one back to it in the background.",
+        "With **R = 2** it can still answer after two replies, and then repair any laggards whose replies arrive later. Frequently read keys stay consistent through read repair alone. Rarely read keys need another mechanism."
+      ],
+      "sequence": {
+        "actors": [
+          {
+            "id": "cl",
+            "label": "Cart Service",
+            "kind": "client"
+          },
+          {
+            "id": "a",
+            "label": "Node A",
+            "kind": "data",
+            "sub": "coordinator"
+          },
+          {
+            "id": "b",
+            "label": "Node B",
+            "kind": "data"
+          },
+          {
+            "id": "c",
+            "label": "Node C",
+            "kind": "data",
+            "sub": "missed a write"
+          }
+        ],
+        "steps": [
+          {
+            "from": "cl",
+            "to": "a",
+            "label": "get(cart:42)"
+          },
+          {
+            "from": "a",
+            "to": "b",
+            "label": "read"
+          },
+          {
+            "from": "a",
+            "to": "c",
+            "label": "read"
+          },
+          {
+            "from": "b",
+            "to": "a",
+            "label": "v5",
+            "reply": true
+          },
+          {
+            "from": "a",
+            "to": "cl",
+            "label": "v5",
+            "reply": true
+          },
+          {
+            "from": "c",
+            "to": "a",
+            "label": "v2 (stale)",
+            "reply": true
+          },
+          {
+            "from": "a",
+            "to": "a",
+            "label": "v5 descends from v2"
+          },
+          {
+            "from": "a",
+            "to": "c",
+            "label": "write v5 (repair)"
+          }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "add": [
+        "m_B_C"
+      ],
+      "title": "Background anti-entropy",
+      "script": [
+        "Hints get lost and some keys are never read, so replicas still drift. The backstop is **anti-entropy**: every node periodically compares its data with the other replicas of each range it holds, and copies over whatever's missing.",
+        "The naive version would send every key and version across the network. B and C share billions of keys, almost all identical, so we need a way to find the **few that differ** while sending almost nothing."
+      ]
+    },
+    {
+      "scene": "merkle",
+      "add": [
+        "broot",
+        "bm1",
+        "bm2",
+        "bl1",
+        "bl2",
+        "bl3",
+        "bl4",
+        "be_r_m1",
+        "be_r_m2",
+        "be_m1_l1",
+        "be_m1_l2",
+        "be_m2_l3",
+        "be_m2_l4"
+      ],
+      "title": "Merkle trees",
+      "script": [
+        "That's a **Merkle tree**. Each node builds one per key range it holds. Each **leaf** is a hash of all the keys and versions in a small slice of the range, each parent is the hash of its children, and the **root** summarizes the whole range in a few bytes.",
+        "Change any one key and its leaf hash changes, which changes every hash on the path up to the root. We draw four leaves; in practice there are thousands, so each leaf covers a few thousand keys."
+      ]
+    },
+    {
+      "scene": "merkle",
+      "add": [
+        "croot",
+        "cm1",
+        "cm2",
+        "cl1",
+        "cl2",
+        "cl3",
+        "cl4",
+        "ce_r_m1",
+        "ce_r_m2",
+        "ce_m1_l1",
+        "ce_m1_l2",
+        "ce_m2_l3",
+        "ce_m2_l4",
+        "cmp_root"
+      ],
+      "title": "Comparing two replicas",
+      "script": [
+        "Node C builds the same tree over the same range. To compare, B and C exchange **just their roots**. If the roots match, which is the common case, the whole range is identical and they're done after sending a few bytes.",
+        "Here the roots differ, 9f3a against 07bd, so something inside is out of sync."
+      ]
+    },
+    {
+      "scene": "merkle",
+      "focus": [
+        "broot",
+        "bm2",
+        "bl4",
+        "croot",
+        "cm2",
+        "cl4",
+        "be_r_m2",
+        "be_m2_l4",
+        "ce_r_m2",
+        "ce_m2_l4",
+        "cmp_root"
+      ],
+      "add": [
+        "sync_l4"
+      ],
+      "title": "Descending to the difference",
+      "script": [
+        "So they compare the **children**. Ranges 1–2 match, so that half is skipped entirely. Ranges 3–4 differ, so they go down again and find that only **Range 4** differs.",
+        "Now they stream just the keys in Range 4 and exchange whatever versions the other side is missing. The work is proportional to **how much differs**, not how much data there is, so anti-entropy can run continuously in the background. Trees are rebuilt when vnode ownership changes, which is one more reason to keep membership changes deliberate."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "g_B_D",
+        "g_A_E"
+      ],
+      "title": "Membership by gossip",
+      "script": [
+        "Everything so far assumes every node knows the ring: who's in it, their tokens, and who's up. With no master, that knowledge spreads by **gossip**. Every second, each node picks a random peer and exchanges its view of the membership, keeping whichever entry is newer.",
+        "News spreads like a rumor: after one round two nodes know, then four, then eight, so a change reaches all hundred nodes in about **seven rounds**, a few seconds. No node is special and none is a single point of failure."
+      ]
+    },
+    {
+      "title": "A gossip round",
+      "script": [
+        "A round is cheap. B sends a **digest**: each node it knows about with a version number. D replies with the entries where its information is **newer**, and asks for the ones where B's is newer.",
+        "Here B learns that a new node G joined, and D learns that C's heartbeat has advanced. Each node also gossips its own **heartbeat counter**, which is how the cluster notices when a node goes quiet."
+      ],
+      "sequence": {
+        "actors": [
+          {
+            "id": "b",
+            "label": "Node B",
+            "kind": "data"
+          },
+          {
+            "id": "d",
+            "label": "Node D",
+            "kind": "data"
+          }
+        ],
+        "steps": [
+          {
+            "from": "b",
+            "to": "b",
+            "label": "every 1 s: pick a random peer"
+          },
+          {
+            "from": "b",
+            "to": "d",
+            "label": "digest: A:812, C:977, D:640, …"
+          },
+          {
+            "from": "d",
+            "to": "b",
+            "label": "newer: G joined (tokens…); send me C",
+            "reply": true
+          },
+          {
+            "from": "b",
+            "to": "d",
+            "label": "C: heartbeat 977"
+          },
+          {
+            "note": "both views now merged; ~log₂ N rounds to reach everyone",
+            "over": [
+              "b",
+              "d"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "title": "Detecting failures",
+      "script": [
+        "Each node decides **for itself** whether a peer is down. Rather than a fixed timeout, it uses a **phi accrual** detector: it learns how often a peer's heartbeats normally arrive, and its suspicion grows the longer one is overdue. Past a threshold, the peer is treated as down and the stand-ins take over.",
+        "Crucially, that's only a **local, temporary** judgement. A node is never removed from the ring because it went quiet; that would trigger huge data moves for a reboot. Permanent joins and departures are **explicit** operator actions, also spread by gossip."
+      ],
+      "timeline": {
+        "axis": {
+          "from": 0,
+          "to": 30,
+          "ticks": [
+            0,
+            10,
+            20,
+            30
+          ],
+          "unit": "s"
+        },
+        "lanes": [
+          {
+            "id": "hb",
+            "label": "C's heartbeats",
+            "sub": "as seen by A"
+          },
+          {
+            "id": "phi",
+            "label": "Suspicion (φ)",
+            "sub": "threshold 8",
+            "max": 12
+          },
+          {
+            "id": "state",
+            "label": "A's view of C"
+          }
+        ],
+        "marks": [
+          {
+            "lane": "hb",
+            "at": 1,
+            "result": "allow"
+          },
+          {
+            "lane": "hb",
+            "at": 2,
+            "result": "allow"
+          },
+          {
+            "lane": "hb",
+            "at": 3,
+            "result": "allow"
+          },
+          {
+            "lane": "hb",
+            "at": 4,
+            "result": "allow"
+          },
+          {
+            "lane": "hb",
+            "at": 5,
+            "result": "allow"
+          },
+          {
+            "lane": "phi",
+            "level": [
+              [
+                0,
+                0
+              ],
+              [
+                5,
+                0.5
+              ],
+              [
+                7,
+                2
+              ],
+              [
+                9,
+                5
+              ],
+              [
+                11,
+                8
+              ],
+              [
+                13,
+                10.5
+              ],
+              [
+                17,
+                11.5
+              ],
+              [
+                21,
+                11.5
+              ],
+              [
+                21,
+                0
+              ],
+              [
+                30,
+                0.5
+              ]
+            ],
+            "label": "φ",
+            "limit": 8
+          },
+          {
+            "lane": "state",
+            "span": [
+              0,
+              11
+            ],
+            "label": "up"
+          },
+          {
+            "lane": "state",
+            "span": [
+              11,
+              21
+            ],
+            "label": "down: use D"
+          },
+          {
+            "lane": "hb",
+            "at": 21,
+            "result": "allow",
+            "label": "back"
+          },
+          {
+            "lane": "hb",
+            "at": 22,
+            "result": "allow"
+          },
+          {
+            "lane": "hb",
+            "at": 23,
+            "result": "allow"
+          },
+          {
+            "lane": "state",
+            "span": [
+              21,
+              30
+            ],
+            "label": "up: replay hints"
+          },
+          {
+            "note": "C still owns its tokens throughout",
+            "at": [
+              11,
+              21
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "scene": "node",
+      "add": [
+        "req",
+        "wal",
+        "e_req_wal",
+        "mem",
+        "e_req_mem"
+      ],
+      "title": "Inside a storage node",
+      "script": [
+        "Let's zoom into one node and see how it stores data. Every replica write is first **appended to a commit log** on disk and fsynced; appends are sequential, so they're fast, and the log makes the write durable before we acknowledge it.",
+        "Then the write goes into the **memtable**, a sorted structure in memory. That's the whole write path: one sequential disk write and one memory insert, with **no random disk I/O**, which suits our write-heavy workload."
+      ]
+    },
+    {
+      "scene": "node",
+      "add": [
+        "l0",
+        "e_mem_l0"
+      ],
+      "title": "Flushing to SSTables",
+      "script": [
+        "When the memtable reaches a few hundred megabytes, it's written out as an **SSTable**: a sorted, **immutable** file, again sequentially. Then the matching part of the commit log can be thrown away.",
+        "Files are never updated in place. A new version of a key just lands in a newer SSTable, and so does a delete, as a tombstone, which we'll get to."
+      ]
+    },
+    {
+      "scene": "node",
+      "add": [
+        "compact",
+        "e_l0_compact",
+        "l1",
+        "e_compact_l1"
+      ],
+      "title": "Compaction",
+      "script": [
+        "SSTables pile up, and a key's versions end up scattered across many of them. **Compaction** runs in the background, merging several SSTables into one larger sorted file and keeping only the versions that matter.",
+        "This structure is a **log-structured merge tree**, the engine behind Cassandra, RocksDB and others. The cost is **write amplification**, since each byte is rewritten a few times as it's merged, and compaction competes for disk with live traffic, so we **throttle** it to protect the p99.9."
+      ]
+    },
+    {
+      "scene": "node",
+      "add": [
+        "bloom",
+        "e_req_bloom",
+        "e_bloom_l1"
+      ],
+      "title": "The read path and bloom filters",
+      "script": [
+        "A read checks the **memtable** first, then the SSTables from newest to oldest. Opening every file would be slow, so each SSTable has a **bloom filter** in memory: a compact bit array that answers \"definitely not here\" or \"maybe here\".",
+        "At about **10 bits per key**, it's wrong only about 1% of the time, so a read usually touches **one SSTable on disk**. Add a sparse index and a block cache, and most gets are served in about a millisecond."
+      ]
+    },
+    {
+      "title": "Deletes are writes: tombstones",
+      "script": [
+        "Deleting a key can't just remove it. If replica C missed the delete, anti-entropy would see C has the value and B doesn't, and helpfully **copy it back**. So a delete writes a **tombstone**: a marker with its own version that says this key is gone.",
+        "Tombstones flow through replication, hints and repair like any write. Compaction drops them only after a **grace period**, say 10 days, longer than any replica can be out of sync without being rebuilt."
+      ],
+      "bullets": {
+        "items": [
+          {
+            "text": "**A delete is a write**",
+            "detail": "a tombstone with its own version, replicated like any value"
+          },
+          {
+            "text": "**Why not just remove it?**",
+            "detail": "a replica that missed the delete would resurrect the key via repair"
+          },
+          {
+            "text": "**Tombstones win by version**",
+            "detail": "reads and merges treat the key as gone if the tombstone is newest"
+          },
+          {
+            "text": "**Garbage-collected after a grace period**",
+            "detail": "e.g. 10 days, longer than any replica may stay out of sync"
+          }
+        ]
+      }
+    },
+    {
+      "title": "Taming the p99.9",
+      "script": [
+        "Our latency target is at the **99.9th percentile**, because a page that calls the store dozens of times hits the tail often. Waiting for the **fastest W or R of N** is the biggest lever.",
+        "We add more: if a replica is slow, send a **speculative** read to another one; let the client library pick the **least-loaded** coordinator from the preference list; and throttle compaction, repair and handoff so background work never starves live requests."
+      ],
+      "bullets": {
+        "items": [
+          {
+            "text": "**Wait for the fastest W / R of N**",
+            "detail": "one slow replica never slows the request"
+          },
+          {
+            "text": "**Speculative retries**",
+            "detail": "a read slower than p99 goes to another replica too; first answer wins"
+          },
+          {
+            "text": "**One hop, least-loaded coordinator**",
+            "detail": "the client library picks among the top of the preference list"
+          },
+          {
+            "text": "**Throttle background work**",
+            "detail": "compaction, anti-entropy and hint replay yield to live traffic"
+          },
+          {
+            "text": "**Memory-first reads**",
+            "detail": "memtable, bloom filters, index and block cache all in RAM"
+          }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "add": [
+        "dc",
+        "e_D_dc"
+      ],
+      "title": "Multiple datacenters",
+      "script": [
+        "Finally, one region can fail as a whole. We run the same ring in **several datacenters**, and the preference list includes replicas in each, say 3 per datacenter. Writes are coordinated and acknowledged locally, then replicated to the other datacenters **asynchronously**.",
+        "Everything we've built still applies: hints, read repair and anti-entropy work across datacenters, and vector clocks catch the case where users in two regions update the same cart at once."
+      ]
+    },
+    {
+      "title": "Consistency across datacenters",
+      "script": [
+        "The quorum knobs extend naturally. **Local quorum** waits for 2 of the 3 replicas in this datacenter, so latency stays in the low milliseconds and a remote outage never blocks a write; other regions catch up within about a second.",
+        "When a caller really needs it, **each quorum** waits for a majority in every datacenter, at the cost of a cross-region round trip, around 100 ms, and of availability during a partition. Carts use local quorum."
+      ],
+      "table": {
+        "columns": [
+          "Level",
+          "Waits for",
+          "Latency",
+          "Survives"
+        ],
+        "rows": [
+          [
+            "One",
+            "any 1 replica",
+            "lowest",
+            "almost anything; may read stale"
+          ],
+          [
+            "**Local quorum**",
+            "2 of 3 in this DC",
+            "a few ms",
+            "a remote DC outage"
+          ],
+          [
+            "Each quorum",
+            "2 of 3 in every DC",
+            "~100 ms",
+            "nothing cross-region"
+          ],
+          [
+            "All",
+            "every replica",
+            "slowest",
+            "no failures at all"
+          ]
+        ],
+        "highlight": 1
+      }
+    },
+    {
+      "scene": "main",
+      "title": "The complete key-value store",
+      "script": [
+        "Let's step back. Keys sit on a **consistent-hashing ring** with virtual nodes, each stored on **N = 3** nodes, and the coordinator waits only for the fastest **W** or **R**. **Sloppy quorums**, **hinted handoff** and **vector clocks** keep writes flowing through failures; **read repair**, **Merkle trees** and **gossip** heal the cluster with no master; and each node stores data in an **LSM tree**.",
+        "The theme throughout: we chose **availability over consistency**, and made consistency a tunable knob instead of a fixed property. That's the Dynamo idea, and it lives on in Cassandra, Riak and DynamoDB."
+      ]
+    }
+  ]
+}

@@ -71,6 +71,11 @@
           "slug": "rate-limiter",
           "title": "Rate Limiter",
           "description": "Allow or reject in under a millisecond: fixed and sliding windows vs. token buckets, an atomic check in a sharded Redis, rules pushed to every gateway, failing open, hot keys, and limits across regions."
+        },
+        {
+          "slug": "key-value-store",
+          "title": "Key-Value Store",
+          "description": "A Dynamo-style store that never refuses a write: consistent hashing with virtual nodes, tunable N/R/W quorums, sloppy quorums and hinted handoff, vector clocks, Merkle-tree anti-entropy, gossip membership, and an LSM-tree storage engine."
         }
       ]
     }
