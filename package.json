@@ -12,6 +12,7 @@
     "thumbnails": "node scripts/thumbnails.ts"
   },
   "dependencies": {
+    "posthog-js": "^1.446.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "react-router": "7.18.5"
