@@ -1,0 +1,3142 @@
+{
+  "title": "Message Queue",
+  "topic": "System Design Deep Dive: Message Queue",
+  "intro": {
+    "title": "Distributed Message Queue",
+    "script": [
+      "Welcome to a system design deep dive on a **distributed message queue** in the style of **Apache Kafka**: partitions, offsets, consumer groups, retention and delivery guarantees."
+    ]
+  },
+  "requirements": {
+    "functional": {
+      "intro": {
+        "title": "Functional requirements",
+        "emoji": [
+          "📥",
+          "🗂️",
+          "📤"
+        ],
+        "script": [
+          "A message queue lets one part of a system hand data to others **without waiting for them**: order service publishes \"order placed\", and billing, shipping and analytics each pick it up in their own time.",
+          "We'll design it the way **Kafka** does it, as a distributed, replicated **log**. Let's agree on what it must do."
+        ]
+      },
+      "cards": [
+        {
+          "title": "Produce to topics",
+          "lines": [
+            "Append records (key, value, headers)",
+            "to a named topic, in batches"
+          ],
+          "script": [
+            "Producers **append records** to a named **topic**, like orders. A record is a key, a value and some headers, and producers send them in **batches** for throughput."
+          ]
+        },
+        {
+          "title": "Partitioned, ordered log",
+          "lines": [
+            "Topics split into partitions",
+            "strict order within a partition, by key"
+          ],
+          "script": [
+            "Each topic is split into **partitions**, and records keep a **strict order within a partition**. The record's key picks its partition, so every event for one user or one order stays in order."
+          ]
+        },
+        {
+          "title": "Consume by offset",
+          "lines": [
+            "Consumers pull from an offset",
+            "rewind and replay; reads don't delete"
+          ],
+          "script": [
+            "Consumers **pull** records starting from an **offset** they choose. Reading doesn't remove anything, so a consumer can **rewind and replay**, for example after fixing a bug."
+          ]
+        },
+        {
+          "title": "Consumer groups",
+          "lines": [
+            "Members split a topic's partitions",
+            "every group sees every record"
+          ],
+          "script": [
+            "Consumers join **groups**. Members of a group **split** the partitions between them, so each record is handled once per group, and separate groups each get **every** record. That's a work queue and publish-subscribe in one system, with partitions reassigned automatically as members come and go."
+          ]
+        },
+        {
+          "title": "Retention and compaction",
+          "lines": [
+            "Keep by time or size, e.g. 7 days",
+            "or the latest value per key"
+          ],
+          "script": [
+            "Records are kept for a configured **time or size**, say 7 days, whether or not anyone has read them. Some topics are instead **compacted**: they keep the latest value for every key indefinitely."
+          ]
+        },
+        {
+          "title": "Delivery guarantees",
+          "lines": [
+            "At-most, at-least or exactly once",
+            "chosen per producer and consumer"
+          ],
+          "script": [
+            "Clients choose their guarantee: **at-most-once**, **at-least-once** or **exactly-once**, through producer acknowledgements, when consumers commit offsets, **idempotent** producers and **transactions**."
+          ]
+        }
+      ],
+      "outOfScope": {
+        "title": "Out of scope",
+        "lines": [
+          "Stream processing  ·  Schema registry  ·  Connectors  ·  Auth and quotas  ·  Cross-region mirroring  ·  Priorities, delays and routing"
+        ],
+        "script": [
+          "Out of scope: **stream processing** frameworks like Kafka Streams or Flink, the **schema registry**, **connectors** to other systems, **auth and quotas**, and **cross-region mirroring**. We also skip broker-side **priorities, delayed messages and routing rules**, the features of a classic queue like RabbitMQ or SQS."
+        ]
+      }
+    },
+    "nonFunctional": {
+      "intro": {
+        "title": "Non-functional requirements",
+        "script": [
+          "Now the qualities. For a message queue they are throughput first, then durability and ordering through failures, at a latency low enough that the queue isn't the bottleneck."
+        ]
+      },
+      "cards": [
+        {
+          "title": "Throughput",
+          "lines": [
+            "1M msgs/s in at peak, ~1 KB each",
+            "≈ 1 GB/s in, ~3 GB/s out"
+          ],
+          "script": [
+            "At peak, **a million messages a second** come in at about a kilobyte each: **1 GB/s in**. With three consumer groups reading everything, that's about **3 GB/s out**."
+          ]
+        },
+        {
+          "title": "Latency",
+          "lines": [
+            "p99 < 100 ms produce → consume",
+            "a few ms per acked produce"
+          ],
+          "script": [
+            "A record should reach consumers in under **100 milliseconds at the 99th percentile**, and an acknowledged produce should take only **a few milliseconds**."
+          ]
+        },
+        {
+          "title": "Durability",
+          "lines": [
+            "An acked write survives a broker",
+            "or a whole zone: 3 replicas, 3 AZs"
+          ],
+          "script": [
+            "Once we acknowledge a write it must survive losing a broker, or even a whole **availability zone**, so every partition lives on **three replicas** in three zones."
+          ]
+        },
+        {
+          "title": "Availability",
+          "lines": [
+            "New leader within seconds",
+            "no single point of failure"
+          ],
+          "script": [
+            "When a broker dies, its partitions get **new leaders within seconds**, and nothing in the system is a single point of failure."
+          ]
+        },
+        {
+          "title": "Ordering",
+          "lines": [
+            "Per-partition order holds",
+            "through failover and retries"
+          ],
+          "script": [
+            "Per-partition order must hold not just normally but **through failover and producer retries**, which is harder than it sounds."
+          ]
+        },
+        {
+          "title": "Cost",
+          "lines": [
+            "Commodity disks, 7 days retention",
+            "older data tiered to object storage"
+          ],
+          "script": [
+            "It must run on **commodity hardware**, and keeping a week of data, or longer, must not be ruinous, so older data moves to cheap **object storage**."
+          ]
+        }
+      ],
+      "estimates": {
+        "title": "Back-of-the-envelope",
+        "rows": [
+          [
+            "Storage",
+            [
+              "1 GB/s × 86,400 s × 7 days ≈ 600 TB",
+              "× 3 replicas ≈ 1.8 PB"
+            ]
+          ],
+          [
+            "Brokers",
+            [
+              "~40 TB of disk each → ~50 brokers",
+              "with headroom"
+            ]
+          ],
+          [
+            "Per broker",
+            [
+              "in: 3 GB/s ÷ 50 ≈ 60 MB/s",
+              "out: (3 + 2) GB/s ÷ 50 ≈ 100 MB/s"
+            ]
+          ],
+          [
+            "Partitions",
+            [
+              "~10K across all topics",
+              "≈ 200 leaders per broker"
+            ]
+          ]
+        ],
+        "script": [
+          "A gigabyte a second for a week is about **600 terabytes**; three replicas make it **1.8 petabytes**. At around 40 terabytes of disk per broker that's roughly **50 brokers**.",
+          "Writes land three times, 3 GB/s across the cluster, or **60 MB/s per broker**. Reads are 3 GB/s to consumers plus 2 GB/s to followers, about **100 MB/s per broker**: well within a 25-gigabit NIC and sequential disk speeds.",
+          "And with roughly **10,000 partitions**, each broker leads about **200** of them."
+        ]
+      },
+      "takeaway": {
+        "title": "What shapes the design",
+        "lines": [
+          "1 GB/s on commodity disks → an append-only log: sequential I/O, batching, page cache",
+          "Parallelism and per-key order → partitions, hashed by key",
+          "Durable through failures → leader/follower replication with an ISR and high watermark",
+          "Many readers, replay → consumers track offsets, not the broker"
+        ],
+        "script": [
+          "So four decisions follow. To move a gigabyte a second on ordinary disks, we store data as an **append-only log** and lean on sequential I/O and batching. For parallelism with per-key order, we split topics into **partitions**. For durability, every partition is **replicated** with an in-sync set and a high watermark. And to make readers cheap, **consumers track their own offsets**."
+        ]
+      }
+    }
+  },
+  "scenes": {
+    "main": {
+      "boxes": [
+        {
+          "id": "prod",
+          "x": 40,
+          "y": 230,
+          "w": 180,
+          "h": 60,
+          "label": "Producers",
+          "kind": "client",
+          "sub": "order-service"
+        },
+        {
+          "id": "single",
+          "x": 300,
+          "y": 230,
+          "w": 200,
+          "h": 60,
+          "label": "Broker",
+          "kind": "data",
+          "sub": "one append-only log"
+        },
+        {
+          "id": "cons",
+          "x": 1200,
+          "y": 330,
+          "w": 180,
+          "h": 60,
+          "label": "Consumer",
+          "kind": "client",
+          "sub": "reads from an offset"
+        },
+        {
+          "id": "ctrl",
+          "x": 600,
+          "y": 30,
+          "w": 200,
+          "h": 60,
+          "label": "Controller Quorum",
+          "kind": "infra",
+          "sub": "KRaft · cluster metadata"
+        },
+        {
+          "id": "b1",
+          "x": 300,
+          "y": 230,
+          "w": 200,
+          "h": 60,
+          "label": "Broker 1",
+          "kind": "data",
+          "sub": "leads P0"
+        },
+        {
+          "id": "b2",
+          "x": 600,
+          "y": 230,
+          "w": 200,
+          "h": 60,
+          "label": "Broker 2",
+          "kind": "data",
+          "sub": "leads P1"
+        },
+        {
+          "id": "b3",
+          "x": 900,
+          "y": 230,
+          "w": 200,
+          "h": 60,
+          "label": "Broker 3",
+          "kind": "data",
+          "sub": "leads P2"
+        },
+        {
+          "id": "c1",
+          "x": 1200,
+          "y": 330,
+          "w": 180,
+          "h": 60,
+          "label": "Consumer 1",
+          "kind": "client",
+          "sub": "billing · P0, P1"
+        },
+        {
+          "id": "c2",
+          "x": 1200,
+          "y": 430,
+          "w": 180,
+          "h": 60,
+          "label": "Consumer 2",
+          "kind": "client",
+          "sub": "billing · P2"
+        },
+        {
+          "id": "obj",
+          "x": 600,
+          "y": 500,
+          "w": 200,
+          "h": 60,
+          "label": "Object Storage",
+          "kind": "data",
+          "sub": "S3 · sealed segments"
+        }
+      ],
+      "edges": [
+        {
+          "id": "e_prod_single",
+          "from": "prod",
+          "to": "single",
+          "pts": [
+            [
+              220,
+              260
+            ],
+            [
+              300,
+              260
+            ]
+          ],
+          "label": "append"
+        },
+        {
+          "id": "e_single_cons",
+          "from": "single",
+          "to": "cons",
+          "pts": [
+            [
+              400,
+              290
+            ],
+            [
+              400,
+              360
+            ],
+            [
+              1200,
+              360
+            ]
+          ],
+          "label": "pull from an offset"
+        },
+        {
+          "id": "e_prod_b1",
+          "from": "prod",
+          "to": "b1",
+          "pts": [
+            [
+              220,
+              260
+            ],
+            [
+              300,
+              260
+            ]
+          ]
+        },
+        {
+          "id": "e_prod_b2",
+          "from": "prod",
+          "to": "b2",
+          "pts": [
+            [
+              130,
+              230
+            ],
+            [
+              130,
+              170
+            ],
+            [
+              680,
+              170
+            ],
+            [
+              680,
+              230
+            ]
+          ],
+          "label": "hash(key) → partition leader",
+          "lp": [
+            290,
+            162,
+            "middle"
+          ]
+        },
+        {
+          "id": "e_prod_b3",
+          "from": "prod",
+          "to": "b3",
+          "pts": [
+            [
+              130,
+              230
+            ],
+            [
+              130,
+              170
+            ],
+            [
+              960,
+              170
+            ],
+            [
+              960,
+              230
+            ]
+          ]
+        },
+        {
+          "id": "e_b1_cons",
+          "from": "b1",
+          "to": "cons",
+          "pts": [
+            [
+              400,
+              290
+            ],
+            [
+              400,
+              360
+            ],
+            [
+              1200,
+              360
+            ]
+          ],
+          "label": "fetch from partition leaders",
+          "lp": [
+            1100,
+            353,
+            "middle"
+          ]
+        },
+        {
+          "id": "e_b2_cons",
+          "from": "b2",
+          "to": "cons",
+          "pts": [
+            [
+              700,
+              290
+            ],
+            [
+              700,
+              360
+            ],
+            [
+              1200,
+              360
+            ]
+          ]
+        },
+        {
+          "id": "e_b3_cons",
+          "from": "b3",
+          "to": "cons",
+          "pts": [
+            [
+              1000,
+              290
+            ],
+            [
+              1000,
+              360
+            ],
+            [
+              1200,
+              360
+            ]
+          ]
+        },
+        {
+          "id": "r_b2_b1",
+          "from": "b2",
+          "to": "b1",
+          "pts": [
+            [
+              600,
+              260
+            ],
+            [
+              500,
+              260
+            ]
+          ],
+          "label": "P1 copy"
+        },
+        {
+          "id": "r_b2_b3",
+          "from": "b2",
+          "to": "b3",
+          "pts": [
+            [
+              800,
+              260
+            ],
+            [
+              900,
+              260
+            ]
+          ],
+          "label": "P1 copy"
+        },
+        {
+          "id": "e_ctrl_b1",
+          "from": "ctrl",
+          "to": "b1",
+          "pts": [
+            [
+              640,
+              90
+            ],
+            [
+              640,
+              120
+            ],
+            [
+              440,
+              120
+            ],
+            [
+              440,
+              230
+            ]
+          ],
+          "async": true
+        },
+        {
+          "id": "e_ctrl_b2",
+          "from": "ctrl",
+          "to": "b2",
+          "pts": [
+            [
+              720,
+              90
+            ],
+            [
+              720,
+              230
+            ]
+          ],
+          "async": true
+        },
+        {
+          "id": "e_ctrl_b3",
+          "from": "ctrl",
+          "to": "b3",
+          "pts": [
+            [
+              780,
+              90
+            ],
+            [
+              780,
+              120
+            ],
+            [
+              1040,
+              120
+            ],
+            [
+              1040,
+              230
+            ]
+          ],
+          "label": "metadata",
+          "lp": [
+            910,
+            112,
+            "middle"
+          ],
+          "async": true
+        },
+        {
+          "id": "e_b1_c1",
+          "from": "b1",
+          "to": "c1",
+          "pts": [
+            [
+              400,
+              290
+            ],
+            [
+              400,
+              360
+            ],
+            [
+              1200,
+              360
+            ]
+          ],
+          "label": "fetch P0, P1",
+          "lp": [
+            1100,
+            353,
+            "middle"
+          ]
+        },
+        {
+          "id": "e_b2_c1",
+          "from": "b2",
+          "to": "c1",
+          "pts": [
+            [
+              700,
+              290
+            ],
+            [
+              700,
+              360
+            ],
+            [
+              1200,
+              360
+            ]
+          ]
+        },
+        {
+          "id": "e_b3_c2",
+          "from": "b3",
+          "to": "c2",
+          "pts": [
+            [
+              1000,
+              290
+            ],
+            [
+              1000,
+              460
+            ],
+            [
+              1200,
+              460
+            ]
+          ],
+          "label": "fetch P2",
+          "lp": [
+            1100,
+            453,
+            "middle"
+          ]
+        },
+        {
+          "id": "e_b2_obj",
+          "from": "b2",
+          "to": "obj",
+          "pts": [
+            [
+              760,
+              290
+            ],
+            [
+              760,
+              500
+            ]
+          ],
+          "label": "old segments",
+          "lp": [
+            767,
+            434,
+            "start"
+          ],
+          "async": true
+        },
+        {
+          "id": "e_b1_obj",
+          "from": "b1",
+          "to": "obj",
+          "pts": [
+            [
+              460,
+              290
+            ],
+            [
+              460,
+              530
+            ],
+            [
+              600,
+              530
+            ]
+          ],
+          "async": true
+        },
+        {
+          "id": "e_b3_obj",
+          "from": "b3",
+          "to": "obj",
+          "pts": [
+            [
+              940,
+              290
+            ],
+            [
+              940,
+              530
+            ],
+            [
+              800,
+              530
+            ]
+          ],
+          "async": true
+        }
+      ]
+    },
+    "log": {
+      "boxes": [
+        {
+          "id": "lprod",
+          "x": 40,
+          "y": 40,
+          "w": 180,
+          "h": 60,
+          "label": "Producer",
+          "kind": "client",
+          "sub": "append a batch"
+        },
+        {
+          "id": "seg0",
+          "x": 300,
+          "y": 170,
+          "w": 200,
+          "h": 60,
+          "label": "Segment 0",
+          "kind": "data",
+          "sub": "sealed · read-only"
+        },
+        {
+          "id": "expired",
+          "x": 300,
+          "y": 170,
+          "w": 200,
+          "h": 60,
+          "label": "Segment 0  ✕",
+          "kind": "ghost",
+          "sub": "past retention: deleted"
+        },
+        {
+          "id": "seg1",
+          "x": 540,
+          "y": 170,
+          "w": 200,
+          "h": 60,
+          "label": "Segment 1,000,000",
+          "kind": "data",
+          "sub": "sealed · read-only"
+        },
+        {
+          "id": "act",
+          "x": 780,
+          "y": 170,
+          "w": 200,
+          "h": 60,
+          "label": "Active Segment",
+          "kind": "data",
+          "sub": "from 2,000,000 · appends"
+        },
+        {
+          "id": "idx",
+          "x": 540,
+          "y": 310,
+          "w": 200,
+          "h": 60,
+          "label": "Offset Index",
+          "kind": "data",
+          "sub": "sparse · offset → byte"
+        },
+        {
+          "id": "lcons",
+          "x": 40,
+          "y": 310,
+          "w": 180,
+          "h": 60,
+          "label": "Consumer",
+          "kind": "client",
+          "sub": "fetch(offset 1,500,000)"
+        }
+      ],
+      "edges": [
+        {
+          "id": "e_lprod_act",
+          "from": "lprod",
+          "to": "act",
+          "pts": [
+            [
+              220,
+              70
+            ],
+            [
+              880,
+              70
+            ],
+            [
+              880,
+              170
+            ]
+          ],
+          "label": "append to the end"
+        },
+        {
+          "id": "e_lcons_idx",
+          "from": "lcons",
+          "to": "idx",
+          "pts": [
+            [
+              220,
+              340
+            ],
+            [
+              540,
+              340
+            ]
+          ],
+          "label": "1  pick segment, search index"
+        },
+        {
+          "id": "e_idx_seg1",
+          "from": "idx",
+          "to": "seg1",
+          "pts": [
+            [
+              640,
+              310
+            ],
+            [
+              640,
+              230
+            ]
+          ],
+          "label": "2  byte position"
+        }
+      ]
+    },
+    "topic": {
+      "boxes": [
+        {
+          "id": "tprod",
+          "x": 40,
+          "y": 170,
+          "w": 170,
+          "h": 60,
+          "label": "Producer",
+          "kind": "client",
+          "sub": "send(key, value)"
+        },
+        {
+          "id": "part",
+          "x": 270,
+          "y": 170,
+          "w": 170,
+          "h": 60,
+          "label": "Partitioner",
+          "kind": "service",
+          "sub": "hash(key) mod 3"
+        },
+        {
+          "id": "tp0",
+          "x": 520,
+          "y": 60,
+          "w": 150,
+          "h": 60,
+          "label": "Partition 0",
+          "kind": "stream",
+          "sub": "orders"
+        },
+        {
+          "id": "t0_0",
+          "x": 700,
+          "y": 60,
+          "w": 76,
+          "h": 60,
+          "label": "0",
+          "kind": "data",
+          "sub": "user-3"
+        },
+        {
+          "id": "t0_1",
+          "x": 790,
+          "y": 60,
+          "w": 76,
+          "h": 60,
+          "label": "1",
+          "kind": "data",
+          "sub": "user-6"
+        },
+        {
+          "id": "t0_2",
+          "x": 880,
+          "y": 60,
+          "w": 76,
+          "h": 60,
+          "label": "2",
+          "kind": "data",
+          "sub": "user-3"
+        },
+        {
+          "id": "t0_3",
+          "x": 970,
+          "y": 60,
+          "w": 76,
+          "h": 60,
+          "label": "3",
+          "kind": "data",
+          "sub": "user-12"
+        },
+        {
+          "id": "tp1",
+          "x": 520,
+          "y": 170,
+          "w": 150,
+          "h": 60,
+          "label": "Partition 1",
+          "kind": "stream",
+          "sub": "orders"
+        },
+        {
+          "id": "t1_0",
+          "x": 700,
+          "y": 170,
+          "w": 76,
+          "h": 60,
+          "label": "0",
+          "kind": "data",
+          "sub": "user-7"
+        },
+        {
+          "id": "t1_1",
+          "x": 790,
+          "y": 170,
+          "w": 76,
+          "h": 60,
+          "label": "1",
+          "kind": "data",
+          "sub": "user-1"
+        },
+        {
+          "id": "t1_2",
+          "x": 880,
+          "y": 170,
+          "w": 76,
+          "h": 60,
+          "label": "2",
+          "kind": "data",
+          "sub": "user-7"
+        },
+        {
+          "id": "tp2",
+          "x": 520,
+          "y": 280,
+          "w": 150,
+          "h": 60,
+          "label": "Partition 2",
+          "kind": "stream",
+          "sub": "orders"
+        },
+        {
+          "id": "t2_0",
+          "x": 700,
+          "y": 280,
+          "w": 76,
+          "h": 60,
+          "label": "0",
+          "kind": "data",
+          "sub": "user-9"
+        },
+        {
+          "id": "t2_1",
+          "x": 790,
+          "y": 280,
+          "w": 76,
+          "h": 60,
+          "label": "1",
+          "kind": "data",
+          "sub": "user-2"
+        },
+        {
+          "id": "t2_2",
+          "x": 880,
+          "y": 280,
+          "w": 76,
+          "h": 60,
+          "label": "2",
+          "kind": "data",
+          "sub": "user-9"
+        },
+        {
+          "id": "t2_3",
+          "x": 970,
+          "y": 280,
+          "w": 76,
+          "h": 60,
+          "label": "3",
+          "kind": "data",
+          "sub": "user-5"
+        },
+        {
+          "id": "t2_4",
+          "x": 1060,
+          "y": 280,
+          "w": 76,
+          "h": 60,
+          "label": "4",
+          "kind": "data",
+          "sub": "user-9"
+        }
+      ],
+      "edges": [
+        {
+          "id": "e_tprod_part",
+          "from": "tprod",
+          "to": "part",
+          "pts": [
+            [
+              210,
+              200
+            ],
+            [
+              270,
+              200
+            ]
+          ]
+        },
+        {
+          "id": "e_part_tp0",
+          "from": "part",
+          "to": "tp0",
+          "pts": [
+            [
+              440,
+              200
+            ],
+            [
+              480,
+              200
+            ],
+            [
+              480,
+              90
+            ],
+            [
+              520,
+              90
+            ]
+          ]
+        },
+        {
+          "id": "e_part_tp1",
+          "from": "part",
+          "to": "tp1",
+          "pts": [
+            [
+              440,
+              200
+            ],
+            [
+              520,
+              200
+            ]
+          ]
+        },
+        {
+          "id": "e_part_tp2",
+          "from": "part",
+          "to": "tp2",
+          "pts": [
+            [
+              440,
+              200
+            ],
+            [
+              480,
+              200
+            ],
+            [
+              480,
+              310
+            ],
+            [
+              520,
+              310
+            ]
+          ]
+        }
+      ]
+    },
+    "isr": {
+      "boxes": [
+        {
+          "id": "lbl_b2",
+          "x": 40,
+          "y": 100,
+          "w": 200,
+          "h": 54,
+          "label": "Broker 2",
+          "kind": "data",
+          "sub": "leader · epoch 5"
+        },
+        {
+          "id": "lbl_b2down",
+          "x": 40,
+          "y": 100,
+          "w": 200,
+          "h": 54,
+          "label": "Broker 2  ✕",
+          "kind": "ghost",
+          "sub": "crashed"
+        },
+        {
+          "id": "lbl_b2back",
+          "x": 40,
+          "y": 100,
+          "w": 200,
+          "h": 54,
+          "label": "Broker 2",
+          "kind": "data",
+          "sub": "follower · truncated to 5"
+        },
+        {
+          "id": "lbl_b1",
+          "x": 40,
+          "y": 190,
+          "w": 200,
+          "h": 54,
+          "label": "Broker 1",
+          "kind": "data",
+          "sub": "follower · in sync"
+        },
+        {
+          "id": "lbl_b1lead",
+          "x": 40,
+          "y": 190,
+          "w": 200,
+          "h": 54,
+          "label": "Broker 1",
+          "kind": "data",
+          "sub": "leader · epoch 6"
+        },
+        {
+          "id": "lbl_b3",
+          "x": 40,
+          "y": 280,
+          "w": 200,
+          "h": 54,
+          "label": "Broker 3",
+          "kind": "data",
+          "sub": "follower · lagging"
+        },
+        {
+          "id": "lbl_b3out",
+          "x": 40,
+          "y": 280,
+          "w": 200,
+          "h": 54,
+          "label": "Broker 3",
+          "kind": "ghost",
+          "sub": "out of ISR · catching up"
+        },
+        {
+          "id": "b2_0",
+          "x": 280,
+          "y": 100,
+          "w": 64,
+          "h": 54,
+          "label": "0",
+          "kind": "data"
+        },
+        {
+          "id": "b2_1",
+          "x": 360,
+          "y": 100,
+          "w": 64,
+          "h": 54,
+          "label": "1",
+          "kind": "data"
+        },
+        {
+          "id": "b2_2",
+          "x": 440,
+          "y": 100,
+          "w": 64,
+          "h": 54,
+          "label": "2",
+          "kind": "data"
+        },
+        {
+          "id": "b2_3",
+          "x": 520,
+          "y": 100,
+          "w": 64,
+          "h": 54,
+          "label": "3",
+          "kind": "data"
+        },
+        {
+          "id": "b2_4",
+          "x": 600,
+          "y": 100,
+          "w": 64,
+          "h": 54,
+          "label": "4",
+          "kind": "data"
+        },
+        {
+          "id": "b2_5",
+          "x": 680,
+          "y": 100,
+          "w": 64,
+          "h": 54,
+          "label": "5",
+          "kind": "data"
+        },
+        {
+          "id": "b1_0",
+          "x": 280,
+          "y": 190,
+          "w": 64,
+          "h": 54,
+          "label": "0",
+          "kind": "data"
+        },
+        {
+          "id": "b1_1",
+          "x": 360,
+          "y": 190,
+          "w": 64,
+          "h": 54,
+          "label": "1",
+          "kind": "data"
+        },
+        {
+          "id": "b1_2",
+          "x": 440,
+          "y": 190,
+          "w": 64,
+          "h": 54,
+          "label": "2",
+          "kind": "data"
+        },
+        {
+          "id": "b1_3",
+          "x": 520,
+          "y": 190,
+          "w": 64,
+          "h": 54,
+          "label": "3",
+          "kind": "data"
+        },
+        {
+          "id": "b1_4",
+          "x": 600,
+          "y": 190,
+          "w": 64,
+          "h": 54,
+          "label": "4",
+          "kind": "data"
+        },
+        {
+          "id": "b3_0",
+          "x": 280,
+          "y": 280,
+          "w": 64,
+          "h": 54,
+          "label": "0",
+          "kind": "data"
+        },
+        {
+          "id": "b3_1",
+          "x": 360,
+          "y": 280,
+          "w": 64,
+          "h": 54,
+          "label": "1",
+          "kind": "data"
+        },
+        {
+          "id": "b3_2",
+          "x": 440,
+          "y": 280,
+          "w": 64,
+          "h": 54,
+          "label": "2",
+          "kind": "data"
+        },
+        {
+          "id": "hw",
+          "x": 432,
+          "y": 10,
+          "w": 160,
+          "h": 54,
+          "label": "High watermark",
+          "kind": "infra",
+          "sub": "= 3 · readable below"
+        },
+        {
+          "id": "hw2",
+          "x": 592,
+          "y": 10,
+          "w": 160,
+          "h": 54,
+          "label": "High watermark",
+          "kind": "infra",
+          "sub": "= 5 · readable below"
+        },
+        {
+          "id": "isr1",
+          "x": 820,
+          "y": 163,
+          "w": 220,
+          "h": 54,
+          "label": "ISR = {2, 1}",
+          "kind": "infra",
+          "sub": "min.insync.replicas = 2"
+        },
+        {
+          "id": "isr2",
+          "x": 820,
+          "y": 163,
+          "w": 220,
+          "h": 54,
+          "label": "ISR = {1}",
+          "kind": "infra",
+          "sub": "below min: acks=all writes fail"
+        },
+        {
+          "id": "isr3",
+          "x": 820,
+          "y": 163,
+          "w": 220,
+          "h": 54,
+          "label": "ISR = {1, 2}",
+          "kind": "infra",
+          "sub": "writes resume"
+        }
+      ],
+      "edges": [
+        {
+          "id": "e_hw",
+          "from": "hw",
+          "to": "b2_0",
+          "pts": [
+            [
+              512,
+              64
+            ],
+            [
+              512,
+              344
+            ]
+          ]
+        },
+        {
+          "id": "e_hw2",
+          "from": "hw2",
+          "to": "b2_0",
+          "pts": [
+            [
+              672,
+              64
+            ],
+            [
+              672,
+              344
+            ]
+          ]
+        }
+      ]
+    },
+    "group": {
+      "boxes": [
+        {
+          "id": "p0",
+          "x": 40,
+          "y": 60,
+          "w": 180,
+          "h": 60,
+          "label": "Partition 0",
+          "kind": "stream",
+          "sub": "orders"
+        },
+        {
+          "id": "p1",
+          "x": 40,
+          "y": 170,
+          "w": 180,
+          "h": 60,
+          "label": "Partition 1",
+          "kind": "stream",
+          "sub": "orders"
+        },
+        {
+          "id": "p2",
+          "x": 40,
+          "y": 280,
+          "w": 180,
+          "h": 60,
+          "label": "Partition 2",
+          "kind": "stream",
+          "sub": "orders"
+        },
+        {
+          "id": "ga1",
+          "x": 440,
+          "y": 60,
+          "w": 180,
+          "h": 60,
+          "label": "Consumer A1",
+          "kind": "client",
+          "sub": "group: billing"
+        },
+        {
+          "id": "ga3",
+          "x": 440,
+          "y": 170,
+          "w": 180,
+          "h": 60,
+          "label": "Consumer A3",
+          "kind": "client",
+          "sub": "group: billing · new"
+        },
+        {
+          "id": "ga2",
+          "x": 440,
+          "y": 280,
+          "w": 180,
+          "h": 60,
+          "label": "Consumer A2",
+          "kind": "client",
+          "sub": "group: billing"
+        },
+        {
+          "id": "an",
+          "x": 440,
+          "y": 420,
+          "w": 180,
+          "h": 60,
+          "label": "Analytics",
+          "kind": "client",
+          "sub": "group: analytics"
+        },
+        {
+          "id": "coord",
+          "x": 780,
+          "y": 160,
+          "w": 200,
+          "h": 80,
+          "label": "Group Coordinator",
+          "kind": "infra",
+          "sub": "a broker"
+        },
+        {
+          "id": "offs",
+          "x": 1040,
+          "y": 170,
+          "w": 200,
+          "h": 60,
+          "label": "__consumer_offsets",
+          "kind": "stream",
+          "sub": "compacted · 50 partitions"
+        }
+      ],
+      "edges": [
+        {
+          "id": "e_p0_ga1",
+          "from": "p0",
+          "to": "ga1",
+          "pts": [
+            [
+              220,
+              80
+            ],
+            [
+              440,
+              80
+            ]
+          ]
+        },
+        {
+          "id": "e_p1_ga1",
+          "from": "p1",
+          "to": "ga1",
+          "pts": [
+            [
+              220,
+              200
+            ],
+            [
+              330,
+              200
+            ],
+            [
+              330,
+              105
+            ],
+            [
+              440,
+              105
+            ]
+          ]
+        },
+        {
+          "id": "e_p2_ga2",
+          "from": "p2",
+          "to": "ga2",
+          "pts": [
+            [
+              220,
+              310
+            ],
+            [
+              440,
+              310
+            ]
+          ]
+        },
+        {
+          "id": "e_p1_ga3",
+          "from": "p1",
+          "to": "ga3",
+          "pts": [
+            [
+              220,
+              200
+            ],
+            [
+              440,
+              200
+            ]
+          ],
+          "label": "moved"
+        },
+        {
+          "id": "e_p0_an",
+          "from": "p0",
+          "to": "an",
+          "pts": [
+            [
+              40,
+              100
+            ],
+            [
+              15,
+              100
+            ],
+            [
+              15,
+              450
+            ],
+            [
+              440,
+              450
+            ]
+          ]
+        },
+        {
+          "id": "e_p1_an",
+          "from": "p1",
+          "to": "an",
+          "pts": [
+            [
+              40,
+              210
+            ],
+            [
+              15,
+              210
+            ],
+            [
+              15,
+              450
+            ],
+            [
+              440,
+              450
+            ]
+          ]
+        },
+        {
+          "id": "e_p2_an",
+          "from": "p2",
+          "to": "an",
+          "pts": [
+            [
+              130,
+              340
+            ],
+            [
+              130,
+              450
+            ],
+            [
+              440,
+              450
+            ]
+          ],
+          "label": "every partition, again",
+          "lp": [
+            290,
+            442,
+            "middle"
+          ]
+        },
+        {
+          "id": "e_ga1_coord",
+          "from": "ga1",
+          "to": "coord",
+          "pts": [
+            [
+              620,
+              80
+            ],
+            [
+              720,
+              80
+            ],
+            [
+              720,
+              175
+            ],
+            [
+              780,
+              175
+            ]
+          ],
+          "label": "heartbeat · commit",
+          "lp": [
+            727,
+            130,
+            "start"
+          ]
+        },
+        {
+          "id": "e_ga2_coord",
+          "from": "ga2",
+          "to": "coord",
+          "pts": [
+            [
+              620,
+              310
+            ],
+            [
+              720,
+              310
+            ],
+            [
+              720,
+              225
+            ],
+            [
+              780,
+              225
+            ]
+          ]
+        },
+        {
+          "id": "e_ga3_coord",
+          "from": "ga3",
+          "to": "coord",
+          "pts": [
+            [
+              620,
+              200
+            ],
+            [
+              780,
+              200
+            ]
+          ]
+        },
+        {
+          "id": "e_an_coord",
+          "from": "an",
+          "to": "coord",
+          "pts": [
+            [
+              620,
+              450
+            ],
+            [
+              880,
+              450
+            ],
+            [
+              880,
+              240
+            ]
+          ],
+          "label": "commit",
+          "lp": [
+            750,
+            442,
+            "middle"
+          ]
+        },
+        {
+          "id": "e_coord_offs",
+          "from": "coord",
+          "to": "offs",
+          "pts": [
+            [
+              980,
+              200
+            ],
+            [
+              1040,
+              200
+            ]
+          ],
+          "label": "append"
+        }
+      ]
+    },
+    "compact": {
+      "boxes": [
+        {
+          "id": "before",
+          "x": 40,
+          "y": 60,
+          "w": 140,
+          "h": 60,
+          "label": "Before",
+          "kind": "stream",
+          "sub": "old segments"
+        },
+        {
+          "id": "after",
+          "x": 40,
+          "y": 240,
+          "w": 140,
+          "h": 60,
+          "label": "After",
+          "kind": "stream",
+          "sub": "cleaned"
+        },
+        {
+          "id": "cb0",
+          "x": 220,
+          "y": 60,
+          "w": 110,
+          "h": 60,
+          "label": "offset 0",
+          "kind": "data",
+          "sub": "k1 = A"
+        },
+        {
+          "id": "cb1",
+          "x": 345,
+          "y": 60,
+          "w": 110,
+          "h": 60,
+          "label": "offset 1",
+          "kind": "data",
+          "sub": "k2 = B"
+        },
+        {
+          "id": "cb2",
+          "x": 470,
+          "y": 60,
+          "w": 110,
+          "h": 60,
+          "label": "offset 2",
+          "kind": "data",
+          "sub": "k1 = C"
+        },
+        {
+          "id": "cb3",
+          "x": 595,
+          "y": 60,
+          "w": 110,
+          "h": 60,
+          "label": "offset 3",
+          "kind": "data",
+          "sub": "k3 = D"
+        },
+        {
+          "id": "cb4",
+          "x": 720,
+          "y": 60,
+          "w": 110,
+          "h": 60,
+          "label": "offset 4",
+          "kind": "data",
+          "sub": "k2 = null"
+        },
+        {
+          "id": "cb5",
+          "x": 845,
+          "y": 60,
+          "w": 110,
+          "h": 60,
+          "label": "offset 5",
+          "kind": "data",
+          "sub": "k1 = E"
+        },
+        {
+          "id": "cb6",
+          "x": 970,
+          "y": 60,
+          "w": 110,
+          "h": 60,
+          "label": "offset 6",
+          "kind": "data",
+          "sub": "k3 = F"
+        },
+        {
+          "id": "ca4",
+          "x": 720,
+          "y": 240,
+          "w": 110,
+          "h": 60,
+          "label": "offset 4",
+          "kind": "data",
+          "sub": "k2 = null"
+        },
+        {
+          "id": "ca5",
+          "x": 845,
+          "y": 240,
+          "w": 110,
+          "h": 60,
+          "label": "offset 5",
+          "kind": "data",
+          "sub": "k1 = E"
+        },
+        {
+          "id": "ca6",
+          "x": 970,
+          "y": 240,
+          "w": 110,
+          "h": 60,
+          "label": "offset 6",
+          "kind": "data",
+          "sub": "k3 = F"
+        }
+      ],
+      "edges": [
+        {
+          "id": "e_clean",
+          "from": "before",
+          "to": "after",
+          "pts": [
+            [
+              110,
+              120
+            ],
+            [
+              110,
+              240
+            ]
+          ],
+          "label": "log cleaner"
+        }
+      ]
+    }
+  },
+  "slides": [
+    {
+      "scene": "main",
+      "add": [
+        "prod",
+        "single",
+        "e_prod_single",
+        "cons",
+        "e_single_cons"
+      ],
+      "title": "Start: one broker",
+      "script": [
+        "Let's start with the simplest thing that works: **producers** send messages to one server, the **broker**, and a **consumer** reads them back.",
+        "The one decision we make right away is how the broker stores them. Instead of a queue that deletes each message once it's delivered, the broker keeps an **append-only log** on disk. Every record gets the next sequential **offset**, and consumers pull records starting from an offset they remember."
+      ]
+    },
+    {
+      "title": "A queue vs. a log",
+      "script": [
+        "That choice is what separates Kafka from a classic message queue like RabbitMQ or SQS. A queue tracks every message's delivery and deletes it on acknowledgement; a log just **keeps everything** for a while and lets each reader track **one number**.",
+        "That gives us **replay**, many independent readers, and strict order almost for free. What we give up is per-message features like **priorities, delays and routing**, which we left out of scope."
+      ],
+      "table": {
+        "columns": [
+          "",
+          "Classic queue",
+          "Log (our design)"
+        ],
+        "rows": [
+          [
+            "After a read",
+            "deleted once acked",
+            "kept until retention expires"
+          ],
+          [
+            "Progress tracked by",
+            "the broker, per message",
+            "the consumer: one offset per partition"
+          ],
+          [
+            "Replay",
+            "no",
+            "**yes**: seek to any offset"
+          ],
+          [
+            "Many readers",
+            "a copy per queue",
+            "each group reads the same bytes"
+          ],
+          [
+            "Ordering",
+            "best effort",
+            "**strict**, per partition"
+          ],
+          [
+            "Per-message features",
+            "priority, delay, DLQ",
+            "not built in"
+          ]
+        ]
+      }
+    },
+    {
+      "scene": "log",
+      "add": [
+        "lprod",
+        "seg0",
+        "seg1",
+        "act",
+        "e_lprod_act"
+      ],
+      "title": "Inside the log: segments",
+      "script": [
+        "Let's zoom into that log. It isn't one giant file: it's split into **segments**, each named by its first offset and rolled at about **1 GB**. Only the **active segment** takes writes; older ones are sealed and never change.",
+        "Every write is an **append** to the end of a file, so the disk only does **sequential I/O**, which even spinning disks handle at hundreds of megabytes a second. And immutable segments make the later jobs easy: deleting, copying or uploading a whole file."
+      ]
+    },
+    {
+      "scene": "log",
+      "add": [
+        "lcons",
+        "idx",
+        "e_lcons_idx",
+        "e_idx_seg1"
+      ],
+      "title": "Reading by offset",
+      "script": [
+        "A consumer asks for **offset 1,500,000**. The broker picks the segment from the file names with a binary search, then looks in that segment's **offset index**.",
+        "The index is **sparse**, one entry every 4 KB or so, mapping an offset to a byte position in the file. It's small enough to keep memory-mapped, so a lookup is a binary search in RAM followed by a short scan forward. A similar **time index** lets a consumer seek to \"everything since 9:00\"."
+      ]
+    },
+    {
+      "scene": "topic",
+      "add": [
+        "tprod",
+        "part",
+        "e_tprod_part",
+        "tp0",
+        "e_part_tp0",
+        "t0_0",
+        "t0_1",
+        "t0_2",
+        "t0_3",
+        "tp1",
+        "e_part_tp1",
+        "t1_0",
+        "t1_1",
+        "t1_2",
+        "tp2",
+        "e_part_tp2",
+        "t2_0",
+        "t2_1",
+        "t2_2",
+        "t2_3",
+        "t2_4"
+      ],
+      "title": "Topics and partitions",
+      "script": [
+        "One log on one machine caps us at one disk and one reader. So a **topic**, like orders, is split into **partitions**, and each partition is its own independent log with **its own offsets**.",
+        "The producer's **partitioner** picks the partition: by default it **hashes the key** modulo the partition count. So \"offset 2\" means nothing on its own; a record's address is always **topic, partition, offset**."
+      ]
+    },
+    {
+      "scene": "topic",
+      "focus": [
+        "part",
+        "e_part_tp2",
+        "tp2",
+        "t2_0",
+        "t2_2",
+        "t2_4"
+      ],
+      "title": "Order per key",
+      "script": [
+        "Every event for **user-9** hashes to partition 2, so they sit there in the order they were sent. That's the ordering guarantee: **total order within a partition**, and none across partitions.",
+        "That's usually exactly what we need, since events for one user, account or order must stay in order. If you truly need a **global order**, you need one partition, and you've given up all parallelism. Records with no key are spread by a **sticky partitioner** that fills one batch per partition at a time."
+      ]
+    },
+    {
+      "title": "How many partitions?",
+      "script": [
+        "The partition count is the main sizing decision. More partitions mean more **throughput** and more **consumers** working in parallel, but each one costs files, memory and replication traffic, and makes failover slower.",
+        "And since keys are hashed **modulo the count**, adding partitions later moves keys and breaks per-key order during the change. So we pick generously up front: for our 1 GB/s at roughly 10 MB/s a partition, about **a hundred partitions** for a busy topic."
+      ],
+      "table": {
+        "columns": [
+          "Concern",
+          "Why",
+          "Pushes toward"
+        ],
+        "rows": [
+          [
+            "Throughput",
+            "~10 MB/s per partition per consumer",
+            "**more**"
+          ],
+          [
+            "Consumer parallelism",
+            "at most one consumer per partition in a group",
+            "**more**"
+          ],
+          [
+            "Stable key mapping",
+            "changing the count remaps keys",
+            "**over-provision once**"
+          ],
+          [
+            "Overhead",
+            "open files, replication, metadata",
+            "fewer"
+          ],
+          [
+            "Failover time",
+            "each leader must be re-elected",
+            "fewer"
+          ],
+          [
+            "Hot keys",
+            "one key can never be split",
+            "better keys, not more partitions"
+          ]
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "add": [
+        "b1",
+        "b2",
+        "b3",
+        "e_prod_b1",
+        "e_prod_b2",
+        "e_prod_b3",
+        "e_b1_cons",
+        "e_b2_cons",
+        "e_b3_cons"
+      ],
+      "remove": [
+        "single"
+      ],
+      "title": "Spread partitions across brokers",
+      "script": [
+        "Back to the cluster. Now each partition's **leader** can live on a different **broker**: partition 0 on broker 1, partition 1 on broker 2, and so on; in reality each broker leads a couple of hundred.",
+        "There's **no router** in the middle: the producer library fetches **metadata** saying which broker leads which partition and sends each batch straight to that leader, and consumers do the same. Adding brokers adds disk and network, and partitions can be **reassigned** onto them."
+      ]
+    },
+    {
+      "title": "Producing a batch",
+      "script": [
+        "Here's one produce. The client asks **any broker** for metadata, since every broker caches the whole cluster's metadata, and learns that broker 2 leads partition 1.",
+        "Then it **batches**: it waits a few milliseconds (**linger.ms**) to collect records for each partition, compresses the batch, and sends it as one request. The leader appends it to the active segment and answers with the batch's **base offset**. One request carries hundreds of records, which is where most of the throughput comes from."
+      ],
+      "sequence": {
+        "actors": [
+          {
+            "id": "p",
+            "label": "Producer",
+            "kind": "client"
+          },
+          {
+            "id": "b1",
+            "label": "Broker 1",
+            "kind": "data",
+            "sub": "any broker"
+          },
+          {
+            "id": "b2",
+            "label": "Broker 2",
+            "kind": "data",
+            "sub": "leader of P1"
+          }
+        ],
+        "steps": [
+          {
+            "from": "p",
+            "to": "b1",
+            "label": "metadata(orders)"
+          },
+          {
+            "from": "b1",
+            "to": "p",
+            "label": "P0 → B1, P1 → B2, P2 → B3",
+            "reply": true
+          },
+          {
+            "from": "p",
+            "to": "p",
+            "label": "batch per partition, compress"
+          },
+          {
+            "from": "p",
+            "to": "b2",
+            "label": "produce(orders-1, 300 records)"
+          },
+          {
+            "from": "b2",
+            "to": "b2",
+            "label": "append to active segment"
+          },
+          {
+            "from": "b2",
+            "to": "p",
+            "label": "ack: base offset 4,812",
+            "reply": true
+          },
+          {
+            "note": "one request, hundreds of records",
+            "over": [
+              "p",
+              "b2"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "add": [
+        "r_b2_b1",
+        "r_b2_b3"
+      ],
+      "title": "Replicate every partition",
+      "script": [
+        "One broker's disk isn't durable enough. Every partition gets a **replication factor of 3**: one **leader** and two **followers** on other brokers, placed in different racks or availability zones.",
+        "Followers **fetch from the leader** exactly like consumers do, and append the same bytes at the **same offsets**, so the replicas are identical copies of one log. The diagram shows partition 1, led by broker 2; every partition works the same way, with leadership spread so each broker leads some and follows others."
+      ]
+    },
+    {
+      "scene": "isr",
+      "add": [
+        "lbl_b2",
+        "b2_0",
+        "b2_1",
+        "b2_2",
+        "b2_3",
+        "b2_4",
+        "b2_5",
+        "lbl_b1",
+        "b1_0",
+        "b1_1",
+        "b1_2",
+        "b1_3",
+        "b1_4",
+        "lbl_b3",
+        "b3_0",
+        "b3_1",
+        "b3_2"
+      ],
+      "title": "Followers trail the leader",
+      "script": [
+        "Zoom into partition 1's three replicas. The leader, broker 2, has offsets 0 to 5. Broker 1 has fetched up to 4, and broker 3, which is slow, only up to 2.",
+        "Followers are always a little **behind** the leader, because they copy what it already has. So at any moment the replicas disagree about the tail, and we have to decide which records are safe to show consumers and to **acknowledge** to producers."
+      ]
+    },
+    {
+      "scene": "isr",
+      "add": [
+        "hw",
+        "e_hw"
+      ],
+      "title": "The high watermark",
+      "script": [
+        "Each follower's fetch tells the leader how far it has got. The leader keeps the **high watermark**: the point that **every in-sync replica** has reached, here offset 3, meaning offsets 0 to 2 are committed.",
+        "Consumers can only read **below** the high watermark, and a producer using **acks=all** gets its acknowledgement once the high watermark passes its record. A record above it could still vanish if the leader died, and we never want a consumer to have read a record that later disappears."
+      ]
+    },
+    {
+      "scene": "isr",
+      "add": [
+        "lbl_b3out",
+        "isr1",
+        "hw2",
+        "e_hw2"
+      ],
+      "remove": [
+        "lbl_b3",
+        "hw",
+        "e_hw"
+      ],
+      "title": "In-sync replicas",
+      "script": [
+        "If the high watermark waited for every replica, one slow broker would stall the whole partition. So the leader keeps an **in-sync replica set**, the **ISR**: followers that have caught up within the last 30 seconds or so.",
+        "Broker 3 has fallen behind, so it's dropped from the ISR, and the high watermark jumps to 5. Broker 3 keeps fetching and **rejoins** when it catches up. The guard rail is **min.insync.replicas = 2**: if the ISR shrinks below two, acks=all writes are refused rather than kept on one disk."
+      ]
+    },
+    {
+      "title": "acks and min.insync.replicas",
+      "script": [
+        "The producer chooses how much of this to wait for with **acks**. With acks=0 it doesn't wait at all; with acks=1 it waits for the leader's own write, and loses data if the leader dies before the followers copy it.",
+        "For anything that matters we use **acks=all with min.insync.replicas = 2** and replication factor 3. An acknowledged write is then on at least two brokers in different zones, at the cost of one replication round trip, a few milliseconds."
+      ],
+      "table": {
+        "columns": [
+          "Setting",
+          "Producer waits for",
+          "Loses acked data when",
+          "Latency"
+        ],
+        "rows": [
+          [
+            "acks=0",
+            "nothing",
+            "any hiccup at all",
+            "lowest"
+          ],
+          [
+            "acks=1",
+            "the leader's local write",
+            "the leader dies before followers copy",
+            "low"
+          ],
+          [
+            "**acks=all, min ISR 2**",
+            "every in-sync replica, at least 2",
+            "two zones fail at once",
+            "+ one replication RTT"
+          ]
+        ],
+        "highlight": 2
+      }
+    },
+    {
+      "scene": "main",
+      "add": [
+        "ctrl",
+        "e_ctrl_b1",
+        "e_ctrl_b2",
+        "e_ctrl_b3"
+      ],
+      "title": "The controller",
+      "script": [
+        "Someone has to decide **who leads** each partition, track the ISR, notice dead brokers and store topic configuration. That's the **controller**: a small quorum of three or five nodes running **Raft** (Kafka calls it **KRaft**), with one active controller.",
+        "Cluster metadata is itself a **replicated log**. Brokers heartbeat to the controller and replay that metadata log, so **every broker** has a full copy, which is how any broker can answer a producer's metadata request. Older Kafka kept this in ZooKeeper; KRaft removed it and fails over much faster."
+      ]
+    },
+    {
+      "scene": "isr",
+      "add": [
+        "lbl_b2down",
+        "lbl_b1lead",
+        "isr2"
+      ],
+      "remove": [
+        "lbl_b2",
+        "lbl_b1",
+        "isr1"
+      ],
+      "title": "A leader fails",
+      "script": [
+        "Now broker 2 crashes. It stops heartbeating, and after a few seconds the controller **fences** it and picks a new leader for each partition it led, **only from the ISR**: here, broker 1. It bumps the **leader epoch** to 6 and writes the change to the metadata log.",
+        "Because broker 1 was in sync, it has everything below the high watermark, so **no acknowledged write is lost**. Producers refresh their metadata and retry against broker 1, but the ISR is now just {1}, below our minimum, so acks=all writes **wait** until another replica catches up."
+      ]
+    },
+    {
+      "scene": "isr",
+      "add": [
+        "lbl_b2back",
+        "isr3"
+      ],
+      "remove": [
+        "lbl_b2down",
+        "b2_5",
+        "isr2"
+      ],
+      "title": "The old leader returns",
+      "script": [
+        "When broker 2 restarts, its log has offset 5, which the new leader never had. That record was never acknowledged, since it never reached the high watermark, so it must go.",
+        "Broker 2 asks the leader **where epoch 5 ended**; the answer is offset 5, so it **truncates** its log there and fetches from broker 1. These **leader epochs** make sure replicas always converge on one identical history. Once broker 2 catches up it rejoins the ISR, and writes resume."
+      ]
+    },
+    {
+      "title": "Failover, step by step",
+      "script": [
+        "Here's the same failover in time order. The controller notices the missing heartbeats, fences broker 2 and makes broker 1 leader with **epoch 6**. The producer's next request to broker 2 fails, so it **refreshes metadata** and retries on broker 1.",
+        "When broker 2 comes back, it asks for the end of **epoch 5**, truncates to it and becomes a follower. The whole thing takes a few seconds, and since only that broker's partitions move, the rest of the cluster carries on."
+      ],
+      "sequence": {
+        "actors": [
+          {
+            "id": "p",
+            "label": "Producer",
+            "kind": "client"
+          },
+          {
+            "id": "b2",
+            "label": "Broker 2",
+            "kind": "data",
+            "sub": "old leader"
+          },
+          {
+            "id": "c",
+            "label": "Controller",
+            "kind": "infra"
+          },
+          {
+            "id": "b1",
+            "label": "Broker 1",
+            "kind": "data",
+            "sub": "follower"
+          }
+        ],
+        "steps": [
+          {
+            "note": "Broker 2 stops heartbeating",
+            "over": [
+              "b2",
+              "c"
+            ]
+          },
+          {
+            "from": "c",
+            "to": "c",
+            "label": "timeout: fence Broker 2"
+          },
+          {
+            "from": "c",
+            "to": "b1",
+            "label": "lead P1, epoch 6"
+          },
+          {
+            "from": "p",
+            "to": "b2",
+            "label": "produce (fails)"
+          },
+          {
+            "from": "p",
+            "to": "b1",
+            "label": "refresh metadata, retry"
+          },
+          {
+            "from": "b1",
+            "to": "p",
+            "label": "ack",
+            "reply": true
+          },
+          {
+            "from": "b2",
+            "to": "b1",
+            "label": "where did epoch 5 end?"
+          },
+          {
+            "from": "b1",
+            "to": "b2",
+            "label": "offset 5",
+            "reply": true
+          },
+          {
+            "from": "b2",
+            "to": "b2",
+            "label": "truncate to 5, then fetch"
+          }
+        ]
+      }
+    },
+    {
+      "title": "When every in-sync replica is gone",
+      "script": [
+        "The hard case is when the **whole ISR** is down and only an out-of-date replica is left. We can **wait** for an in-sync replica to return, so the partition is unavailable, or elect the stale one and **lose acknowledged writes**.",
+        "That's **unclean leader election**, and it's off by default: we choose consistency. Spreading replicas across zones makes this rare, and once brokers recover, leadership moves back to each partition's **preferred replica** so load stays balanced."
+      ],
+      "bullets": {
+        "items": [
+          {
+            "text": "**Wait** for an ISR member to come back",
+            "detail": "no data loss, but the partition is down meanwhile"
+          },
+          {
+            "text": "Or elect an **out-of-sync** replica",
+            "detail": "unclean.leader.election.enable: available, but acked writes are lost"
+          },
+          {
+            "text": "Default: **wait**: consistency over availability",
+            "detail": "per topic, so a metrics topic can choose differently"
+          },
+          {
+            "text": "Replicas in **3 zones** make it rare",
+            "detail": "rack-aware placement: never two replicas in one zone"
+          },
+          {
+            "text": "Then move leaders back to **preferred replicas**",
+            "detail": "keeps leadership, and so load, evenly spread"
+          }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "add": [
+        "c1",
+        "e_b1_c1",
+        "e_b2_c1",
+        "c2",
+        "e_b3_c2"
+      ],
+      "remove": [
+        "cons"
+      ],
+      "title": "Consumer groups",
+      "script": [
+        "Now the read side. One consumer can't keep up with a gigabyte a second, so consumers join a **consumer group** that shares the work: each partition is assigned to **exactly one member** of the group.",
+        "Here the billing group has two members: consumer 1 reads partitions 0 and 1, consumer 2 reads partition 2. Since one consumer owns each partition, per-key **order is preserved** while processing. And a group can use at most as many consumers as there are partitions."
+      ]
+    },
+    {
+      "scene": "group",
+      "add": [
+        "p0",
+        "p1",
+        "p2",
+        "ga1",
+        "e_p0_ga1",
+        "e_p1_ga1",
+        "ga2",
+        "e_p2_ga2"
+      ],
+      "title": "Partitions split among members",
+      "script": [
+        "Let's zoom into the groups. The billing group's members divide the topic's partitions: **A1** owns partitions 0 and 1, **A2** owns partition 2.",
+        "That's the **work queue** pattern: each record is handled by one member of the group. To go faster we add members, up to one per partition, and the partitions are spread over them."
+      ]
+    },
+    {
+      "scene": "group",
+      "add": [
+        "an",
+        "e_p0_an",
+        "e_p1_an",
+        "e_p2_an"
+      ],
+      "title": "Every group gets every record",
+      "script": [
+        "A second group, **analytics**, reads the very same partitions, completely independently, at its own pace and with its own offsets. That's **publish-subscribe**: every group sees every record.",
+        "So one design gives both patterns: members of a group **share** the work, and separate groups each get **everything**. And fan-out is cheap: the data is stored once, and three groups reading it means three sequential reads, mostly served from memory."
+      ]
+    },
+    {
+      "scene": "group",
+      "add": [
+        "coord",
+        "e_ga1_coord",
+        "e_ga2_coord",
+        "e_an_coord",
+        "offs",
+        "e_coord_offs"
+      ],
+      "title": "Committing offsets",
+      "script": [
+        "A consumer's progress is **one number per partition**: the next offset to read. Every few seconds, or after each batch, it **commits** that offset to its **group coordinator**, a broker chosen by hashing the group id.",
+        "The coordinator writes the commit to an internal topic, **__consumer_offsets**, which is replicated like any other partition and **compacted** to keep only the latest offset per group and partition. After a restart, a consumer asks for its committed offsets and resumes from there."
+      ]
+    },
+    {
+      "title": "Joining a group",
+      "script": [
+        "How do members agree on who owns what? Each sends **JoinGroup** to the coordinator, which waits briefly for everyone, picks one member as the **group leader**, and hands it the member list.",
+        "The leader runs the **assignor** (range, round-robin or sticky) and sends the plan back in **SyncGroup**; the coordinator passes each member its partitions. Every round bumps the **generation** number, and from then on members send heartbeats every few seconds."
+      ],
+      "sequence": {
+        "actors": [
+          {
+            "id": "a1",
+            "label": "Consumer A1",
+            "kind": "client"
+          },
+          {
+            "id": "a2",
+            "label": "Consumer A2",
+            "kind": "client"
+          },
+          {
+            "id": "co",
+            "label": "Coordinator",
+            "kind": "infra"
+          }
+        ],
+        "steps": [
+          {
+            "from": "a1",
+            "to": "co",
+            "label": "JoinGroup(billing)"
+          },
+          {
+            "from": "a2",
+            "to": "co",
+            "label": "JoinGroup(billing)"
+          },
+          {
+            "from": "co",
+            "to": "a1",
+            "label": "you lead · members A1, A2 · gen 7",
+            "reply": true
+          },
+          {
+            "from": "co",
+            "to": "a2",
+            "label": "member · gen 7",
+            "reply": true
+          },
+          {
+            "from": "a1",
+            "to": "a1",
+            "label": "assign: A1 ← P0, P1 · A2 ← P2"
+          },
+          {
+            "from": "a1",
+            "to": "co",
+            "label": "SyncGroup(plan)"
+          },
+          {
+            "from": "a2",
+            "to": "co",
+            "label": "SyncGroup()"
+          },
+          {
+            "from": "co",
+            "to": "a1",
+            "label": "P0, P1",
+            "reply": true
+          },
+          {
+            "from": "co",
+            "to": "a2",
+            "label": "P2",
+            "reply": true
+          },
+          {
+            "note": "then heartbeats every 3 s",
+            "over": [
+              "a1",
+              "co"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "scene": "group",
+      "add": [
+        "ga3",
+        "e_p1_ga3",
+        "e_ga3_coord"
+      ],
+      "remove": [
+        "e_p1_ga1"
+      ],
+      "title": "A consumer joins: rebalance",
+      "script": [
+        "To scale out, we start **A3**. Its JoinGroup triggers a **rebalance** and a new generation, and partition 1 **moves** from A1 to A3.",
+        "Before giving partition 1 up, A1 commits its offset for it, so A3 starts **exactly where A1 stopped**. And the generation number fences **zombies**: a commit from a member that missed the rebalance carries the old generation and is rejected."
+      ]
+    },
+    {
+      "title": "Eager vs. cooperative rebalancing",
+      "script": [
+        "The classic protocol was **eager**: on any change, every member gives up **all** its partitions and waits for the new plan, so the whole group stops, which is painful with hundreds of consumers or during a rolling deploy.",
+        "**Cooperative** rebalancing revokes only the partitions that actually move, so here only partition 1 pauses. **Static membership** lets a restarting pod keep its partitions, and the newest protocol moves assignment into the **coordinator** itself."
+      ],
+      "table": {
+        "columns": [
+          "Protocol",
+          "What happens",
+          "Who pauses"
+        ],
+        "rows": [
+          [
+            "Eager",
+            "all members revoke everything, rejoin, reassign",
+            "**the whole group**"
+          ],
+          [
+            "Cooperative (sticky)",
+            "only moved partitions are revoked, in two rounds",
+            "only **P1**"
+          ],
+          [
+            "Static membership",
+            "a member with a fixed id can restart without a rebalance",
+            "nobody, if back in time"
+          ],
+          [
+            "Server-side (KIP-848)",
+            "the coordinator computes assignments via heartbeats",
+            "only moved partitions"
+          ]
+        ],
+        "highlight": 1
+      }
+    },
+    {
+      "title": "Detecting a dead consumer",
+      "script": [
+        "What if A2 simply dies? The coordinator only knows from missing **heartbeats**, so it waits for the **session timeout**, 45 seconds by default, before declaring A2 dead and rebalancing partition 2 to someone else.",
+        "Meanwhile nobody reads partition 2, and its **consumer lag** climbs. A shorter timeout reacts faster but risks false alarms during GC pauses, and a separate **max.poll.interval** catches a consumer that's alive but stuck processing."
+      ],
+      "timeline": {
+        "axis": {
+          "from": 0,
+          "to": 60,
+          "ticks": [
+            0,
+            15,
+            30,
+            45,
+            60
+          ],
+          "unit": "s"
+        },
+        "lanes": [
+          {
+            "id": "hb",
+            "label": "A2 heartbeats",
+            "sub": "every 3 s"
+          },
+          {
+            "id": "lag",
+            "label": "P2 lag",
+            "sub": "unread records",
+            "max": 100
+          },
+          {
+            "id": "state",
+            "label": "Group state"
+          }
+        ],
+        "marks": [
+          {
+            "lane": "hb",
+            "at": 0,
+            "result": "allow"
+          },
+          {
+            "lane": "hb",
+            "at": 3,
+            "result": "allow"
+          },
+          {
+            "lane": "hb",
+            "at": 6,
+            "result": "allow"
+          },
+          {
+            "lane": "hb",
+            "at": 9,
+            "result": "allow"
+          },
+          {
+            "lane": "hb",
+            "at": 12,
+            "result": "allow",
+            "label": "last"
+          },
+          {
+            "lane": "state",
+            "span": [
+              0,
+              12
+            ],
+            "label": "stable · gen 8"
+          },
+          {
+            "lane": "state",
+            "span": [
+              12,
+              57
+            ],
+            "label": "waiting for session timeout"
+          },
+          {
+            "lane": "lag",
+            "level": [
+              [
+                0,
+                5
+              ],
+              [
+                12,
+                5
+              ],
+              [
+                57,
+                85
+              ],
+              [
+                60,
+                40
+              ]
+            ],
+            "label": "lag"
+          },
+          {
+            "lane": "state",
+            "span": [
+              57,
+              60
+            ],
+            "label": "gen 9"
+          },
+          {
+            "note": "45 s with **P2 unread**",
+            "at": [
+              12,
+              57
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "scene": "log",
+      "add": [
+        "expired"
+      ],
+      "remove": [
+        "seg0"
+      ],
+      "title": "Retention: delete old segments",
+      "script": [
+        "Back inside the log: reading never deletes anything, so how does the disk not fill up? **Retention**: per topic, keep records for a **time** (7 days) or up to a **size** per partition.",
+        "A background task deletes **whole segments** once the newest record in them is past retention: a file delete, with no rewriting, which is why the log is split into segments. A consumer that falls further behind than retention gets **offset out of range** and restarts from the earliest or latest offset, as configured."
+      ]
+    },
+    {
+      "scene": "compact",
+      "add": [
+        "before",
+        "cb0",
+        "cb1",
+        "cb2",
+        "cb3",
+        "cb4",
+        "cb5",
+        "cb6"
+      ],
+      "title": "Log compaction",
+      "script": [
+        "Some topics hold **state** rather than events: the latest profile for each user, the latest row of a database table, or the committed offsets we just saw. For those, keeping 7 days of history is wasteful, and dropping old data by age loses keys that rarely change.",
+        "So a topic can be **compacted** instead: the guarantee is that the **latest value for every key** is kept forever. Here is a stretch of such a log, with key k1 written three times."
+      ]
+    },
+    {
+      "scene": "compact",
+      "add": [
+        "e_clean",
+        "after",
+        "ca4",
+        "ca5",
+        "ca6"
+      ],
+      "title": "After compaction",
+      "script": [
+        "A **log cleaner** thread rewrites old, sealed segments, keeping only the **newest record per key**. Offsets never change, so the cleaned log simply has **gaps**. A record with a **null value** is a **tombstone**: it deletes its key, and is itself removed after a day so slow consumers still see the delete.",
+        "A new consumer that reads a compacted topic from the beginning rebuilds the **complete current state**, which is how __consumer_offsets and stream processors' state stores are restored."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": [
+        "obj",
+        "e_b2_obj",
+        "e_b1_obj",
+        "e_b3_obj"
+      ],
+      "title": "Tiered storage",
+      "script": [
+        "Our numbers say 7 days is **1.8 petabytes** on broker disks. Longer retention gets expensive fast, and moving a partition to a new broker means copying terabytes.",
+        "So with **tiered storage**, brokers **upload sealed segments** to object storage like S3 and keep only the recent tail, say 12 hours, on local disk. Reads of recent data, which is nearly all of them, stay local; replays of old data come from the object store, a bit slower. Brokers become light, so replacing one takes minutes, not hours."
+      ]
+    },
+    {
+      "title": "Delivery guarantees",
+      "script": [
+        "Now the guarantees. Failures happen at two moments, a producer **retrying** a send and a consumer **crashing** between processing a record and committing its offset, and each guarantee chooses which way those failures go.",
+        "Commit before processing and you can **lose** records; process before committing and you can see **duplicates**. **At-least-once**, with consumers that tolerate duplicates, is the usual default; **exactly-once** needs two more pieces, which come next."
+      ],
+      "table": {
+        "columns": [
+          "Guarantee",
+          "Producer",
+          "Consumer",
+          "A crash causes"
+        ],
+        "rows": [
+          [
+            "At most once",
+            "acks=0 or no retries",
+            "commit, then process",
+            "lost records"
+          ],
+          [
+            "At least once",
+            "acks=all + retries",
+            "process, then commit",
+            "duplicates"
+          ],
+          [
+            "**Exactly once**",
+            "idempotent + transactions",
+            "offsets committed in the transaction",
+            "neither, within Kafka"
+          ]
+        ],
+        "highlight": 1
+      }
+    },
+    {
+      "title": "Where duplicates come from",
+      "script": [
+        "Here's the producer side. The leader appends a batch, but the **acknowledgement is lost** on the network; the producer can't tell a lost request from a lost reply, so it does the only safe thing and **retries**.",
+        "The leader appends the batch **a second time**, so every consumer sees those records twice, at different offsets. The consumer side has the same problem: crash after processing but before committing, and the records are read again."
+      ],
+      "sequence": {
+        "actors": [
+          {
+            "id": "p",
+            "label": "Producer",
+            "kind": "client"
+          },
+          {
+            "id": "l",
+            "label": "Leader",
+            "kind": "data",
+            "sub": "orders-1"
+          }
+        ],
+        "steps": [
+          {
+            "from": "p",
+            "to": "l",
+            "label": "produce(batch)"
+          },
+          {
+            "from": "l",
+            "to": "l",
+            "label": "append at 4,812"
+          },
+          {
+            "from": "l",
+            "to": "p",
+            "label": "ack: lost on the network",
+            "reply": true
+          },
+          {
+            "from": "p",
+            "to": "p",
+            "label": "timeout: retry"
+          },
+          {
+            "from": "p",
+            "to": "l",
+            "label": "produce(same batch)"
+          },
+          {
+            "from": "l",
+            "to": "l",
+            "label": "append again at 5,112: duplicate"
+          }
+        ]
+      }
+    },
+    {
+      "title": "The idempotent producer",
+      "script": [
+        "The fix is cheap. Each producer gets a **producer id** and numbers its batches per partition with a **sequence number**, and the leader remembers the last few sequence numbers for each producer, replicated along with the log.",
+        "When the retried batch arrives with a sequence it has already written, the leader **skips the append** and just acknowledges it again. Retries become safe, order is kept even with several requests in flight, and it's **on by default** in modern Kafka."
+      ],
+      "sequence": {
+        "actors": [
+          {
+            "id": "p",
+            "label": "Producer",
+            "kind": "client"
+          },
+          {
+            "id": "l",
+            "label": "Leader",
+            "kind": "data",
+            "sub": "orders-1"
+          }
+        ],
+        "steps": [
+          {
+            "from": "p",
+            "to": "l",
+            "label": "InitProducerId"
+          },
+          {
+            "from": "l",
+            "to": "p",
+            "label": "PID 81",
+            "reply": true
+          },
+          {
+            "from": "p",
+            "to": "l",
+            "label": "produce(PID 81, seq 42, batch)"
+          },
+          {
+            "from": "l",
+            "to": "l",
+            "label": "append at 4,812; last seq = 42"
+          },
+          {
+            "from": "l",
+            "to": "p",
+            "label": "ack: lost",
+            "reply": true
+          },
+          {
+            "from": "p",
+            "to": "l",
+            "label": "retry(PID 81, seq 42)"
+          },
+          {
+            "from": "l",
+            "to": "l",
+            "label": "seq 42 already written: skip"
+          },
+          {
+            "from": "l",
+            "to": "p",
+            "label": "ack: offset 4,812",
+            "reply": true
+          }
+        ]
+      }
+    },
+    {
+      "title": "Transactions: read, process, write",
+      "script": [
+        "Idempotence covers one partition. A typical stream job **reads** an input record, **writes** results to other partitions, and **commits** its input offset; exactly-once means all three happen together, or none do.",
+        "So the producer opens a **transaction**: its output records and its offset commit join it, and a **transaction coordinator** commits it with two-phase commit, writing **commit markers** into every partition involved. Consumers using **read_committed** only see records whose transaction committed."
+      ],
+      "sequence": {
+        "actors": [
+          {
+            "id": "app",
+            "label": "Stream Job",
+            "kind": "service",
+            "sub": "consume → produce"
+          },
+          {
+            "id": "tc",
+            "label": "Txn Coordinator",
+            "kind": "infra"
+          },
+          {
+            "id": "out",
+            "label": "Output Partitions",
+            "kind": "stream"
+          },
+          {
+            "id": "off",
+            "label": "__consumer_offsets",
+            "kind": "stream"
+          }
+        ],
+        "steps": [
+          {
+            "from": "app",
+            "to": "tc",
+            "label": "begin (transactional.id)"
+          },
+          {
+            "from": "app",
+            "to": "out",
+            "label": "produce results"
+          },
+          {
+            "from": "app",
+            "to": "off",
+            "label": "commit input offsets (in txn)"
+          },
+          {
+            "from": "app",
+            "to": "tc",
+            "label": "commitTransaction"
+          },
+          {
+            "from": "tc",
+            "to": "tc",
+            "label": "log PREPARE_COMMIT"
+          },
+          {
+            "from": "tc",
+            "to": "out",
+            "label": "COMMIT marker"
+          },
+          {
+            "from": "tc",
+            "to": "off",
+            "label": "COMMIT marker"
+          },
+          {
+            "note": "read_committed consumers see results only now",
+            "over": [
+              "out",
+              "off"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "title": "Exactly-once, and its limits",
+      "script": [
+        "Transactions also fence **zombies**: a restarted job with the same transactional id bumps an epoch, and the old instance's writes are rejected. The cost is modest: a few percent of throughput, and read_committed consumers wait for each commit, so we commit every 100 milliseconds or so.",
+        "The limit is the boundary. Exactly-once holds **inside Kafka**. An email, a payment or a database write is outside it, so those sinks still need **idempotency keys**, or must store the offset in the same database transaction as the result."
+      ],
+      "bullets": {
+        "items": [
+          {
+            "text": "Consume, process, produce: **atomic**",
+            "detail": "outputs and input offsets commit together"
+          },
+          {
+            "text": "**Zombie fencing**",
+            "detail": "transactional.id + epoch: a stale instance can't write"
+          },
+          {
+            "text": "read_committed waits for the **last stable offset**",
+            "detail": "adds up to one commit interval of latency"
+          },
+          {
+            "text": "Side effects outside Kafka are **not covered**",
+            "detail": "use idempotency keys, or store offsets with the result"
+          }
+        ]
+      }
+    },
+    {
+      "title": "Why it's fast",
+      "script": [
+        "Why does a design this simple reach a gigabyte a second on ordinary machines? Almost every choice avoids work: **batches** are compressed once by the producer and stored and sent as they are; the disk only does **sequential** appends and reads.",
+        "The broker keeps no cache of its own; it relies on the OS **page cache**, so recent data, which is what consumers read, is served from memory. **Zero-copy** sends it from the page cache straight to the socket. And consumers **pull**, so each reads at its own pace and the broker never tracks per-message state."
+      ],
+      "bullets": {
+        "items": [
+          {
+            "text": "**Batching and compression**, end to end",
+            "detail": "compressed once by the producer, stored and served as is"
+          },
+          {
+            "text": "**Sequential I/O** only",
+            "detail": "appends and forward scans; no random writes"
+          },
+          {
+            "text": "The OS **page cache**, not an app cache",
+            "detail": "no GC pressure, and it survives a broker restart"
+          },
+          {
+            "text": "**Zero-copy** transfer",
+            "detail": "sendfile: page cache → socket, no user-space copy (not with TLS)"
+          },
+          {
+            "text": "**Pull** with long polling",
+            "detail": "consumers batch at their own pace; no per-message broker state"
+          }
+        ]
+      }
+    },
+    {
+      "title": "Latency vs. throughput",
+      "script": [
+        "Most of these are knobs that trade **latency for throughput**. Waiting a little longer to fill bigger batches means fewer requests and better compression, at the cost of a few milliseconds.",
+        "With our settings, a record typically reaches a consumer in **tens of milliseconds**, well inside the 100 ms p99 target, while the cluster sustains its gigabyte a second in."
+      ],
+      "table": {
+        "columns": [
+          "Knob",
+          "Raise it for",
+          "Cost"
+        ],
+        "rows": [
+          [
+            "linger.ms",
+            "fuller batches, fewer requests",
+            "+ a few ms per send"
+          ],
+          [
+            "batch.size",
+            "larger batches under load",
+            "producer memory"
+          ],
+          [
+            "compression (lz4, zstd)",
+            "less network and disk, ~4×",
+            "CPU on clients"
+          ],
+          [
+            "acks=all",
+            "durability",
+            "+ one replication round trip"
+          ],
+          [
+            "fetch.min.bytes / max.wait",
+            "fewer, larger fetches",
+            "consumer latency"
+          ]
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "title": "The complete message queue",
+      "script": [
+        "Let's step back. Producers hash keys to **partitions**, and send batches straight to each partition's **leader**. Each partition is an **append-only log** of immutable segments, copied to followers, with the **ISR** and **high watermark** deciding what's committed. The **controller** quorum elects leaders, and **leader epochs** keep replicas identical through failover.",
+        "**Consumer groups** split partitions among members and commit **offsets**, so readers are cheap and can replay. **Retention**, **compaction** and **tiered storage** manage the data, and **idempotent producers** and **transactions** give exactly-once inside the log. The core idea throughout: a **replicated, partitioned log**, with the consumers keeping track of where they are."
+      ]
+    }
+  ]
+}
