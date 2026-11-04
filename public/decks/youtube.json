@@ -207,36 +207,104 @@
       "add": ["creator", "viewer", "server", "e_creator_server", "e_viewer_server"],
       "title": "Start simple: one server",
       "script": [
-        "Let's start with the simplest thing that works. There are two kinds of users: a **creator**, who uploads a video, and a **viewer**, who watches it. Both talk to **one server**.",
-        "The creator POSTs a video file and the server saves it to its local disk. The viewer requests the video and the server streams the same file back. Everything we add from here exists to fix a specific weakness of this version, and there are plenty."
+        "Let's start with the simplest thing that works. There are two kinds of users: a **creator**, who uploads a video, and a **viewer**, who watches it. Both talk to **one server**."
       ]
+    },
+    {
+      "title": "The naive upload and watch",
+      "script": [
+        "The creator POSTs a video file and the server saves it to its local disk. The viewer requests the video and the server streams the same file back. Everything we add from here exists to fix a specific weakness of this version, and there are plenty."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "creator", "label": "Creator", "kind": "client" },
+          { "id": "server", "label": "Server", "kind": "service", "sub": "files on local disk" },
+          { "id": "viewer", "label": "Viewer", "kind": "client" }
+        ],
+        "steps": [
+          { "from": "creator", "to": "server", "label": "POST /videos (whole file)" },
+          { "from": "server", "to": "server", "label": "save to local disk" },
+          { "from": "server", "to": "creator", "label": "201 Created, id = 42", "reply": true },
+          { "from": "viewer", "to": "server", "label": "GET /videos/42" },
+          { "from": "server", "to": "viewer", "label": "stream the original file", "reply": true },
+          { "note": "every byte passes through this one machine", "over": ["server", "viewer"] }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
       "add": ["metadb", "e_server_metadb"],
       "title": "Metadata goes in a database",
       "script": [
-        "A video is two very different kinds of data. The first is **metadata**: the title, description, owner, visibility, upload time, duration and processing status. It's small, a few kilobytes per video, structured, and queried in many ways.",
-        "So we put it in a **Metadata DB**. A relational database fits well here: channels own videos, videos have many renditions and captions, and creators edit these rows and expect the changes to stick. With 4 million new videos a day this is billions of rows over time, but each row is tiny."
+        "A video is two very different kinds of data. The first is **metadata**: the title, description, owner, visibility, upload time, duration and processing status. It's small, a few kilobytes per video, structured, and queried in many ways."
       ]
+    },
+    {
+      "title": "The metadata model",
+      "script": [
+        "So we put it in a **Metadata DB**. A relational database fits well here: channels own videos, videos have many renditions and captions, and creators edit these rows and expect the changes to stick. With 4 million new videos a day this is billions of rows over time, but each row is tiny."
+      ],
+      "entities": {
+        "items": [
+          { "id": "channel", "name": "Channel", "kind": "data", "fields": ["id: bigint  PK", "owner_id: bigint", "name: text", "created_at: timestamp"] },
+          { "id": "video", "name": "Video", "kind": "data", "fields": ["id: bigint  PK", "channel_id: bigint  FK", "title, description: text", "visibility: enum", "status: enum", "duration_s: int"] },
+          { "id": "rendition", "name": "Rendition", "kind": "data", "fields": ["video_id: bigint  FK", "resolution: text", "codec: text", "manifest_path: text"] }
+        ],
+        "relations": [
+          { "from": "channel", "to": "video", "label": "1 — *" },
+          { "from": "video", "to": "rendition", "label": "1 — *" }
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["rawstore", "e_server_raw"],
       "title": "Video bytes go in blob storage",
       "script": [
-        "The second kind of data is the **video file** itself: gigabytes of opaque bytes that are written once and never edited. That doesn't belong in a database or on the server's disk. It goes in a **blob store**, an object store like S3 or Google Cloud Storage, keyed by video ID.",
-        "Blob stores are built for exactly this: effectively **unlimited capacity**, high throughput for large sequential reads and writes, and durability through replication or **erasure coding** across machines and zones. The database row just points at the object. Separating metadata from bytes is the first big design decision, and every later step builds on it."
+        "The second kind of data is the **video file** itself: gigabytes of opaque bytes that are written once and never edited. That doesn't belong in a database or on the server's disk. It goes in a **blob store**, an object store like S3 or Google Cloud Storage, keyed by video ID."
       ]
+    },
+    {
+      "title": "Where should the bytes live?",
+      "script": [
+        "Blob stores are built for exactly this: effectively **unlimited capacity**, high throughput for large sequential reads and writes, and durability through replication or **erasure coding** across machines and zones. The database row just points at the object. Separating metadata from bytes is the first big design decision, and every later step builds on it."
+      ],
+      "table": {
+        "columns": [
+          "Option",
+          "Good at",
+          "Bad at"
+        ],
+        "rows": [
+          ["Database BLOB column", "one transaction with the metadata", "huge rows, slow backups, costly"],
+          ["Server's local disk", "simple", "dies with the server, can't scale"],
+          ["**Blob / object store**", "unlimited, cheap, durable, fast streams", "no queries, write-once"]
+        ],
+        "highlight": 2
+      }
     },
     {
       "scene": "main",
       "focus": ["viewer", "server", "rawstore", "e_viewer_server", "e_server_raw"],
       "title": "Why serving the original file fails",
       "script": [
-        "Now look at the watch path: the server reads the **original upload** and sends it to the viewer. That fails in several ways. The original might be a 20-megabit-per-second 4K file from a camera, which a phone on 3G simply **can't download fast enough** to play.",
-        "It might use a **codec or container** the viewer's device can't decode. Seeking means the player has to figure out byte offsets inside a file it hasn't downloaded. And every byte flows **through our server**, which at 125 terabits a second is impossible. We'll fix all of these, but first let's make the front door scale."
+        "Now look at the watch path: the server reads the **original upload** and sends it to the viewer. That fails in several ways. The original might be a 20-megabit-per-second 4K file from a camera, which a phone on 3G simply **can't download fast enough** to play."
       ]
+    },
+    {
+      "title": "Four problems with the original file",
+      "script": [
+        "It might use a **codec or container** the viewer's device can't decode. Seeking means the player has to figure out byte offsets inside a file it hasn't downloaded. And every byte flows **through our server**, which at 125 terabits a second is impossible. We'll fix all of these, but first let's make the front door scale."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Too big** for slow networks", "detail": "a 20 Mbps 4K camera file on a phone over 3G" },
+          { "text": "**Wrong codec or container** for the device", "detail": "not every device decodes what the camera wrote" },
+          { "text": "**Seeking** is hard", "detail": "byte offsets inside a file the player hasn't downloaded" },
+          { "text": "Every byte flows **through our server**", "detail": "impossible at 125 terabits a second" }
+        ]
+      }
     },
     {
       "scene": "main",
@@ -262,9 +330,53 @@
       "focus": ["creator", "gw", "upload", "rawstore", "e_creator_gw", "e_upload_raw"],
       "title": "Resumable, chunked uploads",
       "script": [
-        "A multi-gigabyte upload over a phone connection **will** get interrupted, so uploads are **resumable**. The client first calls the Upload Service to start an **upload session**. The service creates the video record with status UPLOADING and returns a session ID. The client then sends the file in **chunks** of, say, 8 megabytes.",
-        "Each chunk goes into the blob store as part of a **multipart upload**, and the session records how many bytes have been received. If the connection drops, the client asks the session **\"how much do you have?\"** and continues from that offset. *An alternative is to hand the client pre-signed URLs and let it upload straight to the blob store; that saves us bandwidth, but our own front end gives us more control over validation and quotas.*"
+        "A multi-gigabyte upload over a phone connection **will** get interrupted, so uploads are **resumable**. The client first calls the Upload Service to start an **upload session**. The service creates the video record with status UPLOADING and returns a session ID. The client then sends the file in **chunks** of, say, 8 megabytes."
       ]
+    },
+    {
+      "title": "A resumable upload session",
+      "script": [
+        "Each chunk goes into the blob store as part of a **multipart upload**, and the session records how many bytes have been received. If the connection drops, the client asks the session **\"how much do you have?\"** and continues from that offset."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "creator", "label": "Creator", "kind": "client" },
+          { "id": "upload", "label": "Upload Service", "kind": "service" },
+          { "id": "raw", "label": "Raw Uploads", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "creator", "to": "upload", "label": "POST /uploads (size, title)" },
+          { "from": "upload", "to": "creator", "label": "session_id", "reply": true },
+          { "from": "creator", "to": "upload", "label": "PUT chunk 1 (bytes 0–8 MB)" },
+          { "from": "upload", "to": "raw", "label": "upload part 1" },
+          { "from": "upload", "to": "creator", "label": "received: 8 MB", "reply": true },
+          { "note": "connection drops during chunk 2", "over": ["creator", "upload"] },
+          { "from": "creator", "to": "upload", "label": "how much do you have?" },
+          { "from": "upload", "to": "creator", "label": "8 MB", "reply": true },
+          { "from": "creator", "to": "upload", "label": "PUT chunk 2 (from 8 MB)" },
+          { "from": "upload", "to": "raw", "label": "upload part 2 … complete" }
+        ]
+      },
+      "fadeMs": 1000
+    },
+    {
+      "title": "Who receives the bytes?",
+      "script": [
+        "An alternative is to hand the client pre-signed URLs and let it upload straight to the blob store; that saves us bandwidth, but our own front end gives us more control over validation and quotas.",
+        "For YouTube we keep our own front end: at 50 uploads a second the bandwidth is affordable, and the control is worth it."
+      ],
+      "table": {
+        "columns": [
+          "Option",
+          "Pros",
+          "Cons"
+        ],
+        "rows": [
+          ["**Our Upload Service**", "validation, quotas, one protocol everywhere", "we carry the upload bandwidth"],
+          ["Pre-signed URL to the blob store", "saves our servers and bandwidth", "less control, provider-specific"]
+        ],
+        "highlight": 0
+      }
     },
     {
       "scene": "main",
@@ -280,27 +392,80 @@
       "add": ["orchestrator", "e_uploadq_orch"],
       "title": "A Transcode Orchestrator",
       "script": [
-        "Now we fix the watch-path problems from earlier by **transcoding**: decoding the original and re-encoding it into versions every device can play well. A **Transcode Orchestrator** consumes the upload events and, for each video, plans all the work that needs to happen.",
-        "It first **probes** the original: duration, resolution, frame rate, audio tracks, codec. From that it decides which outputs to produce. A 480p phone video doesn't get a 4K version; a 4K upload gets the full set. The orchestrator owns the plan and its progress; it doesn't do the heavy encoding itself."
+        "Now we fix the watch-path problems from earlier by **transcoding**: decoding the original and re-encoding it into versions every device can play well. A **Transcode Orchestrator** consumes the upload events and, for each video, plans all the work that needs to happen."
       ]
+    },
+    {
+      "title": "Probe first, then plan",
+      "script": [
+        "It first **probes** the original: duration, resolution, frame rate, audio tracks, codec. From that it decides which outputs to produce. A 480p phone video doesn't get a 4K version; a 4K upload gets the full set. The orchestrator owns the plan and its progress; it doesn't do the heavy encoding itself."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "uploadq", "label": "Upload Events", "kind": "stream" },
+          { "id": "orch", "label": "Orchestrator", "kind": "service" },
+          { "id": "raw", "label": "Raw Uploads", "kind": "data" },
+          { "id": "metadb", "label": "Metadata DB", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "uploadq", "to": "orch", "label": "upload done: video 42" },
+          { "from": "orch", "to": "raw", "label": "probe the original" },
+          { "from": "raw", "to": "orch", "label": "4K · 60 fps · H.264 · 2 audio tracks", "reply": true },
+          { "from": "orch", "to": "orch", "label": "plan outputs: full ladder" },
+          { "note": "a 480p phone video would get no 4K rungs", "over": ["orch"] },
+          { "from": "orch", "to": "metadb", "label": "status = PROCESSING" }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
       "focus": ["orchestrator", "uploadq", "e_uploadq_orch"],
       "title": "The bitrate ladder",
       "script": [
-        "The set of outputs is called a **bitrate ladder**: the same video at several resolutions and bitrates, from **144p** at around 100 kilobits a second up through 360p, 720p, 1080p and **4K** at 15 to 20 megabits. Each rung is a **rendition**. The player will later climb up and down this ladder as bandwidth changes.",
-        "We also produce each ladder in more than one **codec**. **H.264** plays on everything; **VP9** and **AV1** are 30 to 50% smaller at the same quality, which saves enormous bandwidth, but they're much slower to encode and not every device decodes them. So a typical video ends up as **a dozen or more renditions**, plus separate audio tracks."
+        "The set of outputs is called a **bitrate ladder**: the same video at several resolutions and bitrates, from **144p** at around 100 kilobits a second up through 360p, 720p, 1080p and **4K** at 15 to 20 megabits. Each rung is a **rendition**. The player will later climb up and down this ladder as bandwidth changes."
       ]
+    },
+    {
+      "title": "One ladder per codec",
+      "script": [
+        "We also produce each ladder in more than one **codec**. **H.264** plays on everything; **VP9** and **AV1** are 30 to 50% smaller at the same quality, which saves enormous bandwidth, but they're much slower to encode and not every device decodes them. So a typical video ends up as **a dozen or more renditions**, plus separate audio tracks."
+      ],
+      "table": {
+        "columns": [
+          "Codec",
+          "Size at same quality",
+          "Encode cost",
+          "Plays on"
+        ],
+        "rows": [
+          ["**H.264**", "baseline", "cheap", "everything"],
+          ["**VP9**", "~30–40% smaller", "several × H.264", "browsers, Android, TVs"],
+          ["**AV1**", "~50% smaller", "~10× H.264", "newer devices"]
+        ]
+      }
     },
     {
       "scene": "main",
       "add": ["workers", "e_orch_workers", "e_workers_raw"],
       "title": "Split into chunks, transcode in parallel",
       "script": [
-        "Encoding a two-hour video into a dozen renditions on one machine would take **many hours**. Our requirement is minutes. The trick is to **split the video into chunks**, a few seconds each, cut at **keyframes** so each chunk can be decoded on its own.",
-        "Each chunk-and-rendition pair becomes an independent **task** for a large pool of **Transcode Workers**. A worker reads its chunk of the original straight from the blob store, encodes it, and writes the result. A two-hour video becomes thousands of small tasks that run **in parallel**, so it finishes in minutes regardless of its length."
+        "Encoding a two-hour video into a dozen renditions on one machine would take **many hours**. Our requirement is minutes. The trick is to **split the video into chunks**, a few seconds each, cut at **keyframes** so each chunk can be decoded on its own."
       ]
+    },
+    {
+      "title": "One video, thousands of tasks",
+      "script": [
+        "Each chunk-and-rendition pair becomes an independent **task** for a large pool of **Transcode Workers**. A worker reads its chunk of the original straight from the blob store, encodes it, and writes the result. A two-hour video becomes thousands of small tasks that run **in parallel**, so it finishes in minutes regardless of its length."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "2-hour video → **~1,800 chunks** of 4 s", "detail": "cut at keyframes, so each chunk decodes on its own" },
+          { "text": "× 12 renditions ≈ **20,000 tasks**", "detail": "each one independent of the others" },
+          { "text": "Each task: **read, encode, write**", "detail": "a worker reads its chunk straight from Raw Uploads" },
+          { "text": "1,000 workers → **minutes**, not hours", "detail": "wall time depends on the pool, not the video's length" }
+        ]
+      }
     },
     {
       "scene": "main",
@@ -367,10 +532,17 @@
     },
     {
       "scene": "main",
-      "focus": ["creator", "gw", "upload", "rawstore", "uploadq", "orchestrator", "workers", "segstore", "metadb", "e_creator_gw", "e_upload_raw", "e_raw_uploadq", "e_uploadq_orch", "e_orch_workers", "e_workers_raw", "e_workers_seg", "e_orch_metadb"],
+      "focus": ["creator", "gw", "upload", "rawstore", "uploadq", "e_creator_gw", "e_upload_raw", "e_raw_uploadq"],
       "title": "Trace an upload end to end",
       "script": [
-        "Let's trace an upload. The creator opens a session with the **Upload Service** and streams chunks into **Raw Uploads**. When the file is complete, an event lands on **Upload Events**, and the creator's part is done.",
+        "Let's trace an upload. The creator opens a session with the **Upload Service** and streams chunks into **Raw Uploads**. When the file is complete, an event lands on **Upload Events**, and the creator's part is done."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["uploadq", "orchestrator", "workers", "rawstore", "segstore", "metadb", "e_uploadq_orch", "e_orch_workers", "e_workers_raw", "e_workers_seg", "e_orch_metadb"],
+      "title": "Trace the processing",
+      "script": [
         "The **orchestrator** picks up the event, probes the file and builds the DAG. Thousands of **workers** each read a chunk of the original, encode it, and write HLS/DASH segments into the **Segment Store**. As the first renditions complete, the orchestrator marks the video READY in the **Metadata DB**. Every step after the upload is asynchronous, parallel and retryable."
       ]
     },
@@ -380,18 +552,58 @@
       "add": ["video", "e_video_metadb", "playback", "e_playback_metadb"],
       "title": "Split the watch path into services",
       "script": [
-        "Now the watch side. We replace what's left of the server with two services. The **Video Service** owns video metadata: creators edit titles and visibility through it, and other services read it. The **Playback Service** answers one question: **\"I want to play video X; what do I fetch?\"**",
-        "Notice that neither service serves video bytes anymore. That was the impossible part of our first design, and we're deliberately keeping our application servers **off the byte path**. The services deal in small JSON responses; the bytes will come from somewhere else."
+        "Now the watch side. We replace what's left of the server with two services. The **Video Service** owns video metadata: creators edit titles and visibility through it, and other services read it. The **Playback Service** answers one question: **\"I want to play video X; what do I fetch?\"**"
       ]
+    },
+    {
+      "title": "Small JSON in, small JSON out",
+      "script": [
+        "Notice that neither service serves video bytes anymore. That was the impossible part of our first design, and we're deliberately keeping our application servers **off the byte path**. The services deal in small JSON responses; the bytes will come from somewhere else."
+      ],
+      "table": {
+        "columns": [
+          "Request",
+          "Handled by",
+          "Response size"
+        ],
+        "rows": [
+          ["Edit a title or visibility", "Video Service", "~1 KB"],
+          ["Play video 42: what do I fetch?", "Playback Service", "~2 KB"],
+          ["The video bytes themselves", "**not our services**", "MBs to GBs"]
+        ]
+      }
     },
     {
       "scene": "main",
       "focus": ["viewer", "gw", "playback", "metadb", "e_viewer_gw", "e_playback_metadb"],
       "title": "What the player asks for",
       "script": [
-        "When the viewer presses play, the player calls the **Playback Service**. It checks that the video is READY and that this viewer is **allowed** to watch it: public, or unlisted with the link, or private and shared with them. Then it reads the list of **renditions** from the metadata.",
-        "It returns the **manifest URL**, filtered for this device: no 4K for a small phone screen, no AV1 for a device that can't decode it. The URL points at a specific **CDN hostname** and carries a **signature** with an expiry. That one response is the only per-play work our services do; everything after it is the player talking to caches."
+        "When the viewer presses play, the player calls the **Playback Service**. It checks that the video is READY and that this viewer is **allowed** to watch it: public, or unlisted with the link, or private and shared with them. Then it reads the list of **renditions** from the metadata."
       ]
+    },
+    {
+      "title": "The play request",
+      "script": [
+        "It returns the **manifest URL**, filtered for this device: no 4K for a small phone screen, no AV1 for a device that can't decode it. The URL points at a specific **CDN hostname** and carries a **signature** with an expiry. That one response is the only per-play work our services do; everything after it is the player talking to caches."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "viewer", "label": "Viewer", "kind": "client" },
+          { "id": "gw", "label": "API Gateway", "kind": "infra" },
+          { "id": "playback", "label": "Playback Service", "kind": "service" },
+          { "id": "metadb", "label": "Metadata DB", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "viewer", "to": "gw", "label": "GET /play?v=42" },
+          { "from": "gw", "to": "playback", "label": "viewer + device info" },
+          { "from": "playback", "to": "metadb", "label": "status, visibility, renditions" },
+          { "from": "metadb", "to": "playback", "label": "READY · public · 12 renditions", "reply": true },
+          { "from": "playback", "to": "playback", "label": "filter for device, pick CDN host, sign" },
+          { "from": "playback", "to": "viewer", "label": "signed manifest URL", "reply": true },
+          { "note": "everything after this goes to caches", "over": ["viewer"] }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
@@ -407,9 +619,27 @@
       "focus": ["viewer", "cdn", "e_viewer_cdn"],
       "title": "Adaptive bitrate in the player",
       "script": [
-        "With segments and a manifest, the **player** does the adapting. For each next segment, it picks a rung on the ladder based on the **throughput** it measured on recent downloads and how much video is already in its **buffer**. Plenty of buffer and good throughput: step up. Buffer draining: step down before it runs dry.",
-        "This is called **adaptive bitrate streaming**, and the key point is that it's entirely **client-driven**. The server side is just static files; all the intelligence is in the player, which is why it scales. A viewer walking into an elevator drops to 240p for a few segments instead of seeing a spinner."
+        "With segments and a manifest, the **player** does the adapting. For each next segment, it picks a rung on the ladder based on the **throughput** it measured on recent downloads and how much video is already in its **buffer**. Plenty of buffer and good throughput: step up. Buffer draining: step down before it runs dry."
       ]
+    },
+    {
+      "title": "Picking the next rung",
+      "script": [
+        "This is called **adaptive bitrate streaming**, and the key point is that it's entirely **client-driven**. The server side is just static files; all the intelligence is in the player, which is why it scales. A viewer walking into an elevator drops to 240p for a few segments instead of seeing a spinner."
+      ],
+      "table": {
+        "columns": [
+          "Buffer",
+          "Measured throughput",
+          "Next segment"
+        ],
+        "rows": [
+          ["under 5 s and draining", "any", "**step down**"],
+          ["10–30 s", "steady", "stay on this rung"],
+          ["over 30 s", "well above the next rung", "**step up**"],
+          ["walking into an elevator", "collapses", "drop to 240p, keep playing"]
+        ]
+      }
     },
     {
       "scene": "main",
@@ -453,27 +683,97 @@
       "focus": ["viewer", "gw", "playback", "cdn", "e_viewer_gw", "e_viewer_cdn"],
       "title": "Steering each viewer to a cache",
       "script": [
-        "Which edge server does a viewer use? The **Playback Service** decides, when it builds the manifest URL. It considers the viewer's **network and location**, the **health and load** of nearby sites, and which servers are likely to **already hold this video**.",
-        "Within a site, videos are spread across servers by **consistent hashing** on the video ID, so each server holds a different slice of the catalog instead of every server holding the same popular items. That multiplies the site's effective cache size. If a server is overloaded or fails, the player retries on a **fallback host** that came in the same response."
+        "Which edge server does a viewer use? The **Playback Service** decides, when it builds the manifest URL. It considers the viewer's **network and location**, the **health and load** of nearby sites, and which servers are likely to **already hold this video**."
       ]
+    },
+    {
+      "title": "A primary host and a fallback",
+      "script": [
+        "Within a site, videos are spread across servers by **consistent hashing** on the video ID, so each server holds a different slice of the catalog instead of every server holding the same popular items. That multiplies the site's effective cache size. If a server is overloaded or fails, the player retries on a **fallback host** that came in the same response."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "viewer", "label": "Viewer", "kind": "client" },
+          { "id": "playback", "label": "Playback Service", "kind": "service" },
+          { "id": "a", "label": "Edge server A", "kind": "infra", "sub": "hash(42) → A" },
+          { "id": "b", "label": "Edge server B", "kind": "infra", "sub": "same site" }
+        ],
+        "steps": [
+          { "from": "viewer", "to": "playback", "label": "play video 42" },
+          { "from": "playback", "to": "playback", "label": "nearest healthy site; hash(42) → A" },
+          { "from": "playback", "to": "viewer", "label": "hosts: A (primary), B (fallback)", "reply": true },
+          { "from": "viewer", "to": "a", "label": "GET segment 1" },
+          { "note": "A is overloaded and times out", "over": ["a"] },
+          { "from": "viewer", "to": "b", "label": "GET segment 1 (fallback)" },
+          { "from": "b", "to": "viewer", "label": "segment 1", "reply": true }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
       "focus": ["playback", "cdn", "e_viewer_cdn"],
       "title": "Protecting private videos",
       "script": [
-        "Caches don't know who you are, so how do we keep a **private video** private? Through the **signed URLs** the Playback Service hands out. The signature covers the video ID, an **expiry time** and often the viewer's IP range, and the edge server verifies it with a shared key before serving anything.",
-        "So access control happens **once**, in the Playback Service, and the edge enforces it cheaply with no lookups. Segment paths also include unguessable IDs. When a creator makes a video private, new playback requests are refused at once, and existing signed URLs expire within **minutes**."
+        "Caches don't know who you are, so how do we keep a **private video** private? Through the **signed URLs** the Playback Service hands out. The signature covers the video ID, an **expiry time** and often the viewer's IP range, and the edge server verifies it with a shared key before serving anything."
       ]
+    },
+    {
+      "title": "Checking a signed URL",
+      "script": [
+        "So access control happens **once**, in the Playback Service, and the edge enforces it cheaply with no lookups. Segment paths also include unguessable IDs. When a creator makes a video private, new playback requests are refused at once, and existing signed URLs expire within **minutes**."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "viewer", "label": "Viewer", "kind": "client" },
+          { "id": "playback", "label": "Playback Service", "kind": "service" },
+          { "id": "cdn", "label": "CDN Edge", "kind": "infra" }
+        ],
+        "steps": [
+          { "from": "viewer", "to": "playback", "label": "play private video 42" },
+          { "from": "playback", "to": "playback", "label": "is this viewer allowed?" },
+          { "from": "playback", "to": "viewer", "label": "URL + sig(video, expiry, IP range)", "reply": true },
+          { "from": "viewer", "to": "cdn", "label": "GET segment 1 ?exp=…&sig=…" },
+          { "from": "cdn", "to": "cdn", "label": "verify with shared key, no lookup" },
+          { "from": "cdn", "to": "viewer", "label": "segment 1", "reply": true },
+          { "note": "made private: new requests refused, old URLs expire in minutes", "over": ["playback", "cdn"] }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
       "add": ["cache"],
       "title": "Cache the metadata",
       "script": [
-        "Back to our own services. Every play and every watch-page load reads video metadata, **150,000 times a second** at peak, and the reads are as skewed as the views: a hot video's row is read millions of times. So we put a **cache**, Memcached or Redis, in front of the Metadata DB.",
-        "The Video and Playback Services read the cache first and fall back to the database on a miss: **cache-aside**. When a creator edits a video, the Video Service writes the database and then **deletes the cache entry**, so the next read fetches fresh data. The creator's own reads can go **to the database** directly for a short while, which gives them read-your-writes on their edits."
+        "Back to our own services. Every play and every watch-page load reads video metadata, **150,000 times a second** at peak, and the reads are as skewed as the views: a hot video's row is read millions of times. So we put a **cache**, Memcached or Redis, in front of the Metadata DB."
       ]
+    },
+    {
+      "title": "Cache-aside and invalidation",
+      "script": [
+        "The Video and Playback Services read the cache first and fall back to the database on a miss: **cache-aside**. When a creator edits a video, the Video Service writes the database and then **deletes the cache entry**, so the next read fetches fresh data. The creator's own reads can go **to the database** directly for a short while, which gives them read-your-writes on their edits."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "playback", "label": "Playback Service", "kind": "service" },
+          { "id": "video", "label": "Video Service", "kind": "service" },
+          { "id": "cache", "label": "Cache", "kind": "data" },
+          { "id": "metadb", "label": "Metadata DB", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "playback", "to": "cache", "label": "get video:42" },
+          { "from": "cache", "to": "playback", "label": "miss", "reply": true },
+          { "from": "playback", "to": "metadb", "label": "read video 42" },
+          { "from": "metadb", "to": "playback", "label": "row", "reply": true },
+          { "from": "playback", "to": "cache", "label": "set video:42" },
+          { "note": "the creator edits the title", "over": ["video", "cache"] },
+          { "from": "video", "to": "metadb", "label": "UPDATE title" },
+          { "from": "video", "to": "cache", "label": "delete video:42" },
+          { "note": "the next read misses and loads fresh data", "over": ["playback", "cache"] }
+        ]
+      },
+      "fadeMs": 1000
     },
     {
       "scene": "main",
@@ -579,9 +879,27 @@
       "focus": ["viewer", "gw", "playback", "cache", "metadb", "cdn", "shield", "segstore", "e_viewer_gw", "e_playback_metadb", "e_viewer_cdn", "e_cdn_shield", "e_shield_seg"],
       "title": "What must never break",
       "script": [
-        "Our availability requirement says **playback is four nines**, and everything else can degrade. This diagram shows why that's achievable: playback needs only the Playback Service, its cache and database, and the CDN. Everything else, search, feeds, counts, uploads and processing, sits off that path.",
-        "So we design the degradation explicitly. If recommendations fail, show **trending and subscriptions**. If counts lag, show stale counts. If processing is backed up, new videos take longer. And because the CDN serves cached segments by itself, even a brief outage of our services leaves **videos already playing** unaffected."
+        "Our availability requirement says **playback is four nines**, and everything else can degrade. This diagram shows why that's achievable: playback needs only the Playback Service, its cache and database, and the CDN. Everything else, search, feeds, counts, uploads and processing, sits off that path."
       ]
+    },
+    {
+      "title": "Degrading on purpose",
+      "script": [
+        "So we design the degradation explicitly. If recommendations fail, show **trending and subscriptions**. If counts lag, show stale counts. If processing is backed up, new videos take longer. And because the CDN serves cached segments by itself, even a brief outage of our services leaves **videos already playing** unaffected."
+      ],
+      "table": {
+        "columns": [
+          "If this fails",
+          "Viewers see"
+        ],
+        "rows": [
+          ["Recommendations", "trending and subscriptions instead"],
+          ["View Counter", "slightly stale counts"],
+          ["Transcoding backlog", "new videos take longer to appear"],
+          ["Search", "search errors; playback is fine"],
+          ["Our services, briefly", "videos already playing keep going"]
+        ]
+      }
     },
     {
       "scene": "main",
