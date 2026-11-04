@@ -42,6 +42,10 @@ export interface Deck {
   topic: string;
   /** Fade-in timing for new elements; defaults to 1000 / 1000 ms. */
   animation?: Animation;
+  /** Overrides the generated intro slide's title and script, which default to
+   *  `title` and "Welcome to a system design walkthrough for X." Deep-dive
+   *  decks use it, since they are not "Design X." questions. */
+  intro?: SlideText;
   requirements: {
     functional: FunctionalRequirements;
     nonFunctional: NonFunctionalRequirements;
@@ -216,4 +220,33 @@ export interface TableSlide extends SlideBase {
   };
 }
 
-export type ArchitectureSlide = SceneSlide | SequenceSlide | EntitiesSlide | BulletsSlide | TableSlide;
+/** A timeline: lanes over a shared time axis, with marks (windows, requests,
+ *  a level line such as tokens left, notes) revealed one at a time. Shows how
+ *  something behaves over time: rate-limit windows, TTLs, retries, leases. */
+export interface TimelineSlide extends SlideBase {
+  timeline: {
+    /** Defaults to the slide title. */
+    heading?: string;
+    /** Time range in any unit; `ticks` are labeled, e.g. [0, 1, 2] with unit "s". */
+    axis: { from: number; to: number; ticks?: number[]; unit?: string };
+    /** Rows, top to bottom. `max` makes a taller lane with a 0..max scale for
+     *  `level` lines; other lanes hold windows and requests. */
+    lanes: { id: string; label: string; sub?: string; max?: number }[];
+    /** Revealed one at a time, in the order listed. */
+    marks: TimelineMark[];
+  };
+}
+
+export type TimelineMark =
+  /** A shaded window from `span[0]` to `span[1]`, labeled top-left. */
+  | { lane: string; span: [number, number]; label?: string }
+  /** A request at `at`: allowed (accent dot) or denied (red cross). `count`
+   *  draws a burst as one stacked marker labeled "×count". */
+  | { lane: string; at: number; result?: "allow" | "deny"; count?: number; label?: string }
+  /** A line through [time, value] points (repeat a time for a vertical drop);
+   *  `limit` draws a dashed red line at that value. Needs the lane's `max`. */
+  | { lane: string; level: [number, number][]; label?: string; limit?: number }
+  /** A bracket under the axis from `at[0]` to `at[1]`, with markdown-lite text. */
+  | { note: string; at: [number, number] };
+
+export type ArchitectureSlide = SceneSlide | SequenceSlide | EntitiesSlide | BulletsSlide | TableSlide | TimelineSlide;

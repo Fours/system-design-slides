@@ -66,7 +66,13 @@
       "id": "deep-dives",
       "title": "System Design: Deep Dives",
       "description": "Each deck zooms in on one component of a system and takes an expanded look at how it works.",
-      "decks": []
+      "decks": [
+        {
+          "slug": "rate-limiter",
+          "title": "Rate Limiter",
+          "description": "Allow or reject in under a millisecond: fixed and sliding windows vs. token buckets, an atomic check in a sharded Redis, rules pushed to every gateway, failing open, hot keys, and limits across regions."
+        }
+      ]
     }
   ]
 }

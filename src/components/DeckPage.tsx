@@ -5,7 +5,7 @@ import { Markdown } from "../lib/markdown";
 import { buildSlides, type Slide } from "../lib/slides";
 import { useFetch } from "../lib/useFetch";
 import type { Deck } from "../types";
-import { BulletsDiagram, EntitiesDiagram, SequenceDiagram, TableDiagram } from "./DetailDiagrams";
+import { BulletsDiagram, EntitiesDiagram, SequenceDiagram, TableDiagram, TimelineDiagram } from "./DetailDiagrams";
 import { FrDiagram, NfrDiagram, REQUIREMENTS_VIEWBOX } from "./RequirementDiagrams";
 import { SceneDiagram } from "./SceneDiagram";
 
@@ -51,7 +51,7 @@ function DeckView({ slug, deck }: { slug: string; deck: Deck }) {
     return () => document.removeEventListener("keydown", onKey);
   }, [go]);
 
-  useEffect(() => { document.title = `${deck.title} — System Design Walkthrough`; }, [deck.title]);
+  useEffect(() => { document.title = deck.topic; }, [deck.topic]);
   useEffect(() => { scriptRef.current?.scrollTo(0, 0); }, [index]);
 
   if (!valid) return <Navigate to={`/${slug}/1`} replace />;
@@ -112,5 +112,7 @@ function DiagramContent({ deck, slide }: { deck: Deck; slide: Slide }) {
       return <BulletsDiagram frame={d.frame} />;
     case "table":
       return <TableDiagram frame={d.frame} />;
+    case "timeline":
+      return <TimelineDiagram frame={d.frame} />;
   }
 }

@@ -85,6 +85,8 @@ The intro and requirement slides are **generated**; don't list them in `slides`.
 - **Intro (slide 1):** the complete `main` scene (its state after the last slide,
   nothing highlighted as new), titled with the deck `title`, and the script
   "Welcome to a system design walkthrough for X." (X is `title` minus "Design ").
+  A deck can override the title and script with `intro: { title, script }`; deep
+  dives do, since they aren't "Design X." questions.
 
 - **Functional requirements, built up one slide at a time:**
   - a title-only slide (`functional.intro`), which shows 2–3 very large emoji
@@ -212,6 +214,7 @@ them in `/#/example`):
 | `entities` | UML-style entities (name + fields) in a row, with labeled relations |
 | `bullets`  | a heading and bullet points, each with an optional dimmed detail line |
 | `table`    | a comparison table; `highlight` marks the chosen row               |
+| `timeline` | lanes over a time axis: windows (`span`), allowed/denied requests (`at`, `count` for a burst), a `level` line (lane `max`, optional `limit`), and notes |
 
 A scene slide can also take `focus: [ids]` instead of (or with) `add`: everything
 else visible is dimmed, which is useful for tracing one request through the diagram.

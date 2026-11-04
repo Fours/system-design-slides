@@ -29,7 +29,7 @@ grows one box at a time, with a script explaining each step.
    back-of-the-envelope estimates and the numbers that shape the design.
 4. **Architecture**: starting from the simplest system (usually one client and one
    server), each slide adds one component, highlighted and faded in, and explains why
-   it's there. Detail slides (sequence diagrams, data models, comparison tables) and
+   it's there. Detail slides (sequence diagrams, data models, comparison tables, timelines) and
    zoomed-in sub-diagrams explain the harder steps along the way.
 
 Each script is written to be read aloud; a full deck runs about 30–60 minutes.

@@ -178,6 +178,27 @@
       "script": ["*(Filler text.) A **tier** box is drawn behind the edges, so existing app → database lines visibly pass through it.*"]
     },
     {
+      "title": "When a cached entry expires",
+      "script": ["*(Filler text.) A **timeline** shows behavior over time: lanes over a shared axis, with windows (span), requests (at: allowed or denied, count for a burst), a level line on a lane with a max, and bracketed notes under the axis. Marks fade in in the order listed.*"],
+      "timeline": {
+        "axis": { "from": 0, "to": 120, "ticks": [0, 30, 60, 90, 120], "unit": "s" },
+        "lanes": [
+          { "id": "entry", "label": "Cache entry", "sub": "TTL 60 s" },
+          { "id": "reads", "label": "Reads", "sub": "hit or miss" },
+          { "id": "load", "label": "Database load", "sub": "queries / s", "max": 100 }
+        ],
+        "marks": [
+          { "lane": "entry", "span": [0, 60], "label": "cached" },
+          { "lane": "reads", "at": 10, "result": "allow", "label": "hit" },
+          { "lane": "reads", "at": 40, "result": "allow", "count": 50, "label": "hits" },
+          { "lane": "entry", "span": [62, 120], "label": "re-cached" },
+          { "lane": "reads", "at": 61, "result": "deny", "count": 30, "label": "misses" },
+          { "lane": "load", "level": [[0, 5], [60, 5], [61, 90], [64, 5], [120, 5]], "label": "queries to the DB", "limit": 60 },
+          { "note": "**stampede**: every miss goes to the DB", "at": [60, 64] }
+        ]
+      }
+    },
+    {
       "scene": "main",
       "add": ["queue", "worker", "email", "e_app2_queue", "e_queue_worker", "e_worker_email"],
       "title": "Move slow work off the request path",

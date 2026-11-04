@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { ArchitectureSlide, Deck, DeckIndex, SceneDef } from "../src/types.ts";
 import { REQ_H, nfrLayout } from "../src/lib/requirements.ts";
+import { layoutTimeline } from "../src/lib/detail.ts";
 
 const DIR = path.join(import.meta.dirname, "..", "public", "decks");
 let errors = 0, warnings = 0;
@@ -30,7 +31,7 @@ function checkScript(where: string, script: unknown) {
 }
 
 const plain = (s: string) => s.replace(/\*/g, "");
-const KINDS = ["scene", "sequence", "entities", "bullets", "table"] as const;
+const KINDS = ["scene", "sequence", "entities", "bullets", "table", "timeline"] as const;
 
 // A detail slide (anything but a scene step): checks its own data.
 function checkDetail(at: string, s: ArchitectureSlide) {
@@ -72,6 +73,45 @@ function checkDetail(at: string, s: ArchitectureSlide) {
     const chars = columns.reduce((n, c, j) => n + Math.max(plain(c).length, ...rows.map((r) => plain(r[j] ?? "").length)), 0);
     if (chars > 120) warn(at, `table rows are ~${chars} characters wide and may overflow; shorten the cells`);
     if (highlight !== undefined && !rows[highlight]) error(at, `highlight ${highlight} is not a row index`);
+  } else if ("timeline" in s) {
+    const { axis, lanes, marks } = s.timeline;
+    if (!(axis.to > axis.from)) error(at, "timeline axis needs to > from");
+    const inAxis = (t: number) => t >= axis.from && t <= axis.to;
+    (axis.ticks ?? []).forEach((t) => { if (!inAxis(t)) error(at, `tick ${t} is outside the axis`); });
+    const byId = new Map(lanes.map((l) => [l.id, l]));
+    if (byId.size !== lanes.length) error(at, "duplicate lane id");
+    if (!lanes.length) error(at, "timeline has no lanes");
+    lanes.forEach((l) => {
+      checkScript(`${at} lane "${l.id}"`, l.sub ? [l.label, l.sub] : [l.label]);
+      if (plain(l.label).length > 24) warn(at, `lane label "${l.label}" is longer than 24 characters`);
+    });
+    if (marks.length > 16) warn(at, `${marks.length} marks; more than 16 gets slow to reveal, so split the slide`);
+    marks.forEach((m, i) => {
+      const mk = `${at} mark ${i + 1}`;
+      if ("note" in m) {
+        checkScript(mk, [m.note]);
+        if (!m.at.every(inAxis) || m.at[1] < m.at[0]) error(mk, "note range must be inside the axis, from <= to");
+        if (plain(m.note).length > 80) warn(mk, "note is longer than 80 characters");
+        return;
+      }
+      const lane = byId.get(m.lane);
+      if (!lane) { error(mk, `unknown lane "${m.lane}"`); return; }
+      if ("span" in m) {
+        if (!m.span.every(inAxis) || m.span[1] <= m.span[0]) error(mk, "span must be inside the axis, from < to");
+      } else if ("level" in m) {
+        if (!lane.max) error(mk, `level line on lane "${m.lane}", which has no "max"`);
+        m.level.forEach(([t, v]) => {
+          if (!inAxis(t)) error(mk, `level point at t=${t} is outside the axis`);
+          if (lane.max && (v < 0 || v > lane.max)) error(mk, `level value ${v} is outside 0..${lane.max}`);
+        });
+        if (m.level.some(([t], k) => k > 0 && t < m.level[k - 1][0])) error(mk, "level points must be in time order");
+      } else {
+        if (!inAxis(m.at)) error(mk, `request at t=${m.at} is outside the axis`);
+        if (lane.max) warn(mk, `request on lane "${m.lane}", which is a level lane; use a separate lane`);
+      }
+    });
+    const [, , , h] = layoutTimeline(s.timeline, s.title).viewBox.split(" ").map(Number);
+    if (h > 760) warn(at, `timeline is ${h} units tall and will look small; use fewer lanes or notes`);
   }
 }
 

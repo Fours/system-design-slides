@@ -1,8 +1,8 @@
-import type { BulletsSlide, EntitiesSlide, SequenceSlide, TableSlide } from "../types";
+import type { BulletsSlide, EntitiesSlide, SequenceSlide, TableSlide, TimelineSlide } from "../types";
 
 // ============================================================================
 // Layouts for the "detail" slides that sit between scene steps: sequence
-// diagrams, UML entities, bullet lists, and comparison tables. Each turns the
+// diagrams, UML entities, bullet lists, comparison tables, and timelines. Each turns the
 // slide's data into positioned elements plus a viewBox, the way the scene
 // builder does for scenes. Elements carry a `seq` for the fade-in order.
 // ============================================================================
@@ -175,4 +175,96 @@ export function layoutTable({ heading, columns, rows, highlight }: TableSlide["t
     headingY, xs, headerY, rowH, columns,
     rows: rows.map((cells, i) => ({ key: `r${i}`, y: headerY + (i + 1) * rowH, cells, highlight: i === highlight, seq: i })),
   };
+}
+
+// ---- Timeline (1200-wide) -----------------------------------------------------
+
+export interface TimelineFrame {
+  viewBox: string;
+  heading: string;
+  headingY: number;
+  /** Left and right edges of the plot area (time `from` and `to`). */
+  x0: number;
+  x1: number;
+  lanes: { key: string; y: number; h: number; label: string; sub?: string;
+    /** For lanes with a scale: the y of 0 and of max, and max itself. */
+    scale?: { y0: number; yMax: number; max: number } }[];
+  /** Grid from the top of the first lane down to the axis. */
+  gridTop: number;
+  axisY: number;
+  ticks: { key: string; x: number; label: string }[];
+  spans: { key: string; x: number; y: number; w: number; h: number; label?: string; seq: number }[];
+  levels: { key: string; d: string; label?: string; lx: number; ly: number;
+    limit?: { y: number; label: string }; seq: number }[];
+  events: { key: string; x: number; y: number; result?: "allow" | "deny"; count?: number; label?: string; seq: number }[];
+  notes: { key: string; d: string; text: string; tx: number; ty: number; seq: number }[];
+}
+
+export const TIMELINE_X0 = 260, TIMELINE_X1 = 1150;
+const LANE_H = 64, LEVEL_H = 160, LANE_GAP = 16, LANES_TOP = 140, NOTE_PITCH = 44;
+
+export function layoutTimeline({ heading, axis, lanes, marks }: TimelineSlide["timeline"], title: string): TimelineFrame {
+  const x0 = TIMELINE_X0, x1 = TIMELINE_X1;
+  const tx = (t: number) => x0 + ((t - axis.from) / (axis.to - axis.from || 1)) * (x1 - x0);
+  const frame: TimelineFrame = { viewBox: "", heading: heading ?? title, headingY: 100, x0, x1, lanes: [],
+    gridTop: LANES_TOP, axisY: 0, ticks: [], spans: [], levels: [], events: [], notes: [] };
+
+  const laneAt = new Map<string, TimelineFrame["lanes"][number]>();
+  let y = LANES_TOP;
+  lanes.forEach((l) => {
+    const h = l.max ? LEVEL_H : LANE_H;
+    const lane: TimelineFrame["lanes"][number] = { key: l.id, y, h, label: l.label, sub: l.sub };
+    if (l.max) lane.scale = { y0: y + h - 14, yMax: y + 30, max: l.max };
+    frame.lanes.push(lane);
+    laneAt.set(l.id, lane);
+    y += h + LANE_GAP;
+  });
+  frame.axisY = y - LANE_GAP + 14;
+  frame.ticks = (axis.ticks ?? [axis.from, axis.to]).map((t, i) =>
+    ({ key: `t${i}`, x: tx(t), label: `${t}${axis.unit ?? ""}` }));
+
+  const vy = (lane: TimelineFrame["lanes"][number], v: number) => {
+    const sc = lane.scale!;
+    return sc.y0 - (v / sc.max) * (sc.y0 - sc.yMax);
+  };
+  // Notes stack into rows under the axis so their brackets and text never overlap.
+  const rows: [number, number][][] = [];
+  const notesTop = frame.axisY + 62;
+  let bottom = frame.axisY + 30;
+
+  marks.forEach((m, seq) => {
+    const key = `m${seq}`;
+    if ("note" in m) {
+      const xa = tx(m.at[0]), xb = tx(m.at[1]);
+      const tw = plain(m.note).length * 7.4;
+      const cx = Math.min(Math.max((xa + xb) / 2, 30 + tw / 2), 1170 - tw / 2);
+      const used: [number, number] = [Math.min(xa, cx - tw / 2) - 12, Math.max(xb, cx + tw / 2) + 12];
+      let r = rows.findIndex((row) => row.every(([a, b]) => used[1] < a || used[0] > b));
+      if (r < 0) { rows.push([]); r = rows.length - 1; }
+      rows[r].push(used);
+      const ny = notesTop + r * NOTE_PITCH;
+      frame.notes.push({ key, d: `M${xa},${ny - 8} L${xa},${ny} L${xb},${ny} L${xb},${ny - 8}`,
+        text: m.note, tx: cx, ty: ny + 18, seq });
+      bottom = Math.max(bottom, ny + 26);
+      return;
+    }
+    const lane = laneAt.get(m.lane);
+    if (!lane) return;
+    if ("span" in m) {
+      const xa = tx(m.span[0]), xb = tx(m.span[1]);
+      frame.spans.push({ key, x: xa, y: lane.y + 4, w: xb - xa, h: lane.h - 8, label: m.label, seq });
+    } else if ("level" in m) {
+      if (!lane.scale) return;
+      const d = m.level.map(([t, v], i) => `${i ? "L" : "M"}${tx(t)},${vy(lane, v)}`).join(" ");
+      frame.levels.push({ key, d, label: m.label, lx: x1 - 10, ly: lane.y + 18,
+        limit: m.limit === undefined ? undefined : { y: vy(lane, m.limit), label: `limit ${m.limit}` }, seq });
+    } else {
+      frame.events.push({ key, x: tx(m.at), y: lane.y + (lane.scale ? lane.h - 22 : lane.h / 2 - (m.label ? 6 : 0)),
+        result: m.result, count: m.count, label: m.label, seq });
+    }
+  });
+
+  // 1200 × 480 matches the diagram panel's shape, so short timelines fill its width.
+  frame.viewBox = `0 0 1200 ${Math.max(480, bottom + 40)}`;
+  return frame;
 }

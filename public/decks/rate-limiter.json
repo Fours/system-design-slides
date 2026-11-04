@@ -1,0 +1,601 @@
+{
+  "title": "Rate Limiter",
+  "topic": "System Design Deep Dive: Rate Limiter",
+  "intro": {
+    "title": "Rate Limiter",
+    "script": ["Welcome to a system design deep dive on the **rate limiter**."]
+  },
+  "requirements": {
+    "functional": {
+      "intro": {
+        "title": "Functional requirements",
+        "emoji": ["🚦", "🪣", "⏱️"],
+        "script": [
+          "A rate limiter is the component that decides, for every single request, **allow or reject**. It sits in front of almost every public API, and it makes a great deep dive: the idea fits in one sentence, but doing it across a fleet of servers, in under a millisecond, without becoming a single point of failure, is where the design lives.",
+          "We'll design it for a large **public API platform**, think a payments or developer API, and start by agreeing on what it must do."
+        ]
+      },
+      "cards": [
+        {
+          "title": "Limit by key",
+          "lines": ["Per user, API key or IP", "optionally per endpoint"],
+          "script": ["Every limit is counted against a **key**: the API key or user for authenticated traffic, the client IP for anonymous traffic, optionally combined with the endpoint. The key decides whose budget a request spends, so choosing it well is what makes limiting fair."]
+        },
+        {
+          "title": "Configurable rules",
+          "lines": ["e.g. 100/min per key on POST /charges", "tiered by plan, no deploy"],
+          "script": ["Limits are **rules, not code**: for example, 100 requests a minute per API key on POST /charges, with higher limits on paid plans. Product and support teams change them without a deploy, and changes take effect within seconds."]
+        },
+        {
+          "title": "Several limits at once",
+          "lines": ["Short burst + sustained hourly limit", "a request must pass all of them"],
+          "script": ["One request is usually checked against **several rules** at once: a short burst limit, like 20 a second, a sustained limit, like 10,000 an hour, and perhaps a per-endpoint limit for expensive calls. The request is allowed only if **every** rule allows it."]
+        },
+        {
+          "title": "Reject clearly",
+          "lines": ["HTTP 429 + Retry-After", "X-RateLimit-* headers"],
+          "script": ["When we reject, we say so in a standard way: **HTTP 429 Too Many Requests**, a **Retry-After** header, and X-RateLimit headers telling the client its limit, what's left and when it resets. Well-behaved clients use those to back off instead of hammering us."]
+        },
+        {
+          "title": "Shared across nodes",
+          "lines": ["One limit across every gateway,", "not one per server"],
+          "script": ["Traffic lands on many gateway servers, but a customer's limit is **one number**: 100 a minute means 100 across the whole fleet, not 100 per server. This requirement is what turns a simple counter into a distributed systems problem."]
+        },
+        {
+          "title": "Observe and override",
+          "lines": ["Throttling metrics, shadow mode", "allowlists for partners"],
+          "script": ["Operators need to **see** who is being throttled and why, roll out new rules in **shadow mode**, logging what would be rejected without rejecting it, and **allowlist** a partner during an incident."]
+        }
+      ],
+      "outOfScope": {
+        "title": "Out of scope",
+        "lines": ["DDoS and network floods  ·  Exact billing and monthly quotas  ·  Queueing and load shedding  ·  Client-side SDKs"],
+        "script": ["Out of scope: **volumetric DDoS**, which is stopped earlier at the CDN and network edge; **exact billing quotas**, which need a durable ledger, not an in-memory counter; **queueing or shedding load** by priority when the backend itself is overloaded; and **client SDKs** that retry politely. They're neighbors of a rate limiter, but each is its own design."]
+      }
+    },
+    "nonFunctional": {
+      "intro": {
+        "title": "Non-functional requirements",
+        "script": ["Now the qualities. For a rate limiter they are the whole problem: the limiter runs on **every request** to the platform, so it has to be fast, cheap, and never the reason the API is down."]
+      },
+      "cards": [
+        {
+          "title": "Scale",
+          "lines": ["1M requests/s at peak", "50M active keys"],
+          "script": ["Assume **1 million requests a second** at peak across the platform, from about **50 million active keys**: API keys, users and IP addresses. Every one of those requests needs a decision."]
+        },
+        {
+          "title": "Latency",
+          "lines": ["< 1 ms p99 added", "to each request"],
+          "script": ["The limiter sits on the hot path of every call, so it gets a tiny budget: **under 1 millisecond at p99** added to each request. That rules out anything that needs more than one network round trip."]
+        },
+        {
+          "title": "Availability",
+          "lines": ["Limiter down ≠ API down;", "fail open"],
+          "script": ["The limiter protects the API; it must never **take it down**. If the limiter's storage is slow or unreachable, we **fail open**: let requests through, perhaps under a conservative local limit, rather than rejecting all traffic."]
+        },
+        {
+          "title": "Accuracy",
+          "lines": ["Approximate is fine;", "brief overshoot of a few %"],
+          "script": ["We don't need exact counts. If a customer with a limit of 100 occasionally gets **103** through, nobody is harmed; what matters is that a client sending 10 times its limit is stopped quickly. Accepting **approximate** answers buys us a lot of speed and resilience."]
+        },
+        {
+          "title": "Consistency",
+          "lines": ["Every node sees the same counts;", "rule changes live in seconds"],
+          "script": ["All gateways should agree on a key's count closely enough that the limit is global, and a **rule change** should reach every gateway within a few seconds. Counters don't need to be durable: losing them in a crash just gives everyone a fresh budget."]
+        },
+        {
+          "title": "Memory",
+          "lines": ["Counters fit in RAM;", "fixed size per key, not per request"],
+          "script": ["State must be **fixed-size per key**: a couple of numbers, not a record per request. With tens of millions of keys, that's the difference between gigabytes and hundreds of gigabytes of RAM."]
+        }
+      ],
+      "estimates": {
+        "title": "Back-of-the-envelope",
+        "rows": [
+          ["Checks", ["1M req/s × 3 rules = 3M checks/s", "batched into 1 call per request"]],
+          ["Counters", ["50M keys × 3 rules × ~100 B ≈ 15 GB", "a log of every request: ≈ 400 GB"]],
+          ["Redis", ["~100–200K ops/s per shard", "→ ~10–20 shards + replicas"]],
+          ["Latency", ["in-datacenter round trip ≈ 0.3 ms", "a 1 ms budget allows one"]]
+        ],
+        "script": [
+          "Some numbers. 1 million requests a second, each checked against about **3 rules**, is **3 million checks a second**; we'll batch a request's rules into one call, so about a million calls.",
+          "State: 50 million keys times 3 rules times about **100 bytes** with overhead is roughly **15 gigabytes**, which fits in memory on a small cluster. One Redis shard handles roughly **100 to 200 thousand** simple operations a second, so we need **10 to 20 shards** plus replicas.",
+          "Latency: a round trip inside a datacenter is about **0.3 milliseconds**, so a 1 millisecond budget allows exactly one. And for contrast, logging every request's timestamp for a 1,000-an-hour limit would need around **400 gigabytes**."
+        ]
+      },
+      "takeaway": {
+        "title": "What shapes the design",
+        "lines": [
+          "1 ms budget → one round trip to a shared counter store, all rules in one atomic call",
+          "15 GB vs 400 GB → fixed-size counters per key (token bucket), not request logs",
+          "The limiter must never take the API down → fail open, with local fallback limits"
+        ],
+        "script": ["So the numbers shape three decisions. **One round trip** per request to a shared counter store, with all rules checked in one atomic call. **Fixed-size counters** per key rather than request logs. And a limiter that **fails open**, because protecting the API must never become the outage."]
+      }
+    }
+  },
+  "scenes": {
+    "main": {
+      "boxes": [
+        { "id": "admin", "x": 40, "y": 20, "w": 170, "h": 60, "label": "Platform Admin", "kind": "client", "sub": "edits limits" },
+        { "id": "client", "x": 40, "y": 130, "w": 170, "h": 60, "label": "API Clients", "kind": "client", "sub": "apps · partners" },
+        { "id": "noisy", "x": 40, "y": 250, "w": 170, "h": 60, "label": "Noisy Client", "kind": "client", "sub": "runaway retry loop" },
+        { "id": "lb", "x": 270, "y": 110, "w": 150, "h": 220, "label": "Load Balancer", "kind": "infra", "sub": "L7 · TLS" },
+        { "id": "server", "x": 490, "y": 190, "w": 190, "h": 60, "label": "API Server", "kind": "service", "sub": "no limits" },
+        { "id": "server2", "x": 490, "y": 190, "w": 190, "h": 60, "label": "API Server", "kind": "service", "sub": "+ in-memory counters" },
+        { "id": "gw1", "x": 490, "y": 130, "w": 190, "h": 60, "label": "Gateway 1", "kind": "service", "sub": "limiter middleware" },
+        { "id": "gw2", "x": 490, "y": 250, "w": 190, "h": 60, "label": "Gateway 2", "kind": "service", "sub": "limiter middleware" },
+        { "id": "rules", "x": 760, "y": 20, "w": 180, "h": 60, "label": "Rules Service", "kind": "service", "sub": "limits per plan" },
+        { "id": "redis", "x": 760, "y": 180, "w": 180, "h": 80, "label": "Counter Store", "kind": "data", "sub": "Redis · token buckets" },
+        { "id": "events", "x": 760, "y": 360, "w": 180, "h": 60, "label": "Limit Events", "kind": "stream", "sub": "Kafka · allow / deny" },
+        { "id": "rulesdb", "x": 1020, "y": 20, "w": 190, "h": 60, "label": "Rules DB", "kind": "data", "sub": "versioned configs" },
+        { "id": "backend", "x": 1020, "y": 130, "w": 190, "h": 180, "label": "Backend Services", "kind": "service", "sub": "payments · users · …" },
+        { "id": "dash", "x": 1020, "y": 360, "w": 190, "h": 60, "label": "Dashboards", "kind": "service", "sub": "metrics · alerts" },
+        { "id": "regions", "x": 1280, "y": 180, "w": 180, "h": 80, "label": "Other Regions", "kind": "ghost", "sub": "own gateways + Redis" }
+      ],
+      "edges": [
+        { "id": "e_client_server", "from": "client", "to": "server", "pts": [[210, 160], [450, 160], [450, 205], [490, 205]], "label": "requests", "lp": [330, 152, "middle"] },
+        { "id": "e_noisy_server", "from": "noisy", "to": "server", "pts": [[210, 280], [450, 280], [450, 235], [490, 235]], "label": "5,000 req/s", "lp": [330, 272, "middle"] },
+        { "id": "e_client_server2", "from": "client", "to": "server2", "pts": [[210, 160], [450, 160], [450, 205], [490, 205]], "label": "requests", "lp": [330, 152, "middle"] },
+        { "id": "e_noisy_server2", "from": "noisy", "to": "server2", "pts": [[210, 280], [450, 280], [450, 235], [490, 235]], "label": "429 when over", "lp": [330, 272, "middle"], "both": true },
+        { "id": "e_client_lb", "from": "client", "to": "lb", "pts": [[210, 160], [270, 160]] },
+        { "id": "e_noisy_lb", "from": "noisy", "to": "lb", "pts": [[210, 280], [270, 280]], "label": "429", "lp": [240, 300, "middle"], "both": true },
+        { "id": "e_lb_gw1", "from": "lb", "to": "gw1", "pts": [[420, 160], [490, 160]] },
+        { "id": "e_lb_gw2", "from": "lb", "to": "gw2", "pts": [[420, 280], [490, 280]] },
+        { "id": "e_gw1_backend", "from": "gw1", "to": "backend", "pts": [[680, 150], [1020, 150]], "label": "allowed", "lp": [735, 142, "middle"] },
+        { "id": "e_gw2_backend", "from": "gw2", "to": "backend", "pts": [[680, 290], [1020, 290]], "label": "allowed", "lp": [850, 282, "middle"] },
+        { "id": "e_gw1_redis", "from": "gw1", "to": "redis", "pts": [[680, 175], [720, 175], [720, 205], [760, 205]] },
+        { "id": "e_gw2_redis", "from": "gw2", "to": "redis", "pts": [[680, 265], [720, 265], [720, 235], [760, 235]] },
+        { "id": "e_admin_rules", "from": "admin", "to": "rules", "pts": [[210, 50], [760, 50]], "label": "set limits", "lp": [485, 42, "middle"] },
+        { "id": "e_rules_db", "from": "rules", "to": "rulesdb", "pts": [[940, 50], [1020, 50]], "both": true },
+        { "id": "e_rules_gw", "from": "rules", "to": "gw1", "pts": [[790, 80], [790, 105], [585, 105], [585, 130]], "label": "push rules", "lp": [690, 98, "middle"], "async": true },
+        { "id": "e_redis_regions", "from": "redis", "to": "regions", "pts": [[850, 180], [850, 115], [1250, 115], [1250, 220], [1280, 220]], "label": "sync counts", "lp": [1130, 108, "middle"], "async": true, "both": true },
+        { "id": "e_gw2_events", "from": "gw2", "to": "events", "pts": [[585, 310], [585, 390], [760, 390]], "label": "decisions", "lp": [672, 382, "middle"], "async": true },
+        { "id": "e_events_dash", "from": "events", "to": "dash", "pts": [[940, 390], [1020, 390]] }
+      ]
+    },
+    "shards": {
+      "boxes": [
+        { "id": "sgw", "x": 40, "y": 150, "w": 180, "h": 60, "label": "Gateways", "kind": "service", "sub": "Redis Cluster client" },
+        { "id": "s1", "x": 380, "y": 40, "w": 190, "h": 60, "label": "Shard 1", "kind": "data", "sub": "slots 0–5460" },
+        { "id": "s2", "x": 380, "y": 150, "w": 190, "h": 60, "label": "Shard 2", "kind": "data", "sub": "slots 5461–10922" },
+        { "id": "s3", "x": 380, "y": 260, "w": 190, "h": 60, "label": "Shard 3", "kind": "data", "sub": "slots 10923–16383" },
+        { "id": "r1", "x": 700, "y": 40, "w": 190, "h": 60, "label": "Replica 1", "kind": "data", "sub": "promoted on failure" },
+        { "id": "r2", "x": 700, "y": 150, "w": 190, "h": 60, "label": "Replica 2", "kind": "data", "sub": "promoted on failure" },
+        { "id": "r3", "x": 700, "y": 260, "w": 190, "h": 60, "label": "Replica 3", "kind": "data", "sub": "promoted on failure" }
+      ],
+      "edges": [
+        { "id": "e_sgw_s1", "from": "sgw", "to": "s1", "pts": [[220, 165], [260, 165], [260, 70], [380, 70]] },
+        { "id": "e_sgw_s2", "from": "sgw", "to": "s2", "pts": [[220, 180], [380, 180]], "label": "key → slot", "lp": [320, 172, "middle"] },
+        { "id": "e_sgw_s3", "from": "sgw", "to": "s3", "pts": [[220, 195], [260, 195], [260, 290], [380, 290]] },
+        { "id": "e_s1_r1", "from": "s1", "to": "r1", "pts": [[570, 70], [700, 70]], "label": "async copy", "lp": [635, 62, "middle"], "async": true },
+        { "id": "e_s2_r2", "from": "s2", "to": "r2", "pts": [[570, 180], [700, 180]], "async": true },
+        { "id": "e_s3_r3", "from": "s3", "to": "r3", "pts": [[570, 290], [700, 290]], "async": true }
+      ]
+    }
+  },
+  "slides": [
+    {
+      "scene": "main",
+      "add": ["client", "server", "e_client_server"],
+      "title": "Start: an API with no limits",
+      "script": [
+        "Let's start with the system before it has a rate limiter: **API clients** sending requests straight to an **API server**. Every request that arrives gets processed, no matter who sent it or how many they've sent.",
+        "That works right up until one client misbehaves."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["noisy", "e_noisy_server"],
+      "title": "The noisy neighbor",
+      "script": [
+        "Here's the misbehaving client: a **noisy client** with a buggy retry loop, sending thousands of requests a second. It eats the server's CPU, connections and database capacity, so **everyone else** gets slow or failing requests.",
+        "That's the core reason for a rate limiter: **fairness and protection**. It also caps the cost of runaway scripts, slows down scraping and credential stuffing, and gives us a lever during incidents."
+      ]
+    },
+    {
+      "scene": "main",
+      "remove": ["server"],
+      "add": ["server2", "e_client_server2", "e_noisy_server2"],
+      "title": "Count requests per key",
+      "script": [
+        "The simplest limiter lives **inside the server**: before handling a request, work out the caller's **key**, bump a counter in memory, and reject with a 429 if it's over the limit.",
+        "The interesting question is what exactly we count, and over what window. There are five classic **algorithms**, and the next few slides put them on a timeline."
+      ]
+    },
+    {
+      "title": "Fixed window counter",
+      "script": [
+        "The simplest algorithm is the **fixed window**: one counter per key per calendar minute. Each request increments it; once it reaches 100, the rest of that minute is rejected, and at the top of the next minute the counter **resets** to zero.",
+        "It's one integer per key and one increment per request, which is as cheap as it gets."
+      ],
+      "timeline": {
+        "axis": { "from": 0, "to": 180, "ticks": [0, 60, 120, 180], "unit": "s" },
+        "lanes": [
+          { "id": "win", "label": "Windows", "sub": "limit 100 / min" },
+          { "id": "req", "label": "Requests" },
+          { "id": "count", "label": "Counter", "sub": "this window", "max": 120 }
+        ],
+        "marks": [
+          { "lane": "win", "span": [0, 60], "label": "minute 1" },
+          { "lane": "win", "span": [60, 120], "label": "minute 2" },
+          { "lane": "win", "span": [120, 180], "label": "minute 3" },
+          { "lane": "req", "at": 15, "result": "allow", "count": 60 },
+          { "lane": "req", "at": 35, "result": "allow", "count": 40 },
+          { "lane": "req", "at": 48, "result": "deny", "count": 15, "label": "rejected" },
+          { "lane": "req", "at": 95, "result": "allow", "count": 30 },
+          { "lane": "req", "at": 140, "result": "allow", "count": 20 },
+          { "lane": "count", "level": [[0, 0], [15, 0], [15, 60], [35, 60], [35, 100], [60, 100], [60, 0], [95, 0], [95, 30], [120, 30], [120, 0], [140, 0], [140, 20], [180, 20]], "label": "count", "limit": 100 },
+          { "note": "resets to 0 at each minute boundary", "at": [60, 60] }
+        ]
+      }
+    },
+    {
+      "title": "The boundary problem",
+      "script": [
+        "Fixed windows have a well-known flaw. A client can send **100 requests at 0:58** and another **100 at 1:02**: each window sees only 100, so all 200 are allowed.",
+        "That's **twice the limit** within four seconds, exactly the kind of burst the limit was meant to prevent. For some uses that's acceptable; for protecting a backend it often isn't."
+      ],
+      "timeline": {
+        "axis": { "from": 30, "to": 90, "ticks": [30, 45, 60, 75, 90], "unit": "s" },
+        "lanes": [
+          { "id": "win", "label": "Windows", "sub": "limit 100 / min" },
+          { "id": "req", "label": "Requests" }
+        ],
+        "marks": [
+          { "lane": "win", "span": [30, 60], "label": "minute 1 · count 100" },
+          { "lane": "win", "span": [60, 90], "label": "minute 2 · count 100" },
+          { "lane": "req", "at": 58, "result": "allow", "count": 100 },
+          { "lane": "req", "at": 62, "result": "allow", "count": 100 },
+          { "note": "**200 requests in 4 s**, and each window still says OK", "at": [58, 62] }
+        ]
+      }
+    },
+    {
+      "title": "Sliding log",
+      "script": [
+        "The exact fix is a **sliding log**: store a timestamp for every accepted request. On each new request, drop the timestamps older than 60 seconds and count what's left; if it's under the limit, accept and append.",
+        "It's perfectly accurate, but memory grows with the limit: a 1,000-an-hour limit means up to 1,000 timestamps **per key**. Across 50 million keys, that's the 400 gigabytes from our estimates."
+      ],
+      "timeline": {
+        "axis": { "from": 0, "to": 120, "ticks": [0, 30, 60, 90, 120], "unit": "s" },
+        "lanes": [
+          { "id": "req", "label": "Requests", "sub": "limit 3 / min" },
+          { "id": "w1", "label": "Check at 0:55", "sub": "last 60 s" },
+          { "id": "w2", "label": "Check at 1:15", "sub": "last 60 s" }
+        ],
+        "marks": [
+          { "lane": "req", "at": 10, "result": "allow", "label": "0:10" },
+          { "lane": "req", "at": 25, "result": "allow", "label": "0:25" },
+          { "lane": "req", "at": 40, "result": "allow", "label": "0:40" },
+          { "lane": "w1", "span": [0, 55], "label": "log: 0:10, 0:25, 0:40 → full" },
+          { "lane": "req", "at": 55, "result": "deny", "label": "0:55" },
+          { "lane": "w2", "span": [15, 75], "label": "0:10 dropped → 2 in log" },
+          { "lane": "req", "at": 75, "result": "allow", "label": "1:15" },
+          { "note": "memory: one timestamp per request", "at": [10, 75] }
+        ]
+      }
+    },
+    {
+      "title": "Sliding window counter",
+      "script": [
+        "The **sliding window counter** gets most of that accuracy for the cost of two integers. Keep the count for the **previous** minute and the **current** one, and estimate the last 60 seconds by weighting the previous count by how much of it the window still overlaps.",
+        "At 1:15 the window covers 75% of the previous minute, so 80 × 0.75 + 30 = **90**, under 100, and we allow. It assumes the previous minute's requests were spread evenly, which makes it approximate, but in practice the error is small."
+      ],
+      "timeline": {
+        "axis": { "from": 0, "to": 120, "ticks": [0, 30, 60, 90, 120], "unit": "s" },
+        "lanes": [
+          { "id": "fixed", "label": "Fixed windows", "sub": "limit 100 / min" },
+          { "id": "slide", "label": "Sliding window", "sub": "estimated" },
+          { "id": "req", "label": "Request" }
+        ],
+        "marks": [
+          { "lane": "fixed", "span": [0, 60], "label": "previous: 80" },
+          { "lane": "fixed", "span": [60, 120], "label": "current: 30 so far" },
+          { "lane": "req", "at": 75, "result": "allow", "label": "now (1:15)" },
+          { "lane": "slide", "span": [15, 75], "label": "last 60 s" },
+          { "note": "75% × 80 = 60", "at": [15, 60] },
+          { "note": "+ 30", "at": [60, 75] },
+          { "note": "60 + 30 = **90** < 100 → allow", "at": [15, 75] }
+        ]
+      }
+    },
+    {
+      "title": "Token bucket",
+      "script": [
+        "The **token bucket** thinks in rates rather than windows. Each key has a bucket holding up to a **capacity** of tokens, refilled at a steady **rate**; each request takes a token, and a request that finds the bucket empty is rejected.",
+        "It's two numbers per key, the token count and the last refill time, and the refill is computed lazily on each request, so there's no background timer. Capacity sets the **burst** we tolerate and the rate sets the **sustained** limit, two of our rules in one."
+      ],
+      "timeline": {
+        "axis": { "from": 0, "to": 100, "ticks": [0, 20, 40, 60, 80, 100], "unit": "s" },
+        "lanes": [
+          { "id": "req", "label": "Requests", "sub": "capacity 5" },
+          { "id": "tok", "label": "Tokens", "sub": "refill 1 / 10 s", "max": 5 }
+        ],
+        "marks": [
+          { "lane": "req", "at": 10, "result": "allow", "count": 5, "label": "burst" },
+          { "lane": "req", "at": 17, "result": "deny", "count": 2, "label": "empty" },
+          { "lane": "req", "at": 30, "result": "allow" },
+          { "lane": "tok", "level": [[0, 5], [10, 5], [10, 0], [30, 2], [30, 1], [70, 5], [100, 5]], "label": "tokens left" },
+          { "note": "refills 1 token every 10 s, up to capacity", "at": [30, 70] }
+        ]
+      }
+    },
+    {
+      "title": "Comparing the algorithms",
+      "script": [
+        "Side by side. The **leaky bucket**, the fifth classic, is the token bucket's mirror image: requests join a queue that drains at a fixed rate, which smooths output nicely but adds delay, so it suits traffic shaping more than API limits.",
+        "We'll use the **token bucket**: fixed-size state, an exact sustained rate, and an explicit, configurable burst, which is how most public APIs describe their limits. The sliding window counter is a fine alternative when you want a hard cap per window."
+      ],
+      "table": {
+        "columns": ["Algorithm", "State per key", "Accuracy", "Bursts"],
+        "rows": [
+          ["Fixed window", "1 counter", "up to 2× at edges", "at window edges"],
+          ["Sliding log", "1 timestamp per request", "exact", "none"],
+          ["Sliding window counter", "2 counters", "approximate, small error", "smoothed"],
+          ["**Token bucket**", "2 numbers", "exact rate", "up to capacity, by design"],
+          ["Leaky bucket", "a queue", "exact, smooth output", "queued, not rejected"]
+        ],
+        "highlight": 3
+      }
+    },
+    {
+      "scene": "main",
+      "remove": ["server2"],
+      "add": ["lb", "e_client_lb", "e_noisy_lb", "gw1", "gw2", "e_lb_gw1", "e_lb_gw2", "backend", "e_gw1_backend", "e_gw2_backend"],
+      "fadeMs": 600,
+      "title": "Scale out behind gateways",
+      "script": [
+        "One server doesn't carry a million requests a second, so we scale out: a **load balancer** spreads traffic across a fleet of **API gateways**, which forward allowed requests to the **backend services**.",
+        "The limiter moves into the gateways as **middleware**: authenticate the request, work out its keys, check the limits, then forward or reject. Rejected requests never touch the backend, which is the point."
+      ]
+    },
+    {
+      "title": "Where should the limiter live?",
+      "script": [
+        "Where the check runs is a real choice. A **library** in each service adds no hop but spreads the logic across every team; a **central limiter service** keeps it in one place but costs a network hop and is one more thing to fail.",
+        "**Gateway middleware** is the sweet spot here: every request already passes through the gateway, it already knows the caller's identity, and it's one place to enforce every rule. A **sidecar** is the equivalent when there's a service mesh instead of a gateway."
+      ],
+      "table": {
+        "columns": ["Option", "Extra hop", "Rules in one place", "Trade-off"],
+        "rows": [
+          ["In each service (library)", "none", "no", "every team re-implements it"],
+          ["**API gateway middleware**", "none", "yes", "gateways must scale with traffic"],
+          ["Sidecar proxy", "local only", "yes", "needs a service mesh"],
+          ["Central limiter service", "+1 network hop", "yes", "one more thing that can fail"]
+        ],
+        "highlight": 1
+      }
+    },
+    {
+      "title": "Local counters break the limit",
+      "script": [
+        "But each gateway now counts only the traffic **it** sees. With a 100-a-minute limit and the load balancer spreading a client over two gateways, each one allows 100, and the client gets **200**.",
+        "With 50 gateways the real limit is 50 times what we promised. Dividing the limit by the number of gateways doesn't fix it either: traffic isn't spread evenly, and the fleet size changes with autoscaling."
+      ],
+      "timeline": {
+        "axis": { "from": 0, "to": 60, "ticks": [0, 15, 30, 45, 60], "unit": "s" },
+        "lanes": [
+          { "id": "g1", "label": "Gateway 1", "sub": "local count" },
+          { "id": "g2", "label": "Gateway 2", "sub": "local count" }
+        ],
+        "marks": [
+          { "lane": "g1", "span": [0, 60], "label": "100 / 100" },
+          { "lane": "g2", "span": [0, 60], "label": "100 / 100" },
+          { "lane": "g1", "at": 20, "result": "allow", "count": 100 },
+          { "lane": "g2", "at": 26, "result": "allow", "count": 100 },
+          { "note": "**200 allowed** against a 100 / min limit", "at": [20, 26] }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "add": ["redis", "e_gw1_redis", "e_gw2_redis"],
+      "title": "A shared counter store",
+      "script": [
+        "The fix is to keep the buckets in one **shared store** that every gateway checks. We want something in memory, with sub-millisecond operations and built-in expiry, so the natural choice is **Redis**.",
+        "Now a key's bucket is one record, no matter which gateway the request lands on. That costs one network round trip per request, which is exactly what our latency budget allows, and no more."
+      ]
+    },
+    {
+      "title": "The race condition",
+      "script": [
+        "There's a catch. If a gateway **reads** the token count, decides, then **writes** it back, two gateways can interleave.",
+        "Here both read 1 token left, both allow, and both write 0: the last token was spent **twice**. Under a burst of concurrent requests, this lets through far more than the limit."
+      ],
+      "fadeMs": 1000,
+      "sequence": {
+        "actors": [
+          { "id": "gw1", "label": "Gateway 1", "kind": "service" },
+          { "id": "redis", "label": "Counter Store", "kind": "data" },
+          { "id": "gw2", "label": "Gateway 2", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "gw1", "to": "redis", "label": "GET bucket key_42" },
+          { "from": "redis", "to": "gw1", "label": "1 token", "reply": true },
+          { "from": "gw2", "to": "redis", "label": "GET bucket key_42" },
+          { "from": "redis", "to": "gw2", "label": "1 token", "reply": true },
+          { "from": "gw1", "to": "gw1", "label": "allow" },
+          { "from": "gw2", "to": "gw2", "label": "allow" },
+          { "from": "gw1", "to": "redis", "label": "SET tokens = 0" },
+          { "from": "gw2", "to": "redis", "label": "SET tokens = 0" },
+          { "note": "both allowed: one token spent twice", "over": ["gw1", "gw2"] }
+        ]
+      }
+    },
+    {
+      "title": "Make the check atomic",
+      "script": [
+        "The fix is to make check-and-take **one atomic operation** in the store. In Redis that's a small **Lua script**: read the bucket, refill it for the elapsed time, take a token if there is one, and write it back, all in one call.",
+        "Redis runs one script at a time per shard, so two gateways can't interleave. It's still **one round trip**, and the same call can check all of a request's rules at once."
+      ],
+      "fadeMs": 1000,
+      "sequence": {
+        "actors": [
+          { "id": "gw1", "label": "Gateway 1", "kind": "service" },
+          { "id": "redis", "label": "Counter Store", "kind": "data" },
+          { "id": "gw2", "label": "Gateway 2", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "gw1", "to": "redis", "label": "take_token(key_42, now)" },
+          { "from": "redis", "to": "redis", "label": "refill, check, take: atomic" },
+          { "from": "redis", "to": "gw1", "label": "allowed · 0 left", "reply": true },
+          { "from": "gw2", "to": "redis", "label": "take_token(key_42, now)" },
+          { "from": "redis", "to": "redis", "label": "refill, check: empty" },
+          { "from": "redis", "to": "gw2", "label": "denied · retry in 10 s", "reply": true },
+          { "note": "no interleaving: one script at a time per shard", "over": ["gw1", "gw2"] }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "add": ["admin", "rules", "rulesdb", "e_admin_rules", "e_rules_db", "e_rules_gw"],
+      "title": "Rules as data",
+      "script": [
+        "Limits shouldn't be hard-coded. A **Rules Service** stores them in a **Rules DB**, and platform admins edit them through it: per plan, per endpoint, and per-customer overrides.",
+        "Gateways never call the Rules Service on the request path. It **pushes** each new version of the rules to every gateway, which keeps them **in memory**, so a rule lookup costs nothing and a change lands everywhere within seconds."
+      ]
+    },
+    {
+      "title": "Rules and buckets",
+      "script": [
+        "Here's the data. A **rule** says what traffic it matches, what to key it by, and the bucket's **capacity** and **refill rate**; it runs in enforce or **shadow** mode.",
+        "Each rule creates one **bucket** per key in Redis: just tokens and a timestamp, with a **TTL** so idle keys expire on their own. Putting the caller's key in braces, a Redis **hash tag**, keeps all of that caller's buckets on one shard, so one script can check every rule."
+      ],
+      "entities": {
+        "items": [
+          { "id": "rule", "name": "Rule (Rules DB)", "kind": "service", "fields": ["rule_id: string  PK", "match: plan=free, POST /charges", "key_by: api_key", "capacity: 20", "refill: 100 / min", "mode: enforce | shadow"] },
+          { "id": "bucket", "name": "Bucket (Redis hash)", "kind": "data", "fields": ["key: rl:{key_42}:charges_burst", "tokens: 17.5", "updated_at: 1730721600.120", "TTL: time to refill + slack"] }
+        ],
+        "relations": [{ "from": "rule", "to": "bucket", "label": "1 — * (one per key)" }]
+      }
+    },
+    {
+      "title": "Telling the client",
+      "script": [
+        "When a request is rejected, the gateway answers **429 Too Many Requests** with a **Retry-After** header computed from the bucket: how long until the next token. Every response, allowed or not, carries the limit, the remaining tokens and the reset time.",
+        "Those headers turn the limiter into a conversation: well-behaved clients see Remaining dropping and slow down before they ever get a 429. And because rejected requests don't take tokens, a client that backs off recovers on its own."
+      ],
+      "bullets": {
+        "heading": "What a throttled client sees",
+        "items": [
+          { "text": "**HTTP 429** Too Many Requests", "detail": "not 503: the client is over its limit, but our service is fine" },
+          { "text": "**Retry-After: 10**", "detail": "seconds until a token is available, computed by the script" },
+          { "text": "**X-RateLimit-Limit / Remaining / Reset**", "detail": "on every response, so good clients slow down before they hit 429" },
+          { "text": "Rejected requests don't spend tokens", "detail": "otherwise a client that keeps retrying never recovers" },
+          { "text": "Clients back off with jitter", "detail": "so a thousand throttled clients don't all retry at the same instant" }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "focus": ["gw1", "gw2", "redis", "e_gw1_redis", "e_gw2_redis"],
+      "title": "When the counter store fails",
+      "script": [
+        "Now the most important failure: the **counter store** is slow or unreachable. Every request depends on it, so if gateways wait or reject, the rate limiter has just turned a Redis problem into a **full API outage**.",
+        "So the gateway calls Redis with a **tight timeout**, a few milliseconds, behind a **circuit breaker**. When the call fails, we fail open."
+      ]
+    },
+    {
+      "title": "Failing open safely",
+      "script": [
+        "Failing open doesn't have to mean no limits at all. Each gateway keeps **local token buckets** with the limit divided by the number of gateways: inaccurate, as we saw, but it still stops a client sending 100 times its limit.",
+        "A **circuit breaker** stops us paying the timeout on every request while Redis is down. And a few endpoints, like login, are better **failing closed**, because the abuse they invite costs more than the outage."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Fail open**: allow the request", "detail": "a few minutes of loose limits beats rejecting every customer" },
+          { "text": "Fall back to **local buckets** on each gateway", "detail": "limit ÷ number of gateways: rough, but it still stops a runaway client" },
+          { "text": "A **circuit breaker** stops waiting on a dead store", "detail": "after repeated timeouts, skip Redis for a few seconds, then probe again" },
+          { "text": "**Fail closed** only where abuse costs more", "detail": "e.g. login and password-reset endpoints" },
+          { "text": "Alert on time spent failing open", "detail": "while it lasts, limits are only approximate" }
+        ]
+      }
+    },
+    {
+      "scene": "shards",
+      "add": ["sgw", "s1", "s2", "s3", "e_sgw_s1", "e_sgw_s2", "e_sgw_s3"],
+      "title": "Inside the counter store",
+      "script": [
+        "Let's zoom into the **counter store**. 15 gigabytes and a million calls a second is too much for one Redis server, so it's a **Redis Cluster**: 16,384 hash slots spread over shards, with each key's slot computed from a hash of the key. We've drawn three shards; we'd run about fifteen.",
+        "The gateways' Redis client knows the slot map and sends each call straight to the right shard, so there's still exactly **one hop**. Adding shards moves slots, not the whole keyspace."
+      ]
+    },
+    {
+      "scene": "shards",
+      "add": ["r1", "r2", "r3", "e_s1_r1", "e_s2_r2", "e_s3_r3"],
+      "title": "Replicas for failover",
+      "script": [
+        "Each shard has a **replica**, copied asynchronously. If a primary dies, its replica is promoted within seconds.",
+        "Asynchronous copying means the last few milliseconds of token updates can be lost in a failover, so a few keys briefly get a slightly bigger budget. That's exactly the kind of **approximate** we agreed to; synchronous replication would add latency to every request for no real benefit."
+      ]
+    },
+    {
+      "title": "Hot keys: lease tokens in batches",
+      "script": [
+        "One problem sharding can't fix is a **hot key**. A single big customer sending 50,000 requests a second sends every one of them to the **same shard**.",
+        "For those keys, a gateway can **lease tokens in batches**: take 20 at once, then spend them from memory. That cuts the key's calls 20-fold, at the cost of tokens sitting unused on one gateway while another runs out, a small accuracy loss that only applies to very busy keys."
+      ],
+      "fadeMs": 1000,
+      "sequence": {
+        "actors": [
+          { "id": "gw", "label": "Gateway 1", "kind": "service" },
+          { "id": "shard", "label": "Shard 2", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "gw", "to": "shard", "label": "take 20 tokens for key_42" },
+          { "from": "shard", "to": "gw", "label": "granted 20", "reply": true },
+          { "from": "gw", "to": "gw", "label": "serve the next 20 requests from memory" },
+          { "note": "20× fewer calls for this key", "over": ["gw", "shard"] },
+          { "from": "gw", "to": "shard", "label": "take 20 more" },
+          { "from": "shard", "to": "gw", "label": "granted 7 (bucket nearly empty)", "reply": true },
+          { "from": "gw", "to": "gw", "label": "reject once those 7 are spent" }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "add": ["regions", "e_redis_regions"],
+      "title": "Multiple regions",
+      "script": [
+        "The platform runs in several **regions**, each with its own gateways and counter store. A customer's traffic can reach more than one region, so whose count wins?",
+        "A single global counter would need a cross-region round trip, around 70 milliseconds, on every request: 70 times our budget. So each region counts **locally**, and the regions exchange counts in the background."
+      ]
+    },
+    {
+      "title": "Global limits across regions",
+      "script": [
+        "The options. **Splitting** the limit across regions is simplest, but a customer whose traffic is all in one region then gets only a fraction of its limit. **Syncing** counts asynchronously, every second or so, lets each region subtract what the others used.",
+        "The cost is a brief overshoot, at most about one sync interval of traffic in the other regions, which our accuracy requirement allows. And since most customers' traffic stays in one region, the overshoot is rare in practice."
+      ],
+      "table": {
+        "columns": ["Option", "Latency", "Accuracy", "Notes"],
+        "rows": [
+          ["One global counter", "+~70 ms per request", "exact", "cross-region hop on the hot path"],
+          ["Split the limit per region", "local", "under-uses quiet regions", "simple; fine when traffic is sticky"],
+          ["**Local counts + async sync**", "local", "brief overshoot", "regions share usage every ~second"]
+        ],
+        "highlight": 2
+      }
+    },
+    {
+      "scene": "main",
+      "add": ["events", "e_gw2_events", "dash", "e_events_dash"],
+      "title": "Observability and shadow mode",
+      "script": [
+        "Last, operators need to **see** the limiter. Gateways emit their **decisions**, every deny plus a sample of allows, to a **Kafka** topic off the request path, and a consumer turns them into **dashboards** and alerts: who is throttled, by which rule, and how close big customers are to their limits.",
+        "The same stream makes **shadow mode** work: a new rule runs in log-only mode, we watch what it *would* have rejected, and only then switch it to enforce."
+      ]
+    },
+    {
+      "scene": "main",
+      "title": "The complete rate limiter",
+      "script": [
+        "Let's step back. Requests go through the **load balancer** to a gateway, whose limiter middleware finds the matching **rules** in memory and makes **one atomic call** to a sharded **counter store** of token buckets.",
+        "Rejected requests get a **429** with Retry-After and never reach the backend. If the store fails, gateways **fail open** to local buckets; hot keys lease tokens in batches; regions sync counts in the background; and every decision flows to dashboards, which is also how new rules roll out safely in shadow mode.",
+        "The theme throughout: a rate limiter is a **fast, approximate** guardrail. We gave up a few percent of accuracy to buy latency and availability, because the limiter exists to protect the API, and it must never become the reason the API is down."
+      ]
+    }
+  ]
+}

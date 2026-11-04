@@ -48,6 +48,6 @@ deck.slides.slice(0, -1).forEach((s, i) => {
   const n = countSentences(s.script);
   if (n <= max) return;
   const kind = "scene" in s ? (s.focus ? "focus" : "scene") :
-    ["sequence", "entities", "bullets", "table"].find((k) => k in s);
+    ["sequence", "entities", "bullets", "table", "timeline"].find((k) => k in s);
   console.log(`${generated + i + 1}\t${n}\t${kind}\t${s.title}`);
 });

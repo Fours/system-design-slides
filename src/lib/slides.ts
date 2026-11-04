@@ -1,18 +1,18 @@
 import type { ArchitectureSlide, Deck, Script } from "../types";
-import { layoutBullets, layoutEntities, layoutSequence, layoutTable,
-  type BulletsFrame, type EntitiesFrame, type SequenceFrame, type TableFrame } from "./detail";
+import { layoutBullets, layoutEntities, layoutSequence, layoutTable, layoutTimeline,
+  type BulletsFrame, type EntitiesFrame, type SequenceFrame, type TableFrame, type TimelineFrame } from "./detail";
 import { sceneBuilder, type SceneFrame } from "./scene";
 
 // Turns a deck's JSON into the flat list of slides the engine shows.
 //
 // The deck opens with a generated intro slide: the complete main scene (its
 // state after the last slide, with nothing highlighted as new) and a one-line
-// welcome. Requirement slides always follow the same sequence, so they are
-// generated from `requirements`:
+// welcome, or the deck's own `intro`. Requirement slides always follow the
+// same sequence, so they are generated from `requirements`:
 //   - functional:     title-only, one per card, out-of-scope strip
 //   - non-functional: title-only, one per card, estimates, takeaway
 // The architecture slides follow, one per entry of `slides`: scene steps, and
-// the detail slides (sequence, entities, bullets, table) between them.
+// the detail slides (sequence, entities, bullets, table, timeline) between them.
 
 export type Diagram =
   | { kind: "fr"; show: number; withStrip: boolean }
@@ -21,7 +21,8 @@ export type Diagram =
   | { kind: "sequence"; frame: SequenceFrame }
   | { kind: "entities"; frame: EntitiesFrame }
   | { kind: "bullets"; frame: BulletsFrame }
-  | { kind: "table"; frame: TableFrame };
+  | { kind: "table"; frame: TableFrame }
+  | { kind: "timeline"; frame: TimelineFrame };
 
 export interface Slide {
   title: string;
@@ -48,7 +49,8 @@ export function buildSlides(deck: Deck): Slide[] {
     if ("scene" in s && s.scene === introScene) finalStep({ add: s.add, remove: s.remove });
   });
   const name = deck.title.replace(/^Design\s+/, "");
-  push(deck.title, [`Welcome to a system design walkthrough for ${name}.`], { kind: "scene", frame: finalStep() });
+  push(deck.intro?.title ?? deck.title, deck.intro?.script ?? [`Welcome to a system design walkthrough for ${name}.`],
+    { kind: "scene", frame: finalStep() });
 
   const frD = (show: number, withStrip = false): Diagram => ({ kind: "fr", show, withStrip });
   push(fr.intro.title, fr.intro.script, frD(0));
@@ -72,6 +74,7 @@ export function buildSlides(deck: Deck): Slide[] {
     if ("entities" in s) return { kind: "entities", frame: layoutEntities(s.entities) };
     if ("bullets" in s) return { kind: "bullets", frame: layoutBullets(s.bullets, s.title) };
     if ("table" in s) return { kind: "table", frame: layoutTable(s.table, s.title) };
+    if ("timeline" in s) return { kind: "timeline", frame: layoutTimeline(s.timeline, s.title) };
     const step = builders.get(s.scene);
     if (!step) throw new Error(`Unknown scene "${s.scene}" on slide "${s.title}"`);
     return { kind: "scene", frame: step({ add: s.add, remove: s.remove, focus: s.focus }) };

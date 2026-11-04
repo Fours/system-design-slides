@@ -1,6 +1,6 @@
 ---
 name: expand-slide
-description: Split one architecture slide of a system design deck into several shorter slides, adding detail diagrams (sequence, UML entities, bullets, comparison table, focus/trace, zoom-in scene) between the steps of the main diagram. Takes a deck slug and a slide number, proposes a plan, and edits only after the user approves. Use when the user says "expand slide N of <deck>", "/expand-slide spotify 30", or asks to break up a long slide.
+description: Split one architecture slide of a system design deck into several shorter slides, adding detail diagrams (sequence, UML entities, bullets, comparison table, timeline, focus/trace, zoom-in scene) between the steps of the main diagram. Takes a deck slug and a slide number, proposes a plan, and edits only after the user approves. Use when the user says "expand slide N of <deck>", "/expand-slide spotify 30", or asks to break up a long slide.
 argument-hint: <deck-slug> <slide-number>
 ---
 
@@ -59,6 +59,7 @@ slide kinds (all data-only, documented in `src/types.ts`):
 | UML entities | `entities` | a schema, a data model, an event or message payload, key design |
 | Bullets | `bullets` | a list of reasons, rules, guarantees, or trade-offs |
 | Comparison table | `table` | choosing between options (databases, protocols, strategies) |
+| Timeline | `timeline` | behavior over time: windows, bursts, TTLs, retries, leases, a counter or token level |
 | Focus / trace | `scene` + `focus` | following one path through the current diagram, pointing at the boxes a beat talks about |
 | Zoom-in | a new entry in `scenes` | the inside of one box (shards, replicas, internal workers), see "Multiple scenes" in CLAUDE.md |
 
@@ -77,7 +78,8 @@ Guidelines:
   explicitly foreshadowing.
 - Respect the size limits the validator warns about: ≤ 6 actors and ≤ 12 steps per
   sequence; ≤ 5 entities; ≤ 6 bullets of ≤ 64 characters; ≤ 8 table rows, cells short
-  enough that a row is ≤ ~120 characters.
+  enough that a row is ≤ ~120 characters; ≤ 16 timeline marks, lane labels ≤ 24
+  characters, notes ≤ 80 characters.
 - If the target is the **last slide of the deck**, the deck must still end on the
   complete main scene: end the group with a scene slide that has no `add` (a recap),
   or keep the original scene slide last.

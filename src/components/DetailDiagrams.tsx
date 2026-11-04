@@ -1,4 +1,5 @@
-import { ENTITY_HEAD, ENTITY_ROW, type BulletsFrame, type EntitiesFrame, type SequenceFrame, type TableFrame } from "../lib/detail";
+import { ENTITY_HEAD, ENTITY_ROW, type BulletsFrame, type EntitiesFrame, type SequenceFrame, type TableFrame,
+  type TimelineFrame } from "../lib/detail";
 import { svgInline } from "../lib/markdown";
 import { Box, Defs, seqStyle } from "./Svg";
 
@@ -87,6 +88,75 @@ export function TableDiagram({ frame }: { frame: TableFrame }) {
       {/* Drawn after the rows so the first row's border can't cover the header's bottom edge. */}
       <rect className="table-head" x={x0} y={headerY} width={x1 - x0} height={rowH} />
       {cells(frame.columns, headerY, "table-col")}
+    </>
+  );
+}
+
+export function TimelineDiagram({ frame }: { frame: TimelineFrame }) {
+  const { x0, x1, axisY, gridTop } = frame;
+  return (
+    <>
+      <text className="heading" x="30" y={frame.headingY}>{frame.heading}</text>
+      {frame.lanes.map((l) => (
+        <g key={l.key}>
+          <rect className="tl-lane" x="20" y={l.y} width="1150" height={l.h} rx="8" />
+          <text className="tl-lane-label" x="40" y={l.y + l.h / 2 - (l.sub ? 8 : 0)}>{svgInline(l.label)}</text>
+          {l.sub && <text className="tl-lane-sub" x="40" y={l.y + l.h / 2 + 12}>{svgInline(l.sub)}</text>}
+          {l.scale && (
+            <>
+              <path className="tl-scale" d={`M${x0},${l.scale.yMax} L${x1},${l.scale.yMax}`} />
+              <path className="tl-scale" d={`M${x0},${l.scale.y0} L${x1},${l.scale.y0}`} />
+              <text className="tl-scale-label" x={x0 - 8} y={l.scale.yMax}>{l.scale.max}</text>
+              <text className="tl-scale-label" x={x0 - 8} y={l.scale.y0}>0</text>
+            </>
+          )}
+        </g>
+      ))}
+      {frame.ticks.map((t) => <path key={t.key} className="tl-grid" d={`M${t.x},${gridTop} L${t.x},${axisY}`} />)}
+      <path className="tl-axis" d={`M${x0},${axisY} L${x1},${axisY}`} />
+      {frame.ticks.map((t) => (
+        <g key={t.key}>
+          <path className="tl-axis" d={`M${t.x},${axisY} L${t.x},${axisY + 6}`} />
+          <text className="tl-tick" x={t.x} y={axisY + 22}>{t.label}</text>
+        </g>
+      ))}
+      {frame.spans.map((s) => (
+        <g key={s.key} className="reveal" style={seqStyle(s.seq)}>
+          <rect className="tl-span" x={s.x} y={s.y} width={s.w} height={s.h} rx="4" />
+          {s.label && <text className="tl-span-label" x={s.x + 8} y={s.y + 15}>{svgInline(s.label)}</text>}
+        </g>
+      ))}
+      {frame.levels.map((l) => (
+        <g key={l.key} className="reveal" style={seqStyle(l.seq)}>
+          {l.limit && (
+            <>
+              <path className="tl-limit" d={`M${x0},${l.limit.y} L${x1},${l.limit.y}`} />
+              <text className="tl-limit-label" x={x0 + 8} y={l.limit.y - 6}>{l.limit.label}</text>
+            </>
+          )}
+          <path className="tl-level" d={l.d} />
+          {l.label && <text className="tl-level-label" x={l.lx} y={l.ly}>{svgInline(l.label)}</text>}
+        </g>
+      ))}
+      {frame.events.map((e) => (
+        <g key={e.key} className={`reveal tl-event ${e.result ?? "neutral"}`} style={seqStyle(e.seq)}>
+          {e.count ? (
+            <rect className="tl-burst" x={e.x - 7} y={e.y - 14} width="14" height="28" rx="7" />
+          ) : e.result === "deny" ? (
+            <path className="tl-cross" d={`M${e.x - 6},${e.y - 6} L${e.x + 6},${e.y + 6} M${e.x + 6},${e.y - 6} L${e.x - 6},${e.y + 6}`} />
+          ) : (
+            <circle className="tl-dot" cx={e.x} cy={e.y} r="6.5" />
+          )}
+          {e.count && <text className="tl-count" x={e.x} y={e.y - 20}>×{e.count}</text>}
+          {e.label && <text className="tl-event-label" x={e.x} y={e.y + (e.count ? 30 : 22)}>{svgInline(e.label)}</text>}
+        </g>
+      ))}
+      {frame.notes.map((n) => (
+        <g key={n.key} className="reveal" style={seqStyle(n.seq)}>
+          <path className="tl-note" d={n.d} />
+          <text className="tl-note-text" x={n.tx} y={n.ty}>{svgInline(n.text)}</text>
+        </g>
+      ))}
     </>
   );
 }
