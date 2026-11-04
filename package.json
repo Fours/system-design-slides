@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b",
-    "validate": "node scripts/validate-decks.ts"
+    "validate": "node scripts/validate-decks.ts",
+    "thumbnails": "node scripts/thumbnails.ts"
   },
   "dependencies": {
     "react": "19.3.1",

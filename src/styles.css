@@ -276,13 +276,13 @@ tspan.dim { fill: var(--ink-dim); }
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 16px;
 }
 .deck-card {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
   height: 100%;
   padding: 18px 20px;
   background: var(--panel);
@@ -292,5 +292,44 @@ tspan.dim { fill: var(--ink-dim); }
   transition: border-color 0.15s, background 0.15s;
 }
 .deck-card:hover, .deck-card:focus-visible { border-color: var(--accent); background: var(--panel-2); }
-.deck-title { font-size: 18px; font-weight: 700; }
+.deck-head { display: flex; align-items: flex-start; gap: 16px; }
+.deck-head-text { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+/* White tile holding the system's light-mode logo (public/logos/<slug>.svg). */
+.deck-logo {
+  flex: none;
+  width: 80px;
+  height: 80px;
+  display: grid;
+  place-items: center;
+  background: #fff;
+  border-radius: 12px;
+  margin: 0 0 12px 0;
+}
+.deck-logo img { width: 84%; height: 60%; object-fit: contain; }
+.deck-title { font-size: 28px; font-weight: 700; line-height: 1.1; }
+/* "View →" pill, in the page-title blue. */
+.deck-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 14px;
+  font-weight: 700;
+  transition: background 0.15s;
+}
+.deck-cta-arrow { transition: transform 0.15s; }
+.deck-card:hover .deck-cta, .deck-card:focus-visible .deck-cta { background: #7dd3fc; }
+.deck-card:hover .deck-cta-arrow, .deck-card:focus-visible .deck-cta-arrow { transform: translateX(3px); }
+.deck-thumb {
+  display: block;
+  width: 100%;
+  aspect-ratio: 2.4 / 1;
+  object-fit: contain;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.deck-thumb[hidden] { display: none; }
 .deck-description { font-size: 14px; line-height: 1.5; color: var(--ink-dim); }

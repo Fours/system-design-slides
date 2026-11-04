@@ -2,52 +2,52 @@
   "decks": [
     {
       "slug": "dropbox",
-      "title": "Design Dropbox",
+      "title": "Dropbox",
       "description": "File sync at exabyte scale: content-addressed blocks with dedupe, a per-namespace metadata journal with cursors, long-poll notifications, conflicted copies, and erasure-coded storage."
     },
     {
       "slug": "google-docs",
-      "title": "Design Google Docs",
+      "title": "Google Docs",
       "description": "Real-time collaborative editing: operational transformation, one session owner per document, an op log with snapshots, and offline edits."
     },
     {
       "slug": "google-search",
-      "title": "Design Google Search",
+      "title": "Google Search",
       "description": "A web crawler and search engine: a polite, prioritized crawl loop, a document-partitioned inverted index, scatter-gather over ~1,000 shards with two-phase ranking, PageRank, and a fresh tier for news."
     },
     {
       "slug": "slack",
-      "title": "Design Slack",
+      "title": "Slack",
       "description": "Team messaging in real time: tens of millions of WebSockets, strict per-channel order and fan-out, and a database sharded by workspace."
     },
     {
       "slug": "spotify",
-      "title": "Design Spotify",
+      "title": "Spotify",
       "description": "Music streaming from a CDN, adaptive playback, royalties from play events, and a deep dive into the recommendation pipeline."
     },
     {
       "slug": "stripe",
-      "title": "Design Stripe",
+      "title": "Stripe",
       "description": "Card payments without double charges: tokenization into a PCI vault, idempotency keys, an explicit unknown state, a double-entry ledger, and reconciliation against the banks."
     },
     {
       "slug": "ticketmaster",
-      "title": "Design Ticketmaster",
+      "title": "Ticketmaster",
       "description": "Selling a small, contested seat inventory to a huge crowd: seat holds without double-booking, exactly-once checkout, and a virtual waiting room."
     },
     {
       "slug": "twitter",
-      "title": "Design Twitter / X",
+      "title": "Twitter / X",
       "description": "Home timelines at scale: fan-out on read vs. write, the celebrity problem, real-time search, trends, and ranked For You feeds."
     },
     {
       "slug": "uber",
-      "title": "Design Uber",
+      "title": "Uber",
       "description": "Ride hailing: a firehose of driver locations in a geo index, ETA-based batch matching, the trip state machine, surge pricing, and payments."
     },
     {
       "slug": "url-shortener",
-      "title": "Design a URL Shortener",
+      "title": "URL Shortener",
       "description": "A read-heavy key-value lookup at 300K redirects a second: leased ID ranges scrambled into unguessable base-62 codes, a cache and CDN in front of a sharded store, 302s, and click analytics off the hot path."
     }
   ]
