@@ -9,6 +9,19 @@
 // ============================================================================
 
 export interface DeckIndex {
+  /** The home page's sections, shown top to bottom. */
+  sections: DeckIndexSection[];
+}
+
+/** One headed group of decks on the home page. */
+export interface DeckIndexSection {
+  /** Stable kebab-case id: the section element's HTML id and React key. */
+  id: string;
+  /** The section header, e.g. "System Design Walkthroughs". */
+  title: string;
+  /** One sentence under the header saying what the section's decks have in common. */
+  description: string;
+  /** May be empty: the section then shows a "coming soon" placeholder. */
   decks: DeckIndexEntry[];
 }
 

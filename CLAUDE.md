@@ -22,8 +22,12 @@ shows the complete system.
 A React + Vite + TypeScript app. Every deck is **data only**: a JSON file that the
 app fetches at runtime, like an API response. All rendering code is shared.
 
-- `public/decks/index.json`: the decks listed on the home page, each
-  `{ slug, title, description }`.
+- `public/decks/index.json`: the home page, as an ordered list of `sections`, each
+  `{ id, title, description, decks }` with decks `{ slug, title, description }`.
+  Today's sections are `walkthroughs` ("System Design Walkthroughs": full "Design X."
+  decks) and `deep-dives` ("System Design: Deep Dives": decks that zoom in on one
+  component of a system and take an expanded look at it). A section with no decks
+  shows a "coming soon" placeholder. To add a section, append an entry; no code changes.
 - `public/decks/<slug>.json`: one deck. The slug is the **topic name, kebab-cased**,
   e.g. `"chat bot"` → `chat-bot.json`, `"Google Docs"` → `google-docs.json`.
 - `src/types.ts`: the JSON formats (`DeckIndex`, `Deck`), with comments on every field.
@@ -52,7 +56,7 @@ not listed on the index page). **Start every new deck by copying it** to
 3. `scenes`: every box and edge of the **final** system (usually just `main`).
 4. `slides`: one entry per architecture step, plus any detail slides between them.
 
-Then add the deck to `index.json` with a one-sentence description.
+Then add the deck to the right section of `index.json` with a one-sentence description.
 
 Decks contain only data, so every deck behaves identically. If a deck needs a new
 reusable feature, add it to the shared code (and `src/types.ts`) and use it from the
@@ -117,8 +121,8 @@ The intro and requirement slides are **generated**; don't list them in `slides`.
    check them with the user. The agreed list becomes the requirement slides.
 2. Sketch the **final** architecture and the order in which pieces get added. A large
    subsystem can get its own sub-arc (see "Multiple scenes" below).
-3. Copy the template, lay out `scenes`, write `slides`, and add the deck to
-   `index.json`.
+3. Copy the template, lay out `scenes`, write `slides`, and add the deck to its
+   section of `index.json`.
 4. Run `npm run validate` and fix every error (unknown ids, edges to missing boxes,
    unclosed markdown) and warning.
 5. Run `npm run dev` and check every slide visually at 1440×900: no overlapping boxes,

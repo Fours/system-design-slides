@@ -269,8 +269,16 @@ tspan.dim { fill: var(--ink-dim); }
   margin: 0 auto;
   padding: 56px 24px;
 }
-#index h1 { margin: 0 0 8px; font-size: 32px; color: var(--accent); }
+#index h1, #index h2 { margin: 0 0 8px; font-size: 32px; color: var(--accent); }
 #index header p { margin: 0 0 32px; color: var(--ink-dim); font-size: 16px; }
+.index-section + .index-section { margin-top: 56px; padding-top: 48px; border-top: 1px solid var(--border); }
+.deck-empty {
+  margin: 0;
+  padding: 28px 20px;
+  border: 1px dashed var(--border);
+  color: var(--ink-dim);
+  text-align: center;
+}
 .deck-list {
   list-style: none;
   margin: 0;

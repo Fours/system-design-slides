@@ -21,7 +21,7 @@ const args = process.argv.slice(2);
 const base = (args.find((a) => a.startsWith("http")) ?? "http://localhost:5173").replace(/\/$/, "");
 const only = args.filter((a) => !a.startsWith("http"));
 const index: DeckIndex = JSON.parse(fs.readFileSync(path.join(ROOT, "public", "decks", "index.json"), "utf8"));
-const slugs = index.decks.map((d) => d.slug).filter((s) => only.length === 0 || only.includes(s));
+const slugs = index.sections.flatMap((s) => s.decks).map((d) => d.slug).filter((s) => only.length === 0 || only.includes(s));
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), "thumbs-"));

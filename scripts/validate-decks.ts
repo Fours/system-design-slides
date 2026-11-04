@@ -166,9 +166,20 @@ function checkDeck(slug: string, deck: Deck) {
 }
 
 const index = read<DeckIndex>("index.json");
-const listed = new Set(index.decks.map((d) => d.slug));
 console.log("index.json");
-for (const d of index.decks) {
+const listed = new Set<string>();
+const sectionIds = new Set<string>();
+if (!Array.isArray(index.sections) || index.sections.length === 0) error("index.json", "needs a non-empty \"sections\" array");
+for (const s of index.sections ?? []) {
+  if (!s.id || !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(s.id)) error("index.json", `section "${s.title}" needs a kebab-case id`);
+  if (sectionIds.has(s.id)) error("index.json", `duplicate section id "${s.id}"`);
+  sectionIds.add(s.id);
+  if (!s.title || !s.description) error("index.json", `section "${s.id}" needs a title and a description`);
+  if (!Array.isArray(s.decks)) error("index.json", `section "${s.id}" needs a "decks" array (it may be empty)`);
+}
+for (const d of (index.sections ?? []).flatMap((s) => s.decks ?? [])) {
+  if (listed.has(d.slug)) error("index.json", `"${d.slug}" is listed more than once`);
+  listed.add(d.slug);
   if (!d.title || !d.description) error("index.json", `"${d.slug}" needs a title and a description`);
   if (!fs.existsSync(path.join(DIR, `${d.slug}.json`))) error("index.json", `no file ${d.slug}.json`);
 }

@@ -73,7 +73,7 @@ The build uses relative asset paths, so `dist/` can be hosted from any sub-path
 ## Project layout
 
 ```
-public/decks/index.json     decks listed on the home page
+public/decks/index.json     the home page: sections, each with its decks
 public/decks/<slug>.json    one deck each (data only)
 public/decks/example.json   the template for new decks (/#/example)
 public/logos/, thumbnails/  images for the index page
@@ -98,7 +98,8 @@ shared code rather than into one deck.
 4. Write `slides`, where each one names only what it `add`s (or `remove`s), plus a
    `title` and `script`. The scene builder highlights and animates the new pieces,
    hides edges whose endpoints aren't visible yet, and fits the camera to what's shown.
-5. Add the deck to `public/decks/index.json`.
+5. Add the deck to the right section of `public/decks/index.json` (e.g.
+   "System Design Walkthroughs" or "System Design: Deep Dives").
 6. Run `npm run validate`, then check every slide in the browser at 1440×900.
 
 The field formats are documented in [`src/types.ts`](src/types.ts), and
