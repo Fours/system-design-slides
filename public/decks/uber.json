@@ -5,6 +5,7 @@
     "functional": {
       "intro": {
         "title": "Functional requirements",
+        "emoji": ["🚗", "📍", "📱"],
         "script": [
           "Before drawing anything I want to agree on **what Uber does** for this design. There are two kinds of user, **riders** and **drivers**, and the product is the moment they're brought together."
         ]

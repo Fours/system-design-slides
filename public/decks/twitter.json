@@ -5,6 +5,7 @@
     "functional": {
       "intro": {
         "title": "Functional requirements",
+        "emoji": ["🐦", "💬", "📰"],
         "script": [
           "Before drawing anything I want to pin down **what we're building**, because Twitter, now X, has grown into a lot of products. I'll scope this to the core microblogging experience."
         ]

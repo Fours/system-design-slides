@@ -5,6 +5,7 @@
     "functional": {
       "intro": {
         "title": "Functional requirements",
+        "emoji": ["🔍", "🌐", "🕷️"],
         "script": [
           "Let me start by agreeing on **what we're building**. Google Search is really two products glued together: a **web crawler** that downloads and understands a large fraction of the public web, and a **search engine** that answers a query against all of it in a fraction of a second.",
           "I'll scope it to classic web search, ten blue links, because that's where the core architecture lives. Everything else Google shows on a results page sits on top of this."

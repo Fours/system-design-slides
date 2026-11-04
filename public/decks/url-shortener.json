@@ -5,6 +5,7 @@
     "functional": {
       "intro": {
         "title": "Functional requirements",
+        "emoji": ["🔗", "✂️", "↪️"],
         "script": [
           "A URL shortener looks like a toy problem: take a long URL, hand back a short one, and redirect anyone who clicks it. But it's a great interview question because almost every interesting decision hides in **two numbers**: how many links we create, and how many times they get clicked.",
           "Let's start by agreeing on **what the system does**, and what we're deliberately leaving out."

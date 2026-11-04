@@ -252,6 +252,10 @@ tspan.dim { fill: var(--ink-dim); }
 .est-title { fill: var(--ink-dim); font-size: 17px; font-weight: 700; }
 .est-k { fill: var(--ink); font-size: 13.5px; font-weight: 700; }
 .est-v { fill: var(--ink); font-size: 13.5px; }
+.hero-emoji {
+  font-size: 180px; text-anchor: middle; dominant-baseline: central;
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+}
 
 /* ---- App additions (not in the original standalone decks) ---- */
 #root { height: 100%; }

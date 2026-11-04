@@ -5,6 +5,7 @@
     "functional": {
       "intro": {
         "title": "Functional requirements",
+        "emoji": ["📁", "☁️", "🔄"],
         "script": [
           "Before drawing anything, I want to agree on **what Dropbox does** for this design. At its heart it's a **folder that lives in the cloud**: you drop a file in it on your laptop, and it shows up on your phone, on your other computers, and for anyone you've shared it with.",
           "The product looks simple, and that's exactly what makes it hard: users expect it to **just work**, invisibly, for files of any size, on flaky networks, across devices that go offline for days. I'll scope it to the core of file sync and sharing."

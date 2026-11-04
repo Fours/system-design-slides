@@ -5,6 +5,7 @@
     "functional": {
       "intro": {
         "title": "Functional requirements",
+        "emoji": ["💳", "💸", "🏦"],
         "script": [
           "Before drawing anything, I want to agree on **what Stripe does** for this design. There are two parties here: the **merchant**, who integrates with our API and wants to get paid, and the merchant's **customer**, who types a card number into a checkout page. Our job is to sit between them and the banking system and move money correctly.",
           "I'll scope this to the core of the business, **card payments**: taking a payment, moving it through its lifecycle, and getting the money to the merchant."

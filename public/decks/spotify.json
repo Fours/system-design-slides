@@ -5,6 +5,7 @@
     "functional": {
       "intro": {
         "title": "Functional requirements",
+        "emoji": ["🎶", "🔊"],
         "script": [
           "Before I draw any boxes I want to agree on **what we're actually building**, because \"Spotify\" covers a lot of products. I'll scope it to the core music experience."
         ]

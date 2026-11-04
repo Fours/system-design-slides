@@ -5,6 +5,7 @@
     "functional": {
       "intro": {
         "title": "Functional requirements",
+        "emoji": ["💬", "👥", "⚡"],
         "script": [
           "Before drawing anything I want to pin down **what Slack does** for the purposes of this design, because it has grown into a large platform. I'll focus on the core: real-time team messaging."
         ]

@@ -5,6 +5,7 @@
     "functional": {
       "intro": {
         "title": "Functional requirements: what we're building",
+        "emoji": ["🎟️", "🏟️"],
         "script": [
           "Before I draw anything I want to agree on **what Ticketmaster does** for this design. The core journey is short: a fan **finds an event**, looks at the **seat map**, **grabs some seats**, and **pays** for them. Everything interesting comes from doing that for the wrong number of people at the wrong moment."
         ]

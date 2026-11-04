@@ -5,6 +5,7 @@
     "functional": {
       "intro": {
         "title": "Functional requirements",
+        "emoji": ["📝", "👥", "🔄"],
         "script": [
           "Before drawing anything I want to agree on **what Google Docs does** for this design. On the surface it's a word processor in the browser. The reason it's an interesting systems question is that it's a **shared** word processor: several people edit the same document at the same moment and all of them see the same result."
         ]

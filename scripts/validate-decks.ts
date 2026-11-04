@@ -113,6 +113,9 @@ function checkDeck(slug: string, deck: Deck) {
       if (c.lines.length > 3) warn(where, `${name} card "${c.title}" has more than 3 lines`);
     });
   }
+  const emoji = fr.intro.emoji;
+  if (!emoji) warn(where, `functional.intro has no "emoji"; add 2–3 that convey what the system is about`);
+  else if (emoji.length < 2 || emoji.length > 3) error(where, `functional.intro.emoji has ${emoji.length} entries; use 2–3`);
   checkScript(`${where} functional.outOfScope`, fr.outOfScope.script);
   checkScript(`${where} nonFunctional.estimates`, nfr.estimates.script);
   checkScript(`${where} nonFunctional.takeaway`, nfr.takeaway.script);

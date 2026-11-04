@@ -5,6 +5,7 @@
     "functional": {
       "intro": {
         "title": "Functional requirements",
+        "emoji": ["🧩", "⚙️"],
         "script": [
           "Open by **agreeing on scope**: what users (and any other actors) can do with the system, and what we are deliberately leaving out.",
           "*(Filler text for the example template. The next slides add one requirement card each, then the out-of-scope strip.)*"

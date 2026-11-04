@@ -83,7 +83,9 @@ The intro and requirement slides are **generated**; don't list them in `slides`.
   "Welcome to a system design walkthrough for X." (X is `title` minus "Design ").
 
 - **Functional requirements, built up one slide at a time:**
-  - a title-only slide (`functional.intro`);
+  - a title-only slide (`functional.intro`), which shows 2–3 very large emoji
+    (`functional.intro.emoji`) conveying what the system is mainly about, e.g.
+    `["🎶", "🔊"]` for Spotify;
   - one slide per numbered card (`functional.cards`, one per capability, up to 9),
     each adding the next card, highlighted as new; its script describes just that
     requirement, and the slide is titled with the card title;

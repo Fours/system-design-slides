@@ -1,6 +1,7 @@
 import type { FunctionalRequirements, NonFunctionalRequirements, RequirementCard } from "../types";
 import { EST_FIRST_DY, EST_LINE, EST_ROW_GAP, EST_TITLE_DY, NFR_CARD_GAP, NFR_CARD_H, NFR_TOP,
   REQ_H, REQ_W, TAKE_FIRST_DY, TAKE_LINE, gridHeight, nfrLayout } from "../lib/requirements";
+import { seqStyle } from "./Svg";
 
 // ============================================================================
 // Requirement-slide diagrams. Both use viewBox 0 0 1200 640.
@@ -79,13 +80,29 @@ function EstimatesPanel({ x, y, w, h, rows, isNew }: {
   );
 }
 
+// 2–3 large emoji side by side, centered below the heading; each fades in
+// after the one before it.
+function EmojiRow({ emoji }: { emoji: string[] }) {
+  const pitch = 260, cy = (66 + REQ_H) / 2;
+  const x0 = REQ_W / 2 - ((emoji.length - 1) * pitch) / 2;
+  return (
+    <>
+      {emoji.map((e, i) => (
+        <text key={i} className="hero-emoji new" x={x0 + i * pitch} y={cy} style={seqStyle(i)}>{e}</text>
+      ))}
+    </>
+  );
+}
+
 // The heading, the first `show` cards (the last of them highlighted), and
-// optionally the out-of-scope strip below the grid.
+// optionally the out-of-scope strip below the grid. The title-only slide
+// (no cards, no strip) shows the intro emoji instead.
 export function FrDiagram({ req, show, withStrip }: { req: FunctionalRequirements; show: number; withStrip: boolean }) {
   const h = 128, gap = 15;
   return (
     <>
       <text className="heading" x="30" y="42">Functional requirements</text>
+      {show === 0 && !withStrip && req.intro.emoji?.length ? <EmojiRow emoji={req.intro.emoji} /> : null}
       <CardGrid x0={30} y0={66} w={370} h={h} gap={gap} cards={req.cards} show={show} fresh={withStrip ? -1 : show - 1} />
       {withStrip && (
         <LinesBox x={30} y={66 + gridHeight(req.cards.length, h, gap) + 32} w={1140} h={100} variant="strip"

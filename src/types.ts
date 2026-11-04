@@ -61,7 +61,9 @@ export interface RequirementCard {
 }
 
 export interface FunctionalRequirements {
-  intro: SlideText;
+  /** `emoji`: 2–3 emoji, drawn very large and centered on the title-only slide,
+   *  that convey what the system is mainly about (e.g. ["🎶", "🔊"] for Spotify). */
+  intro: SlideText & { emoji?: string[] };
   /** Up to 9 cards (3×3 grid). */
   cards: RequirementCard[];
   /** The dashed out-of-scope strip, and the slide that adds it. */
