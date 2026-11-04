@@ -1,0 +1,604 @@
+{
+  "title": "Design YouTube",
+  "topic": "System Design: YouTube",
+  "requirements": {
+    "functional": {
+      "intro": {
+        "title": "Functional requirements",
+        "emoji": ["🎬", "▶️", "📺"],
+        "script": [
+          "YouTube is two very different systems wearing one logo. On one side, creators push **hundreds of hours of raw video every minute** into a processing pipeline. On the other, billions of people pull **finished video** out to every kind of screen, and expect it to start instantly and never buffer.",
+          "Let's start by agreeing on **what the system does**, and what we're deliberately leaving out."
+        ]
+      },
+      "cards": [
+        {
+          "title": "Upload videos",
+          "lines": ["Files up to hours long,", "resumable on flaky networks"],
+          "script": ["A creator can **upload a video** from a browser or phone, along with a title, description and visibility: public, unlisted or private. Files can be **many gigabytes** and hours long, uploaded over hotel Wi-Fi or a cellular connection, so an upload must survive interruptions and **resume where it left off**."]
+        },
+        {
+          "title": "Process for every device",
+          "lines": ["Transcode to many resolutions", "plus thumbnails and captions"],
+          "script": ["After upload, we **process** the video so it plays well everywhere: from a cheap phone on 3G to a 4K TV on fiber. That means converting it into **several resolutions and codecs**, generating thumbnails, and producing automatic captions. The creator sees a status like \"processing\" until it's ready."]
+        },
+        {
+          "title": "Watch",
+          "lines": ["Adaptive streaming;", "start fast, seek anywhere"],
+          "script": ["The core experience: a viewer presses play and the video **starts within a couple of seconds**, adapts its quality to their bandwidth as it changes, and lets them **seek anywhere** instantly. This is the path that most of our traffic, and almost all of our bandwidth, goes through."]
+        },
+        {
+          "title": "Search",
+          "lines": ["Find videos by title,", "description and captions"],
+          "script": ["Viewers can **search** for videos by keywords that match the title, description, tags and even the spoken words via captions. Results are ranked by relevance and by how much people actually engage with each video."]
+        },
+        {
+          "title": "Home feed and Up next",
+          "lines": ["Personalized recommendations", "on the home page and player"],
+          "script": ["The **home page** and the **Up next** list are personalized recommendations. They drive most of the watch time on the platform, so they matter a lot, but we'll treat the models themselves at a high level and focus on how they plug into the system."]
+        },
+        {
+          "title": "Channels and subscriptions",
+          "lines": ["Subscribe to a channel,", "get notified of new uploads"],
+          "script": ["Every creator has a **channel**. Viewers can **subscribe** to it, and when the channel publishes a new video, subscribers get a **notification** and see it in their subscriptions feed. Some channels have well over a hundred million subscribers, which will make that fan-out interesting."]
+        },
+        {
+          "title": "Views, likes and comments",
+          "lines": ["Public view and like counts,", "threaded comments"],
+          "script": ["Each video shows a **view count** and a **like count**, and has **comments**. These look trivial but sit on the hottest path we have: every play produces events, and a viral video gets hammered with views, likes and comments all at once."]
+        }
+      ],
+      "outOfScope": {
+        "title": "Out of scope",
+        "script": [
+          "Out of scope: **live streaming**, which needs its own low-latency ingest; **Shorts**; **ads and monetization**; **Content ID** copyright matching; and **offline downloads** and DRM. Each is a big system in its own right, and leaving them out keeps us focused on the upload, process and watch loop."
+        ],
+        "lines": ["Live streaming  ·  Shorts  ·  Ads and monetization  ·  Content ID  ·  Offline downloads and DRM"]
+      }
+    },
+    "nonFunctional": {
+      "intro": {
+        "title": "Non-functional requirements",
+        "script": [
+          "Now the **qualities** the system needs, and a few back-of-the-envelope numbers. For YouTube the numbers are the whole story: they tell us that this is mostly a problem of **moving bytes** and **burning compute**, and much less a problem of storing rows."
+        ]
+      },
+      "cards": [
+        {
+          "title": "Scale",
+          "lines": ["~2.5B monthly users;", "1B hours watched a day"],
+          "script": ["Design for about **2.5 billion monthly users** who together watch around **a billion hours of video a day**, while creators upload about **500 hours of video every minute**. Watching outweighs uploading by roughly a thousand to one in hours of video."]
+        },
+        {
+          "title": "Playback latency",
+          "lines": ["Start in < 2 s;", "rebuffering is rare"],
+          "script": ["Viewers abandon a video that takes too long to start, so playback should **start in under two seconds** almost everywhere, and **rebuffering**, the spinner in the middle of a video, should be rare. Loading the watch page itself should take a few hundred milliseconds."]
+        },
+        {
+          "title": "Availability",
+          "lines": ["Watching: 99.99%;", "processing may lag"],
+          "script": ["**Watching must almost never fail**: four nines for playback. Uploads and processing are less critical. If processing falls behind for a while, a new video takes longer to appear, which is annoying, but nobody's playback breaks."]
+        },
+        {
+          "title": "Durability",
+          "lines": ["An accepted upload", "is never lost"],
+          "script": ["Once we tell a creator their upload succeeded, that video must **never be lost**, even if it's years old and rarely watched. Many creators don't keep their own copies. So we keep the **original file** forever and can always regenerate everything else from it."]
+        },
+        {
+          "title": "Processing time",
+          "lines": ["Watchable within minutes,", "HD shortly after"],
+          "script": ["A creator wants their video **live within minutes** of the upload finishing, not hours, even for a two-hour video. It's acceptable for the low resolutions to appear first and **HD and 4K to follow** a bit later."]
+        },
+        {
+          "title": "Consistency",
+          "lines": ["Counts and feeds may lag;", "your own edits show at once"],
+          "script": ["View counts, like counts, search results and recommendations can all be **eventually consistent**: a few seconds or minutes behind is fine. But a creator who edits a title or makes a video private should **see that change immediately**, and a private video must never be served to the wrong person."]
+        },
+        {
+          "title": "Cost",
+          "lines": ["Egress, transcode compute", "and storage dominate"],
+          "script": ["At this scale, **cost is a design requirement**. Three things dominate the bill: **bandwidth** to send video out, **compute** to transcode it, and **storage** for every version of every video ever uploaded. Many design choices will be about trading one of these against another."]
+        }
+      ],
+      "estimates": {
+        "title": "Back-of-the-envelope estimates",
+        "script": [
+          "The numbers. **500 hours a minute** is about **720,000 hours of video a day**. With an average length around ten minutes, that's roughly **4 million new videos a day**, or about **50 uploads a second**, which is tiny as a request rate.",
+          "Watching is different. Say **5 billion views a day**: about **60,000 watch-page loads a second**, maybe 150,000 at peak. And a billion hours a day at an average of **3 megabits a second** is about **125 terabits a second** of video leaving our network on average, twice that at peak.",
+          "On the input side, at about **2 gigabytes per hour** of original, uploads add **1.5 petabytes a day**, and the transcoded versions roughly double that: about **an exabyte a year**. If transcoding costs about **ten core-hours per hour of video**, that's around **300,000 cores** busy around the clock."
+        ],
+        "rows": [
+          ["Uploads", ["500 hrs/min ≈ 720K hrs/day", "≈ 4M videos/day ≈ 50/s"]],
+          ["Views", ["~5B views/day ≈ 60K/s", "~150K/s watch-page loads at peak"]],
+          ["Egress", ["1B hrs/day × ~3 Mbps", "≈ 125 Tbps avg, ~250 Tbps peak"]],
+          ["Storage", ["720K hrs × ~2 GB ≈ 1.5 PB/day", "+ renditions ≈ 3 PB/day ≈ 1 EB/yr"]],
+          ["Transcode", ["~10 core-hours per video hour", "≈ 300K cores busy around the clock"]]
+        ]
+      },
+      "takeaway": {
+        "title": "Takeaway",
+        "heading": "Takeaway: a bandwidth and compute problem",
+        "script": [
+          "So the takeaway: YouTube is a **bandwidth problem** and a **compute problem**. 125 terabits a second can't come out of a few data centers, so video bytes must be served from **caches close to viewers**, and our own servers should never touch them on the hot path.",
+          "On the way in, 500 hours a minute of transcoding means a **massively parallel, elastic pipeline** that runs entirely off the request path. The metadata, by comparison, is small: a sharded database and a cache will do. Let's build it."
+        ],
+        "lines": [
+          "~125 Tbps out → serve video bytes from caches near viewers; keep our servers off the byte path",
+          "500 hrs/min in, ~300K cores → an elastic, parallel transcode pipeline, fully asynchronous"
+        ]
+      }
+    }
+  },
+  "scenes": {
+    "main": {
+      "boxes": [
+        { "id": "creator", "x": 40, "y": 40, "w": 160, "h": 60, "label": "Creator", "kind": "client", "sub": "uploads videos" },
+        { "id": "viewer", "x": 40, "y": 580, "w": 160, "h": 60, "label": "Viewer", "kind": "client", "sub": "web · mobile · TV" },
+        { "id": "gw", "x": 260, "y": 40, "w": 150, "h": 420, "label": "API Gateway", "kind": "infra", "sub": "auth · rate limits" },
+        { "id": "cdn", "x": 260, "y": 670, "w": 150, "h": 60, "label": "CDN Edge", "kind": "infra", "sub": "caches inside ISPs" },
+        { "id": "server", "x": 490, "y": 220, "w": 190, "h": 60, "label": "Server", "kind": "service", "sub": "upload + watch" },
+        { "id": "upload", "x": 490, "y": 40, "w": 190, "h": 60, "label": "Upload Service", "kind": "service", "sub": "resumable sessions" },
+        { "id": "video", "x": 490, "y": 130, "w": 190, "h": 60, "label": "Video Service", "kind": "service", "sub": "metadata · edits" },
+        { "id": "playback", "x": 490, "y": 220, "w": 190, "h": 60, "label": "Playback Service", "kind": "service", "sub": "manifest · CDN host" },
+        { "id": "search", "x": 490, "y": 310, "w": 190, "h": 60, "label": "Search Service", "kind": "service", "sub": "query · rank" },
+        { "id": "feed", "x": 490, "y": 400, "w": 190, "h": 60, "label": "Feed Service", "kind": "service", "sub": "home · up next" },
+        { "id": "engage", "x": 490, "y": 490, "w": 190, "h": 60, "label": "Engagement Service", "kind": "service", "sub": "likes · comments · subs" },
+        { "id": "shield", "x": 490, "y": 670, "w": 190, "h": 60, "label": "Origin Shield", "kind": "infra", "sub": "regional mid-tier cache" },
+        { "id": "cache", "x": 720, "y": 120, "w": 80, "h": 170, "label": "Cache", "kind": "data tier", "sub": "Memcached" },
+        { "id": "rawstore", "x": 840, "y": 40, "w": 190, "h": 60, "label": "Raw Uploads", "kind": "data", "sub": "blob store · originals" },
+        { "id": "metadb", "x": 840, "y": 130, "w": 190, "h": 150, "label": "Metadata DB", "kind": "data", "sub": "Vitess · sharded MySQL" },
+        { "id": "searchidx", "x": 840, "y": 310, "w": 190, "h": 60, "label": "Search Index", "kind": "data", "sub": "inverted · sharded" },
+        { "id": "recsstore", "x": 840, "y": 400, "w": 190, "h": 60, "label": "Recs Store", "kind": "data", "sub": "candidates per user" },
+        { "id": "events", "x": 840, "y": 490, "w": 190, "h": 60, "label": "Event Stream", "kind": "stream", "sub": "Kafka · views, likes" },
+        { "id": "engagedb", "x": 840, "y": 580, "w": 190, "h": 60, "label": "Engagement DB", "kind": "data", "sub": "Bigtable · counts, comments" },
+        { "id": "segstore", "x": 840, "y": 670, "w": 190, "h": 60, "label": "Segment Store", "kind": "data", "sub": "renditions · HLS/DASH" },
+        { "id": "uploadq", "x": 1090, "y": 40, "w": 200, "h": 60, "label": "Upload Events", "kind": "stream", "sub": "Kafka · upload done" },
+        { "id": "orchestrator", "x": 1090, "y": 130, "w": 200, "h": 60, "label": "Transcode Orchestrator", "kind": "service", "sub": "a DAG per video" },
+        { "id": "analysis", "x": 1090, "y": 220, "w": 200, "h": 60, "label": "Content Analysis", "kind": "ml", "sub": "moderation · captions" },
+        { "id": "indexer", "x": 1090, "y": 310, "w": 200, "h": 60, "label": "Search Indexer", "kind": "service", "sub": "change stream → index" },
+        { "id": "recstrain", "x": 1090, "y": 400, "w": 200, "h": 60, "label": "Recs Training", "kind": "ml", "sub": "offline · watch time" },
+        { "id": "viewagg", "x": 1090, "y": 490, "w": 200, "h": 60, "label": "View Counter", "kind": "stream", "sub": "Flink · dedupe · fraud" },
+        { "id": "workers", "x": 1350, "y": 40, "w": 200, "h": 60, "label": "Transcode Workers", "kind": "service", "sub": "chunk × rendition" },
+        { "id": "notifier", "x": 1350, "y": 130, "w": 200, "h": 60, "label": "Notifier", "kind": "service", "sub": "fan-out to subscribers" },
+        { "id": "push", "x": 1350, "y": 220, "w": 200, "h": 60, "label": "Push · Email", "kind": "ghost", "sub": "APNs · FCM · SMTP" }
+      ],
+      "edges": [
+        { "id": "e_creator_server", "from": "creator", "to": "server", "pts": [[200, 70], [450, 70], [450, 235], [490, 235]], "label": "upload", "lp": [325, 62, "middle"] },
+        { "id": "e_viewer_server", "from": "viewer", "to": "server", "pts": [[200, 610], [450, 610], [450, 265], [490, 265]], "label": "watch", "lp": [325, 602, "middle"], "both": true },
+        { "id": "e_server_metadb", "from": "server", "to": "metadb", "pts": [[680, 255], [840, 255]], "label": "metadata", "lp": [780, 247, "middle"] },
+        { "id": "e_server_raw", "from": "server", "to": "rawstore", "pts": [[680, 230], [720, 230], [720, 85], [840, 85]], "label": "video file", "lp": [727, 160, "start"] },
+        { "id": "e_server_seg", "from": "server", "to": "segstore", "pts": [[585, 280], [585, 700], [840, 700]], "label": "read segments", "lp": [712, 692, "middle"] },
+        { "id": "e_creator_gw", "from": "creator", "to": "gw", "pts": [[200, 70], [260, 70]], "both": true },
+        { "id": "e_viewer_gw", "from": "viewer", "to": "gw", "pts": [[120, 580], [120, 430], [260, 430]], "label": "API calls", "lp": [127, 510, "start"], "both": true },
+        { "id": "e_upload_raw", "from": "upload", "to": "rawstore", "pts": [[680, 70], [840, 70]], "label": "chunks", "lp": [760, 62, "middle"] },
+        { "id": "e_raw_uploadq", "from": "rawstore", "to": "uploadq", "pts": [[1030, 70], [1090, 70]] },
+        { "id": "e_uploadq_orch", "from": "uploadq", "to": "orchestrator", "pts": [[1190, 100], [1190, 130]] },
+        { "id": "e_orch_workers", "from": "orchestrator", "to": "workers", "pts": [[1290, 145], [1320, 145], [1320, 70], [1350, 70]], "label": "tasks", "lp": [1327, 118, "start"] },
+        { "id": "e_workers_raw", "from": "workers", "to": "rawstore", "pts": [[1450, 40], [1450, 15], [935, 15], [935, 40]], "label": "read original chunk", "lp": [1190, 8, "middle"] },
+        { "id": "e_workers_seg", "from": "workers", "to": "segstore", "pts": [[1550, 70], [1580, 70], [1580, 770], [935, 770], [935, 730]], "label": "write segments + manifests", "lp": [1250, 762, "middle"] },
+        { "id": "e_orch_metadb", "from": "orchestrator", "to": "metadb", "pts": [[1090, 160], [1030, 160]] },
+        { "id": "e_orch_analysis", "from": "orchestrator", "to": "analysis", "pts": [[1190, 190], [1190, 220]] },
+        { "id": "e_analysis_metadb", "from": "analysis", "to": "metadb", "pts": [[1090, 250], [1030, 250]] },
+        { "id": "e_orch_notifier", "from": "orchestrator", "to": "notifier", "pts": [[1290, 170], [1350, 170]] },
+        { "id": "e_notifier_push", "from": "notifier", "to": "push", "pts": [[1450, 190], [1450, 220]] },
+        { "id": "e_video_metadb", "from": "video", "to": "metadb", "pts": [[680, 160], [840, 160]] },
+        { "id": "e_playback_metadb", "from": "playback", "to": "metadb", "pts": [[680, 250], [840, 250]] },
+        { "id": "e_cdn_seg", "from": "cdn", "to": "segstore", "pts": [[410, 700], [840, 700]], "label": "cache miss" },
+        { "id": "e_viewer_cdn", "from": "viewer", "to": "cdn", "pts": [[120, 640], [120, 700], [260, 700]], "label": "segments", "lp": [190, 692, "middle"], "both": true },
+        { "id": "e_cdn_shield", "from": "cdn", "to": "shield", "pts": [[410, 700], [490, 700]], "label": "miss", "lp": [450, 692, "middle"] },
+        { "id": "e_shield_seg", "from": "shield", "to": "segstore", "pts": [[680, 700], [840, 700]], "label": "miss", "lp": [760, 692, "middle"] },
+        { "id": "e_search_idx", "from": "search", "to": "searchidx", "pts": [[680, 340], [840, 340]], "label": "query", "lp": [760, 332, "middle"] },
+        { "id": "e_feed_recs", "from": "feed", "to": "recsstore", "pts": [[680, 430], [840, 430]], "label": "candidates", "lp": [760, 422, "middle"] },
+        { "id": "e_engage_events", "from": "engage", "to": "events", "pts": [[680, 520], [840, 520]], "label": "events", "lp": [760, 512, "middle"], "async": true },
+        { "id": "e_engage_engagedb", "from": "engage", "to": "engagedb", "pts": [[640, 550], [640, 610], [840, 610]], "label": "read / write", "lp": [760, 602, "middle"] },
+        { "id": "e_events_viewagg", "from": "events", "to": "viewagg", "pts": [[1030, 520], [1090, 520]] },
+        { "id": "e_viewagg_engagedb", "from": "viewagg", "to": "engagedb", "pts": [[1190, 550], [1190, 610], [1030, 610]], "label": "counts", "lp": [1110, 602, "middle"] },
+        { "id": "e_events_recstrain", "from": "events", "to": "recstrain", "pts": [[1030, 500], [1060, 500], [1060, 445], [1090, 445]], "async": true },
+        { "id": "e_recstrain_recs", "from": "recstrain", "to": "recsstore", "pts": [[1090, 420], [1030, 420]] },
+        { "id": "e_metadb_indexer", "from": "metadb", "to": "indexer", "pts": [[1030, 270], [1060, 270], [1060, 330], [1090, 330]], "async": true },
+        { "id": "e_indexer_idx", "from": "indexer", "to": "searchidx", "pts": [[1090, 355], [1030, 355]] }
+      ],
+      "bus": { "hub": "gw", "hubX": 410, "hubY": 250, "x": 450, "members": ["server", "upload", "video", "playback", "search", "feed", "engage"] }
+    }
+  },
+  "slides": [
+    {
+      "scene": "main",
+      "add": ["creator", "viewer", "server", "e_creator_server", "e_viewer_server"],
+      "title": "Start simple: one server",
+      "script": [
+        "Let's start with the simplest thing that works. There are two kinds of users: a **creator**, who uploads a video, and a **viewer**, who watches it. Both talk to **one server**.",
+        "The creator POSTs a video file and the server saves it to its local disk. The viewer requests the video and the server streams the same file back. Everything we add from here exists to fix a specific weakness of this version, and there are plenty."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["metadb", "e_server_metadb"],
+      "title": "Metadata goes in a database",
+      "script": [
+        "A video is two very different kinds of data. The first is **metadata**: the title, description, owner, visibility, upload time, duration and processing status. It's small, a few kilobytes per video, structured, and queried in many ways.",
+        "So we put it in a **Metadata DB**. A relational database fits well here: channels own videos, videos have many renditions and captions, and creators edit these rows and expect the changes to stick. With 4 million new videos a day this is billions of rows over time, but each row is tiny."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["rawstore", "e_server_raw"],
+      "title": "Video bytes go in blob storage",
+      "script": [
+        "The second kind of data is the **video file** itself: gigabytes of opaque bytes that are written once and never edited. That doesn't belong in a database or on the server's disk. It goes in a **blob store**, an object store like S3 or Google Cloud Storage, keyed by video ID.",
+        "Blob stores are built for exactly this: effectively **unlimited capacity**, high throughput for large sequential reads and writes, and durability through replication or **erasure coding** across machines and zones. The database row just points at the object. Separating metadata from bytes is the first big design decision, and every later step builds on it."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["viewer", "server", "rawstore", "e_viewer_server", "e_server_raw"],
+      "title": "Why serving the original file fails",
+      "script": [
+        "Now look at the watch path: the server reads the **original upload** and sends it to the viewer. That fails in several ways. The original might be a 20-megabit-per-second 4K file from a camera, which a phone on 3G simply **can't download fast enough** to play.",
+        "It might use a **codec or container** the viewer's device can't decode. Seeking means the player has to figure out byte offsets inside a file it hasn't downloaded. And every byte flows **through our server**, which at 125 terabits a second is impossible. We'll fix all of these, but first let's make the front door scale."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["gw", "e_creator_gw", "e_viewer_gw"],
+      "remove": ["e_creator_server", "e_viewer_server"],
+      "title": "Scale out behind an API gateway",
+      "script": [
+        "One server can't handle 150,000 watch-page loads a second, and when it dies everything is down. So clients now talk to an **API Gateway**, which runs many identical, stateless copies of our servers behind it.",
+        "The gateway terminates **TLS**, **authenticates** the caller, applies **rate limits**, and routes each API call to the right backend. That last part matters soon, because we're about to break the server into services. Note that this is the path for **API calls only**; we'll give the video bytes their own path later."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["upload", "e_upload_raw"],
+      "title": "Split out an Upload Service",
+      "script": [
+        "Uploads behave nothing like page loads. They're **long-lived**, minutes to hours, they're **bandwidth-heavy**, and there are only about 50 a second. Mixing them with latency-sensitive watch traffic would let a burst of uploads starve the watch path, so we split out an **Upload Service**.",
+        "Its only job is to get the bytes from the creator into the **Raw Uploads** blob store safely. It scales on network throughput rather than request count, and if it has a bad day, uploads slow down but **nobody's playback is affected**, which is exactly the availability split we asked for."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["creator", "gw", "upload", "rawstore", "e_creator_gw", "e_upload_raw"],
+      "title": "Resumable, chunked uploads",
+      "script": [
+        "A multi-gigabyte upload over a phone connection **will** get interrupted, so uploads are **resumable**. The client first calls the Upload Service to start an **upload session**. The service creates the video record with status UPLOADING and returns a session ID. The client then sends the file in **chunks** of, say, 8 megabytes.",
+        "Each chunk goes into the blob store as part of a **multipart upload**, and the session records how many bytes have been received. If the connection drops, the client asks the session **\"how much do you have?\"** and continues from that offset. *An alternative is to hand the client pre-signed URLs and let it upload straight to the blob store; that saves us bandwidth, but our own front end gives us more control over validation and quotas.*"
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["uploadq", "e_raw_uploadq"],
+      "title": "Hand off with an event",
+      "script": [
+        "When the last chunk arrives, the multipart upload is **finalized** into one durable object. At that moment we tell the creator \"upload complete, processing\", and we **publish an event** to an **Upload Events** topic in Kafka: video ID, location of the original, size.",
+        "Why an event instead of calling the processing system directly? Processing takes minutes and needs huge, elastic capacity. The event **decouples** the two: the upload path finishes in milliseconds, and the event sits safely in a durable log until processing is ready for it, even if processing is down or **backed up** for an hour."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["orchestrator", "e_uploadq_orch"],
+      "title": "A Transcode Orchestrator",
+      "script": [
+        "Now we fix the watch-path problems from earlier by **transcoding**: decoding the original and re-encoding it into versions every device can play well. A **Transcode Orchestrator** consumes the upload events and, for each video, plans all the work that needs to happen.",
+        "It first **probes** the original: duration, resolution, frame rate, audio tracks, codec. From that it decides which outputs to produce. A 480p phone video doesn't get a 4K version; a 4K upload gets the full set. The orchestrator owns the plan and its progress; it doesn't do the heavy encoding itself."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["orchestrator", "uploadq", "e_uploadq_orch"],
+      "title": "The bitrate ladder",
+      "script": [
+        "The set of outputs is called a **bitrate ladder**: the same video at several resolutions and bitrates, from **144p** at around 100 kilobits a second up through 360p, 720p, 1080p and **4K** at 15 to 20 megabits. Each rung is a **rendition**. The player will later climb up and down this ladder as bandwidth changes.",
+        "We also produce each ladder in more than one **codec**. **H.264** plays on everything; **VP9** and **AV1** are 30 to 50% smaller at the same quality, which saves enormous bandwidth, but they're much slower to encode and not every device decodes them. So a typical video ends up as **a dozen or more renditions**, plus separate audio tracks."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["workers", "e_orch_workers", "e_workers_raw"],
+      "title": "Split into chunks, transcode in parallel",
+      "script": [
+        "Encoding a two-hour video into a dozen renditions on one machine would take **many hours**. Our requirement is minutes. The trick is to **split the video into chunks**, a few seconds each, cut at **keyframes** so each chunk can be decoded on its own.",
+        "Each chunk-and-rendition pair becomes an independent **task** for a large pool of **Transcode Workers**. A worker reads its chunk of the original straight from the blob store, encodes it, and writes the result. A two-hour video becomes thousands of small tasks that run **in parallel**, so it finishes in minutes regardless of its length."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["uploadq", "orchestrator", "workers", "e_uploadq_orch", "e_orch_workers"],
+      "title": "A DAG of tasks per video",
+      "script": [
+        "The orchestrator models each video's processing as a **DAG**, a directed acyclic graph of tasks: probe, then split, then transcode every chunk of every rendition in parallel, then **stitch** and package each rendition, then thumbnails and analysis. Some tasks depend on others; independent ones run at the same time.",
+        "Tasks go onto **work queues** that workers pull from, so the pool can grow and shrink with the backlog. Every task is **idempotent**: its output goes to a deterministic location, so if a worker dies halfway, the orchestrator simply reschedules it and a duplicate run just overwrites the same file. The orchestrator persists the DAG's state, so it can crash and pick up where it left off."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["segstore", "e_workers_seg", "e_server_seg"],
+      "title": "Package into streaming segments",
+      "script": [
+        "Instead of one big file per rendition, the output is packaged for **HLS and DASH**, the standard streaming formats. Each rendition is a sequence of small **segments**, typically two to six seconds of video each, plus a **manifest**: a small text file listing every rendition and the URL of every segment.",
+        "These go into a **Segment Store**, a blob store laid out by video, rendition and segment number. Segments are what make **seeking** trivial, since the player just fetches the segment covering that timestamp, and they're what make **adaptive bitrate** possible, since the player can switch rungs at any segment boundary. For now, the server reads these segments to serve viewers."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["e_orch_metadb"],
+      "title": "Mark the video ready, low rungs first",
+      "script": [
+        "As renditions complete, the orchestrator **updates the Metadata DB**: which renditions exist, where the manifest lives, the duration, and the video's status. When the status flips to READY, the video becomes watchable.",
+        "To hit the \"live within minutes\" requirement, we **prioritize the low rungs**: 360p and 720p in H.264 finish first and the video goes live with just those. 1080p, 4K and the expensive **VP9 and AV1** encodes keep running in the background, and get added to the manifest as they land. Viewers early on simply see fewer quality options."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["analysis", "e_orch_analysis", "e_analysis_metadb"],
+      "title": "Content analysis",
+      "script": [
+        "The DAG also has branches that don't produce video. **Content Analysis** runs ML models over sampled frames and the audio track: **moderation** classifiers that flag violence, nudity or spam for review, **speech-to-text** for automatic captions, and a model that picks good **thumbnail** candidates.",
+        "Results land in the Metadata DB next to the video. Moderation can **block publishing**: a video flagged with high confidence stays private pending review instead of going live. Captions also feed search later, because they turn the spoken words of every video into **searchable text**."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["orchestrator", "workers", "uploadq", "e_orch_workers", "e_uploadq_orch"],
+      "title": "Backlogs, priorities and retries",
+      "script": [
+        "Uploads aren't uniform: there are daily peaks, and a big event can cause a flood of uploads. Because work arrives through Kafka and queues, a spike just becomes a **backlog** that workers drain, and the autoscaler adds workers based on **queue depth**.",
+        "Not all work is equally urgent, so queues have **priorities**: the first playable renditions of a new video come before the AV1 encode of last week's upload. Failed tasks are **retried** with backoff, and a task that keeps failing, perhaps a corrupt file, marks the video FAILED and tells the creator, rather than retrying forever."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["workers", "rawstore", "segstore", "e_workers_raw", "e_workers_seg"],
+      "title": "The cost of transcoding",
+      "script": [
+        "Around **300,000 cores** of transcoding is a big bill, so we spend compute where it pays off. Every video gets the cheap H.264 ladder. The expensive **AV1** encodes, which can take ten times the CPU, are only worth it for videos that get watched a lot, so we often run them **later, once a video proves popular**: the bandwidth saved on millions of views dwarfs the encode cost.",
+        "Because tasks are small, idempotent and retryable, workers can run on cheap **preemptible or spot capacity**: if a machine is taken away, we only lose a few seconds of work. At YouTube's scale it even pays to build **custom video-encoding chips**, which is exactly what Google did."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["notifier", "e_orch_notifier", "push", "e_notifier_push"],
+      "title": "Notify subscribers",
+      "script": [
+        "When a public video goes live, the orchestrator emits a **\"published\"** event, and a **Notifier** fans it out to the channel's subscribers through push services like APNs and FCM, and email. It looks up who subscribed and which of them asked to be notified.",
+        "A big channel has **100 million subscribers**, so this fan-out is a batch job, not a loop: the subscriber list is split into ranges that many workers process in parallel, with **rate limits** so we don't overwhelm the push providers or send a hundred million people to one video in the same second. Small channels' notifications go out in seconds; giant ones take minutes, which is fine."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["creator", "gw", "upload", "rawstore", "uploadq", "orchestrator", "workers", "segstore", "metadb", "e_creator_gw", "e_upload_raw", "e_raw_uploadq", "e_uploadq_orch", "e_orch_workers", "e_workers_raw", "e_workers_seg", "e_orch_metadb"],
+      "title": "Trace an upload end to end",
+      "script": [
+        "Let's trace an upload. The creator opens a session with the **Upload Service** and streams chunks into **Raw Uploads**. When the file is complete, an event lands on **Upload Events**, and the creator's part is done.",
+        "The **orchestrator** picks up the event, probes the file and builds the DAG. Thousands of **workers** each read a chunk of the original, encode it, and write HLS/DASH segments into the **Segment Store**. As the first renditions complete, the orchestrator marks the video READY in the **Metadata DB**. Every step after the upload is asynchronous, parallel and retryable."
+      ]
+    },
+    {
+      "scene": "main",
+      "remove": ["server"],
+      "add": ["video", "e_video_metadb", "playback", "e_playback_metadb"],
+      "title": "Split the watch path into services",
+      "script": [
+        "Now the watch side. We replace what's left of the server with two services. The **Video Service** owns video metadata: creators edit titles and visibility through it, and other services read it. The **Playback Service** answers one question: **\"I want to play video X; what do I fetch?\"**",
+        "Notice that neither service serves video bytes anymore. That was the impossible part of our first design, and we're deliberately keeping our application servers **off the byte path**. The services deal in small JSON responses; the bytes will come from somewhere else."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["viewer", "gw", "playback", "metadb", "e_viewer_gw", "e_playback_metadb"],
+      "title": "What the player asks for",
+      "script": [
+        "When the viewer presses play, the player calls the **Playback Service**. It checks that the video is READY and that this viewer is **allowed** to watch it: public, or unlisted with the link, or private and shared with them. Then it reads the list of **renditions** from the metadata.",
+        "It returns the **manifest URL**, filtered for this device: no 4K for a small phone screen, no AV1 for a device that can't decode it. The URL points at a specific **CDN hostname** and carries a **signature** with an expiry. That one response is the only per-play work our services do; everything after it is the player talking to caches."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["cdn", "e_viewer_cdn", "e_cdn_seg"],
+      "title": "Serve the bytes from a CDN",
+      "script": [
+        "The player fetches the manifest and segments from a **CDN**: a large fleet of cache servers spread around the world. Each edge server keeps popular segments on its disks and memory; on a **cache miss**, it fetches the segment from the Segment Store, keeps a copy, and serves it.",
+        "Segments are **immutable**: segment 42 of video X at 720p never changes. So they can be cached with very long lifetimes and never need invalidation, which makes video close to the ideal workload for a CDN. Only the manifest changes as new renditions appear, so it gets a short cache lifetime."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["viewer", "cdn", "e_viewer_cdn"],
+      "title": "Adaptive bitrate in the player",
+      "script": [
+        "With segments and a manifest, the **player** does the adapting. For each next segment, it picks a rung on the ladder based on the **throughput** it measured on recent downloads and how much video is already in its **buffer**. Plenty of buffer and good throughput: step up. Buffer draining: step down before it runs dry.",
+        "This is called **adaptive bitrate streaming**, and the key point is that it's entirely **client-driven**. The server side is just static files; all the intelligence is in the player, which is why it scales. A viewer walking into an elevator drops to 240p for a few segments instead of seeing a spinner."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["viewer", "cdn", "playback", "gw", "e_viewer_cdn", "e_viewer_gw"],
+      "title": "Fast start and instant seeking",
+      "script": [
+        "To **start in under two seconds**, the player begins on a **low rung** so the first segment arrives fast, then climbs as the buffer fills. The first segments are short, so there's less to download before the first frame. The watch page can even return the manifest **inline** with the page data to save a round trip.",
+        "We can also **prefetch**: while you watch, the player quietly fetches the first segment of the most likely **Up next** video. **Seeking** is cheap because the manifest maps time to segments: jump to minute 47 and the player requests just the segment containing it, and starts playing from its first keyframe."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["cdn", "segstore", "e_viewer_cdn", "e_cdn_seg"],
+      "title": "The CDN by the numbers",
+      "script": [
+        "Remember the number: about **125 terabits a second** on average. No set of data centers has that much connectivity to the internet, and pushing it across long-haul links would be slow and enormously expensive. So the edge caches have to be **close to viewers**, and the closest place is **inside the ISPs** themselves.",
+        "That's how YouTube and Netflix do it: they place cache appliances **inside ISP networks** and at internet exchange points, and the ISP is happy to host them because it saves them transit costs. A typical view is then served from a box a few milliseconds away that sits on the viewer's own provider's network."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["shield", "e_cdn_shield", "e_shield_seg"],
+      "remove": ["e_cdn_seg"],
+      "title": "An origin shield between edge and storage",
+      "script": [
+        "There are thousands of edge sites. If each one went straight to the Segment Store on every miss, a new popular video would cause **thousands of identical fetches** of every segment at once. So we add a middle layer, an **Origin Shield**: a smaller set of large regional caches that edges go to on a miss.",
+        "The shield turns many misses into one: **request collapsing** means concurrent requests for the same segment wait for a single fetch from storage. The Segment Store sees only a trickle of traffic, and the shield's bigger disks hold a much larger slice of the catalog than any edge could."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["cdn", "shield", "segstore", "e_cdn_shield", "e_shield_seg"],
+      "title": "The head and the long tail",
+      "script": [
+        "Video popularity follows a **power law**. A small **head** of videos, new releases and viral hits, gets most of the views, and those sit in every edge cache. But there's a huge **long tail** of billions of videos that each get a few views a day, and together they're a meaningful share of traffic.",
+        "The tail mostly misses at the edge and is served from the **shield or storage**, which is fine: it's a slower first segment for a rare video. For the head we go the other way and **pre-warm**: when a video starts trending, or a huge channel publishes, we push its first segments to edges **before** the demand arrives."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["viewer", "gw", "playback", "cdn", "e_viewer_gw", "e_viewer_cdn"],
+      "title": "Steering each viewer to a cache",
+      "script": [
+        "Which edge server does a viewer use? The **Playback Service** decides, when it builds the manifest URL. It considers the viewer's **network and location**, the **health and load** of nearby sites, and which servers are likely to **already hold this video**.",
+        "Within a site, videos are spread across servers by **consistent hashing** on the video ID, so each server holds a different slice of the catalog instead of every server holding the same popular items. That multiplies the site's effective cache size. If a server is overloaded or fails, the player retries on a **fallback host** that came in the same response."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["playback", "cdn", "e_viewer_cdn"],
+      "title": "Protecting private videos",
+      "script": [
+        "Caches don't know who you are, so how do we keep a **private video** private? Through the **signed URLs** the Playback Service hands out. The signature covers the video ID, an **expiry time** and often the viewer's IP range, and the edge server verifies it with a shared key before serving anything.",
+        "So access control happens **once**, in the Playback Service, and the edge enforces it cheaply with no lookups. Segment paths also include unguessable IDs. When a creator makes a video private, new playback requests are refused at once, and existing signed URLs expire within **minutes**."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["cache"],
+      "title": "Cache the metadata",
+      "script": [
+        "Back to our own services. Every play and every watch-page load reads video metadata, **150,000 times a second** at peak, and the reads are as skewed as the views: a hot video's row is read millions of times. So we put a **cache**, Memcached or Redis, in front of the Metadata DB.",
+        "The Video and Playback Services read the cache first and fall back to the database on a miss: **cache-aside**. When a creator edits a video, the Video Service writes the database and then **deletes the cache entry**, so the next read fetches fresh data. The creator's own reads can go **to the database** directly for a short while, which gives them read-your-writes on their edits."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["metadb", "video", "playback", "e_video_metadb", "e_playback_metadb"],
+      "title": "Sharding the Metadata DB",
+      "script": [
+        "Billions of videos and their renditions, captions and channels won't fit on one MySQL server. YouTube's own answer was **Vitess**: a layer that **shards MySQL** horizontally and routes each query to the right shard, while the application still talks SQL.",
+        "We shard by **video ID** for the video tables, since nearly every read is \"get video X\". Channel pages need \"all videos of channel C\", so we keep a separate **channel-to-videos index** sharded by channel ID. Each shard has a primary and **replicas**; reads that can tolerate a little lag go to replicas, and writes and the creator's own reads go to the primary."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["engage", "engagedb", "e_engage_engagedb"],
+      "title": "Likes, comments and subscriptions",
+      "script": [
+        "Social features get their own **Engagement Service** and store. These are huge, write-heavy, simple-to-query tables: **likes** keyed by user and video, **comments** keyed by video and sorted by time or score, and **subscriptions** stored in both directions, user to channels and channel to subscribers.",
+        "That shape fits a wide-column store like **Bigtable or Cassandra**, which scales writes horizontally and reads a range of a row cheaply, like \"the first 20 comments on video X\". We don't need joins or cross-row transactions here; we need **write throughput** and predictable range reads."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["events", "e_engage_events"],
+      "title": "Every watch becomes events",
+      "script": [
+        "While a video plays, the player sends periodic **watch pings**: video ID, position, quality, rebuffering, every few seconds. Those, along with likes, comments and subscriptions, are published by the Engagement Service to an **Event Stream** in Kafka.",
+        "That's a firehose, hundreds of thousands of events a second, so the service doesn't process anything itself: it validates, **batches**, and appends to the log, partitioned by video ID. Several consumers will read the same stream independently: view counting, recommendations, and the quality-of-experience dashboards that tell us when a CDN site is struggling."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["viewagg", "e_events_viewagg", "e_viewagg_engagedb"],
+      "title": "Counting views",
+      "script": [
+        "A **view** isn't just a play request. It needs some minimum of real watch time, and it shouldn't count bots, refresh loops or one person replaying a clip a hundred times. So a **View Counter**, a stream processor like Flink, consumes watch pings, **deduplicates** them per viewer and video, applies **fraud filters**, and decides which plays count.",
+        "It aggregates counts per video in short windows and writes **increments** to the Engagement DB, so a video with 10,000 views a second becomes one write every few seconds rather than 10,000. The public count lags reality by a little, and suspicious views can later be **subtracted** after a deeper offline audit."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["engage", "events", "viewagg", "engagedb", "e_engage_events", "e_events_viewagg", "e_viewagg_engagedb", "e_engage_engagedb"],
+      "title": "Hot counters on viral videos",
+      "script": [
+        "Likes have the same problem as views. A music video premiere can get **hundreds of thousands of likes a minute**, and if every like were a read-modify-write on a single counter row, that row's shard would melt. The fix is the same: the like itself is stored per user, and the **count is aggregated** off the hot path.",
+        "Where a counter must be written directly, we **shard the counter**: split it into N sub-counters on different keys, increment a random one, and sum them on read, caching the result. Either way, we accept that public counts are **approximate and slightly delayed**, which our consistency requirements allow."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["search", "searchidx", "e_search_idx"],
+      "title": "Search",
+      "script": [
+        "Search gets a **Search Service** backed by a **Search Index**: an **inverted index** mapping each term to the videos that contain it in their title, description, tags or captions. It's far too big for one machine, so it's **sharded by video**: each shard indexes a slice of the catalog, a query fans out to all shards, and the top results are merged.",
+        "Ranking combines **text relevance** with **engagement signals**: views, watch time, freshness, how often people who searched this clicked that result and kept watching. The Search Service also handles spelling correction and autocomplete, and checks visibility, so private videos never appear in results."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["indexer", "e_metadb_indexer", "e_indexer_idx"],
+      "title": "Keeping the index fresh",
+      "script": [
+        "The index has to keep up with **4 million new videos a day** and with edits: a title change, a video going private. A **Search Indexer** consumes a **change stream** from the Metadata DB, the database's change log exposed as events, and updates the index within seconds.",
+        "Changes that affect safety, like a video going **private or being removed**, are applied first and fast. Signals that change constantly, like view counts, aren't pushed on every change; they're **refreshed periodically** in bulk, since search ranking doesn't need to know about each individual view."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["feed", "recsstore", "e_feed_recs"],
+      "title": "Home feed and Up next",
+      "script": [
+        "The **Feed Service** builds the home page and the Up next list. Recommendation at this scale is a **two-stage** process. First, **candidate generation** narrows billions of videos down to a few hundred that might interest this user; much of that is precomputed and kept in a **Recs Store** keyed by user.",
+        "Second, **ranking**: at request time a model scores those few hundred candidates using fresh context, like what you just watched, the time of day and your device, and the service mixes in **subscriptions** and **diversity** rules so the page isn't twenty videos on one topic. If the recommender is slow, the page falls back to subscriptions and trending videos."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["recstrain", "e_events_recstrain", "e_recstrain_recs"],
+      "title": "Training the recommender",
+      "script": [
+        "Where do candidates come from? **Recs Training** consumes the same event stream, with every play, watch time, like and skip, and trains models offline. The best signal isn't clicks, which reward clickbait, but **watch time** and satisfaction signals like likes and surveys.",
+        "Training runs in batch on a schedule, and its outputs, **embeddings** for users and videos and per-user candidate lists, are written to the Recs Store. A **nearline** path also updates a user's candidates within minutes of what they just watched, so the home page reacts to a new interest the same day, not next week."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["viewer", "gw", "playback", "cache", "metadb", "cdn", "shield", "segstore", "engage", "events", "e_viewer_gw", "e_playback_metadb", "e_viewer_cdn", "e_cdn_shield", "e_shield_seg", "e_engage_events"],
+      "title": "Trace a view end to end",
+      "script": [
+        "Now trace a view. The viewer's watch page calls the **Playback Service**, which reads metadata from the **cache**, rarely the database, checks permissions, and returns a signed manifest URL on a nearby **CDN edge**. That's the only work our own servers do for the video itself.",
+        "The player then pulls segments from the edge, which almost always has the popular ones; misses go to the **Origin Shield** and, rarely, the **Segment Store**. As it plays, watch pings flow to the **Engagement Service** and into the **Event Stream**, feeding view counts and recommendations entirely off the playback path."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["rawstore", "segstore", "workers", "e_workers_raw", "e_workers_seg"],
+      "title": "Storage over the years",
+      "script": [
+        "An exabyte a year accumulates fast, and most of it is the **long tail** that's rarely watched. So storage is **tiered**: recently uploaded and popular segments live on fast storage; videos nobody has watched in a year move to **colder, cheaper** media with erasure coding instead of full replicas.",
+        "We always keep the **original upload**, durably, because it lets us **re-transcode** everything when a better codec arrives, the way AV1 replaced VP9. For the coldest videos we can even drop the rarely used high renditions and **regenerate them on demand** from the original, trading a little compute for a lot of storage."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["viewer", "gw", "playback", "cache", "metadb", "cdn", "shield", "segstore", "e_viewer_gw", "e_playback_metadb", "e_viewer_cdn", "e_cdn_shield", "e_shield_seg"],
+      "title": "What must never break",
+      "script": [
+        "Our availability requirement says **playback is four nines**, and everything else can degrade. This diagram shows why that's achievable: playback needs only the Playback Service, its cache and database, and the CDN. Everything else, search, feeds, counts, uploads and processing, sits off that path.",
+        "So we design the degradation explicitly. If recommendations fail, show **trending and subscriptions**. If counts lag, show stale counts. If processing is backed up, new videos take longer. And because the CDN serves cached segments by itself, even a brief outage of our services leaves **videos already playing** unaffected."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["metadb", "rawstore", "segstore", "shield", "cdn", "e_cdn_shield", "e_shield_seg"],
+      "title": "Going multi-region",
+      "script": [
+        "To survive the loss of a **whole region**, we run the services in several regions. The **blob stores** replicate across regions, so originals and segments survive a region outage, and the CDN's shields simply fetch from another region's copy.",
+        "The **Metadata DB** has its primaries in one region per shard with **cross-region replicas**; reads are served locally from replicas, and if a region fails, a replica elsewhere is promoted. Creators' writes are a tiny fraction of traffic, so routing them to the primary's region costs little, and viewers anywhere read from their nearest region."
+      ]
+    },
+    {
+      "scene": "main",
+      "title": "Putting it all together",
+      "script": [
+        "Here's the complete system. On the **upload side**, creators push resumable chunks to the Upload Service, an event triggers the **Transcode Orchestrator**, and thousands of workers turn each video into a ladder of renditions, packaged as HLS/DASH segments in the Segment Store, low rungs first so the video goes live in minutes.",
+        "On the **watch side**, our services handle only small requests, metadata and a signed manifest, while the bytes, all 125 terabits a second of them, flow from **CDN caches inside ISPs**, backed by origin shields. Engagement, counting, search and recommendations hang off an event stream, eventually consistent and isolated, so nothing can get between a viewer and **the video starting to play**."
+      ]
+    }
+  ]
+}

@@ -49,6 +49,11 @@
       "slug": "url-shortener",
       "title": "URL Shortener",
       "description": "A read-heavy key-value lookup at 300K redirects a second: leased ID ranges scrambled into unguessable base-62 codes, a cache and CDN in front of a sharded store, 302s, and click analytics off the hot path."
+    },
+    {
+      "slug": "youtube",
+      "title": "YouTube",
+      "description": "Video at planet scale: resumable uploads, a parallel chunked transcode pipeline into a bitrate ladder, adaptive streaming from CDN caches inside ISPs, sharded metadata, and view counting off the hot path."
     }
   ]
 }
