@@ -42,6 +42,8 @@ export interface Deck {
   topic: string;
   /** Fade-in timing for new elements; defaults to 1000 / 1000 ms. */
   animation?: Animation;
+  /** Voice and pronunciation fixes for the narrated audio. */
+  narration?: Narration;
   /** Overrides the generated intro slide's title and script, which default to
    *  `title` and "Welcome to a system design walkthrough for X." Deep-dive
    *  decks use it, since they are not "Design X." questions. */
@@ -54,6 +56,17 @@ export interface Deck {
   scenes: Record<string, SceneDef>;
   /** The architecture slides, in order. Requirement slides are generated. */
   slides: ArchitectureSlide[];
+}
+
+/** How scripts are read aloud by scripts/generate-audio.ts (Kokoro TTS). */
+export interface Narration {
+  /** A Kokoro voice id, e.g. "am_michael" (the default) or "af_heart". */
+  voice?: string;
+  /** Speaking rate; 1 is normal. */
+  speed?: number;
+  /** Literal replacements applied to script text before speaking, for
+   *  pronunciation fixes, e.g. { "Kafka": "Kafkuh", "p99": "P ninety-nine" }. */
+  say?: Record<string, string>;
 }
 
 export interface Animation {

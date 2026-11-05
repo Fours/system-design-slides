@@ -132,6 +132,7 @@ html, body {
 }
 .nav:hover:not(:disabled) { background: var(--border); border-color: var(--accent); }
 .nav:disabled { opacity: 0.35; cursor: default; }
+.nav.play.on { border-color: var(--accent); color: var(--accent); }
 #counter {
   font-size: 14px;
   color: var(--ink-dim);

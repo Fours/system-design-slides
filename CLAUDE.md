@@ -225,6 +225,20 @@ scene step plus detail slides, or the `expand-deck` skill to run it on every sli
 deck whose script is longer than 5 sentences (`node scripts/long-slides.ts <slug>`
 lists them).
 
+## Narration (audio)
+
+A deck can be played like a video: `npm run audio <slug>` reads every slide's script
+aloud with **Kokoro TTS** (local, free; macOS needed for `afconvert`) and writes
+`public/audio/<slug>/<hash>.m4a` plus a `manifest.json`. The deck page then shows a ▶
+button (or press Space): each slide's clip plays on arrival and the deck auto-advances
+when it ends. Re-running only regenerates slides whose spoken text changed, so rerun it
+after editing a deck; a manifest whose clip count doesn't match the deck is ignored.
+
+Script text is cleaned up for speech by `speakable()` in `src/lib/narration.ts` (drops
+markdown markers, spells out `→`, `~`, `×`, `10M`, `200ms`, `/s`, ...). For words it
+says wrong, add `narration.say` replacements to the deck JSON; `narration.voice` and
+`narration.speed` pick the Kokoro voice (default `am_michael`) and rate.
+
 ## Writing the script
 
 Every `script` is an array of paragraphs in **markdown-lite**: `**bold**` for the key

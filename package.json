@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "typecheck": "tsc -b",
     "validate": "node scripts/validate-decks.ts",
-    "thumbnails": "node scripts/thumbnails.ts"
+    "thumbnails": "node scripts/thumbnails.ts",
+    "audio": "node scripts/generate-audio.ts"
   },
   "dependencies": {
     "posthog-js": "^1.446.0",
@@ -22,6 +23,7 @@
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.2",
+    "kokoro-js": "^1.2.1",
     "typescript": "5.9.3",
     "vite": "8.3.5"
   }

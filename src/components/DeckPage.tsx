@@ -4,6 +4,7 @@ import { fetchDeck } from "../lib/api";
 import { Markdown } from "../lib/markdown";
 import { buildSlides, type Slide } from "../lib/slides";
 import { useFetch } from "../lib/useFetch";
+import { useNarration } from "../lib/useNarration";
 import type { Deck } from "../types";
 import { BulletsDiagram, EntitiesDiagram, SequenceDiagram, TableDiagram, TimelineDiagram } from "./DetailDiagrams";
 import { FrDiagram, NfrDiagram, REQUIREMENTS_VIEWBOX } from "./RequirementDiagrams";
@@ -42,14 +43,21 @@ function DeckView({ slug, deck }: { slug: string; deck: Deck }) {
     navigate(`/${slug}/${next + 1}`, { replace: true });
   }, [index, slides.length, navigate, slug]);
 
+  const next = useCallback(() => go(1), [go]);
+  const narration = useNarration(slug, index, slides.length, next);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "ArrowLeft") go(-1);
       if (e.key === "ArrowRight") go(1);
+      if (e.key === " " && narration.available) {
+        e.preventDefault();
+        narration.toggle();
+      }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [go]);
+  }, [go, narration.available, narration.toggle]);
 
   useEffect(() => { document.title = deck.topic; }, [deck.topic]);
   useEffect(() => { scriptRef.current?.scrollTo(0, 0); }, [index]);
@@ -87,6 +95,17 @@ function DeckView({ slug, deck }: { slug: string; deck: Deck }) {
         <button className="nav" aria-label="Previous slide" disabled={index === 0} onClick={() => go(-1)}>&#8592;</button>
         <span id="counter">{index + 1} / {slides.length}</span>
         <button className="nav" aria-label="Next slide" disabled={index === slides.length - 1} onClick={() => go(1)}>&#8594;</button>
+        {narration.available && (
+          <button className={`nav play${narration.playing ? " on" : ""}`} onClick={narration.toggle}
+            aria-label={narration.playing ? "Pause narration" : "Play narration"}
+            title={narration.playing ? "Pause (space)" : "Play narration (space)"}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              {narration.playing
+                ? <><rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" /></>
+                : <path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z" />}
+            </svg>
+          </button>
+        )}
       </div>
     </div>
   );
