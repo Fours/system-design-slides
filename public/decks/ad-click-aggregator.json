@@ -1,0 +1,694 @@
+{
+  "title": "Ad Click Aggregator",
+  "topic": "System Design Deep Dive: Ad Click Aggregator",
+  "intro": {
+    "title": "Ad Click Aggregator",
+    "script": [
+      "Welcome to a system design deep dive on the **ad click aggregator**: counting a firehose of events by time window, fast enough for live dashboards and exactly enough to bill on, plus finding the **top K** most-clicked ads along the way."
+    ]
+  },
+  "requirements": {
+    "functional": {
+      "intro": {
+        "title": "Functional requirements",
+        "emoji": ["🖱️", "📊", "🏆"],
+        "script": [
+          "Every time someone clicks an ad, an advertiser owes the ad platform money, and wants to see that click on a dashboard within seconds. The **click aggregator** is the system in between: it turns a stream of individual clicks into **counts per ad per time window**.",
+          "It's a great deep dive because it's the canonical **stream processing** problem. Windowing, late events, exactly-once counting, lambda versus kappa, and approximate top-K with a count-min sketch all show up naturally. Let's agree on what it must do."
+        ]
+      },
+      "cards": [
+        {
+          "title": "Ingest clicks",
+          "lines": ["Log every click with ad, user, time", "then redirect to the advertiser"],
+          "script": [
+            "When a user clicks an ad, the browser hits our **click endpoint**. We log the click (ad id, campaign, a hashed user id, timestamp, country and device) and immediately **redirect** the user to the advertiser's landing page. Logging must never slow that redirect down."
+          ]
+        },
+        {
+          "title": "Windowed counts",
+          "lines": ["Clicks per ad per minute,", "rolled up to hours and days"],
+          "script": [
+            "The core output is **clicks per ad per minute**, also per campaign and advertiser, rolled up into hours and days. Those are **time windows**, and choosing and closing windows correctly is most of this deck."
+          ]
+        },
+        {
+          "title": "Dashboard queries",
+          "lines": ["Filter by ad, campaign, country,", "time range; fresh within a minute"],
+          "script": [
+            "Advertisers query those counts on a **dashboard**: filter by ad, campaign, country or device, over any time range from the last hour to the last year. The newest minute should show up **within about a minute** of the clicks happening."
+          ]
+        },
+        {
+          "title": "Top-K ads",
+          "lines": ["Top 100 ads by clicks over the", "last 5 min, 1 h, 24 h; per country"],
+          "script": [
+            "We also want a **leaderboard**: the **top 100 ads by clicks** over the last 5 minutes, hour and day, globally and per country. It feeds internal trending dashboards, anomaly alerts and pacing. It's the same problem as \"most-played songs\" or \"trending products\", so everything here carries over."
+          ]
+        },
+        {
+          "title": "Late and duplicate clicks",
+          "lines": ["Count by when it happened,", "count each click exactly once"],
+          "script": [
+            "Clicks arrive **late** and sometimes **twice**: a phone in a tunnel uploads its click a minute later, or a retry sends it again. A click must count in the minute it **happened**, not the minute it arrived, and it must count **once**."
+          ]
+        },
+        {
+          "title": "Exact numbers for billing",
+          "lines": ["Daily reconciled counts", "that invoices are based on"],
+          "script": [
+            "Finally, **billing**. Advertisers pay per click, so once a day we need an **exact, reconciled** count per ad that the invoice is based on and that we can defend in a dispute. Dashboards can be off by a hair for a few minutes; the bill can't."
+          ]
+        }
+      ],
+      "outOfScope": {
+        "title": "Out of scope",
+        "lines": ["Ad serving and auctions  ·  Click-fraud ML (just a hook)  ·  Conversion attribution  ·  The dashboard UI"],
+        "script": [
+          "Out of scope: **serving ads** and running the auction that picked them; **click-fraud detection** beyond a simple hook, which is a machine-learning system of its own; **conversion attribution**, meaning did the click lead to a purchase; and the **dashboard UI** itself. We design the pipeline from click to counts."
+        ]
+      }
+    },
+    "nonFunctional": {
+      "intro": {
+        "title": "Non-functional requirements",
+        "script": [
+          "Now the qualities. Two of them pull against each other and shape everything that follows: dashboards want **fresh** numbers, and billing wants **exact** ones."
+        ]
+      },
+      "cards": [
+        {
+          "title": "Scale",
+          "lines": ["10B clicks/day; 1M/s peak", "10M active ads"],
+          "script": [
+            "Assume **10 billion clicks a day**, around **115 thousand a second** on average and **1 million a second** at peak, spread across about **10 million active ads**, with a heavy skew toward a few viral ones."
+          ]
+        },
+        {
+          "title": "Latency",
+          "lines": ["Redirect < 50 ms; dashboards", "< 1 min behind; queries < 1 s"],
+          "script": [
+            "Three latency targets: the **redirect** in under 50 milliseconds, because it's in front of a user; **dashboards** no more than a minute behind real time; and dashboard **queries** under a second at p99, even over a year of data."
+          ]
+        },
+        {
+          "title": "Durability",
+          "lines": ["Never lose a click;", "the raw log is the source of truth"],
+          "script": [
+            "A lost click is **lost revenue**. Once we've accepted a click it must survive any single failure, and the **raw click log** is kept as the source of truth that every count can be recomputed from."
+          ]
+        },
+        {
+          "title": "Accuracy",
+          "lines": ["Dashboards: ~±1% for minutes", "Billing: exact and idempotent"],
+          "script": [
+            "Accuracy has two tiers. Live dashboards may be **slightly approximate** for a few minutes, within about a percent. Billing counts must be **exact**: no double counts, no drops, and the same answer every time we recompute."
+          ]
+        },
+        {
+          "title": "Availability",
+          "lines": ["Ingest always up;", "aggregation may lag, then catch up"],
+          "script": [
+            "**Ingestion must always be up**, since a click we refuse is gone. The aggregation side can afford to **fall behind** during an incident, as long as it catches up afterward without losing anything."
+          ]
+        },
+        {
+          "title": "Cost",
+          "lines": ["State per window, not per click;", "query aggregates, not raw rows"],
+          "script": [
+            "Cost comes from two places: **memory** in the stream processor and **scanning** at query time. We want state that's sized by windows and keys, not by clicks, and queries that read **pre-aggregated rows**, not billions of raw events."
+          ]
+        }
+      ],
+      "estimates": {
+        "title": "Back-of-the-envelope",
+        "rows": [
+          ["Ingest", ["10B/day ≈ 115K/s avg, 1M/s peak", "× ~500 B ≈ 500 MB/s at peak"]],
+          ["Raw log", ["10B × 500 B ≈ 5 TB/day raw", "≈ 1 TB/day as compressed Parquet"]],
+          ["Aggregates", ["~1M ads clicked per minute", "≈ 1.4B ad-minute rows/day ≈ 100 GB"]],
+          ["Top-K state", ["exact: 1B keys × 16 B ≈ 16 GB/window", "count-min sketch: ≈ 5 MB/window"]]
+        ],
+        "script": [
+          "Some numbers. 10 billion clicks a day is about **115 thousand a second**, with peaks near **a million**. At roughly 500 bytes an event, that's **500 megabytes a second** into the log at peak, and **5 terabytes a day** of raw clicks, about 1 terabyte compressed.",
+          "Aggregated, it shrinks dramatically: if about a million distinct ads get clicked in a given minute, that's **1.4 billion ad-minute rows a day**, on the order of **100 gigabytes**, fifty times smaller than raw, and it shrinks again as minutes roll up into hours.",
+          "And a preview of the top-K problem: counting every combination of ad, country and device exactly is around **a billion keys**, about **16 gigabytes per window**. A count-min sketch does the same job in about **5 megabytes**."
+        ]
+      },
+      "takeaway": {
+        "title": "What shapes the design",
+        "lines": [
+          "1M clicks/s, never lost → append to a durable log first; count later",
+          "5 TB raw vs 100 GB aggregated → pre-aggregate by window in a stream processor",
+          "Fresh dashboards vs exact bills → a fast streaming path plus an exact recount",
+          "Billions of keys for top-K → approximate counting with a sketch"
+        ]
+      ,
+        "script": [
+          "So the numbers shape four decisions. Clicks go into a **durable log first** and get counted later, so ingestion never waits on aggregation. We **pre-aggregate by window** in a stream processor rather than storing and scanning raw clicks. We need both a **fast** path for dashboards and an **exact** path for billing, which is the lambda-versus-kappa question. And top-K over billions of keys calls for **approximate counting**."
+        ]
+      }
+    }
+  },
+  "scenes": {
+    "main": {
+      "boxes": [
+        { "id": "landing", "x": 290, "y": 40, "w": 180, "h": 60, "label": "Advertiser Site", "kind": "ghost", "sub": "landing page" },
+        { "id": "user", "x": 40, "y": 260, "w": 170, "h": 60, "label": "Users", "kind": "client", "sub": "click an ad" },
+        { "id": "click", "x": 290, "y": 260, "w": 180, "h": 60, "label": "Click Service", "kind": "service", "sub": "log + 302 redirect" },
+        { "id": "clicksdb", "x": 540, "y": 260, "w": 180, "h": 60, "label": "Clicks DB", "kind": "data", "sub": "one row per click" },
+        { "id": "kafka", "x": 540, "y": 200, "w": 180, "h": 220, "label": "Click Log", "kind": "stream", "sub": "Kafka · keyed by ad_id" },
+        { "id": "flink", "x": 790, "y": 260, "w": 200, "h": 60, "label": "Stream Aggregator", "kind": "stream", "sub": "Flink · event-time windows" },
+        { "id": "olap", "x": 1070, "y": 260, "w": 190, "h": 60, "label": "Aggregates DB", "kind": "data", "sub": "OLAP · Pinot / Druid" },
+        { "id": "query", "x": 1340, "y": 260, "w": 180, "h": 60, "label": "Query Service", "kind": "service", "sub": "rollups · filters" },
+        { "id": "adv", "x": 1590, "y": 260, "w": 170, "h": 60, "label": "Advertisers", "kind": "client", "sub": "dashboards · invoices" },
+        { "id": "topkmerge", "x": 790, "y": 130, "w": 200, "h": 60, "label": "Top-K Merger", "kind": "service", "sub": "merges partition top-Ks" },
+        { "id": "topkstore", "x": 1070, "y": 130, "w": 190, "h": 60, "label": "Top-K Store", "kind": "data", "sub": "Redis · ranked lists" },
+        { "id": "replay", "x": 790, "y": 370, "w": 200, "h": 60, "label": "Replay Job", "kind": "stream", "sub": "same Flink code" },
+        { "id": "archive", "x": 540, "y": 480, "w": 180, "h": 60, "label": "Raw Click Archive", "kind": "data", "sub": "S3 · Parquet by hour" },
+        { "id": "batch", "x": 790, "y": 480, "w": 200, "h": 60, "label": "Batch Recount", "kind": "ml", "sub": "Spark · exact, hourly" },
+        { "id": "billingdb", "x": 1070, "y": 480, "w": 190, "h": 60, "label": "Billing Counts", "kind": "data", "sub": "exact · per ad per day" },
+        { "id": "billing", "x": 1340, "y": 480, "w": 180, "h": 60, "label": "Billing Service", "kind": "service", "sub": "reconcile · invoice" }
+      ],
+      "edges": [
+        { "id": "e_user_click", "from": "user", "to": "click", "pts": [[210, 290], [290, 290]], "label": "click", "both": true },
+        { "id": "e_user_landing", "from": "user", "to": "landing", "pts": [[125, 260], [125, 70], [290, 70]], "label": "302 redirect", "lp": [210, 62, "middle"] },
+        { "id": "e_click_db", "from": "click", "to": "clicksdb", "pts": [[470, 290], [540, 290]], "label": "INSERT" },
+        { "id": "e_adv_query", "from": "adv", "to": "query", "pts": [[1590, 290], [1520, 290]], "both": true },
+        { "id": "e_query_db", "from": "query", "to": "clicksdb", "pts": [[1340, 290], [720, 290]], "label": "SELECT COUNT(*) … GROUP BY minute", "lp": [1030, 282, "middle"], "both": true },
+        { "id": "e_click_kafka", "from": "click", "to": "kafka", "pts": [[470, 290], [540, 290]], "label": "produce" },
+        { "id": "e_kafka_flink", "from": "kafka", "to": "flink", "pts": [[720, 290], [790, 290]] },
+        { "id": "e_flink_olap", "from": "flink", "to": "olap", "pts": [[990, 290], [1070, 290]], "label": "upsert" },
+        { "id": "e_query_olap", "from": "query", "to": "olap", "pts": [[1340, 300], [1260, 300]], "both": true },
+        { "id": "e_flink_topk", "from": "flink", "to": "topkmerge", "pts": [[890, 260], [890, 190]], "label": "local top-K", "lp": [898, 230, "start"] },
+        { "id": "e_topk_store", "from": "topkmerge", "to": "topkstore", "pts": [[990, 160], [1070, 160]] },
+        { "id": "e_store_query", "from": "topkstore", "to": "query", "pts": [[1260, 160], [1300, 160], [1300, 275], [1340, 275]] },
+        { "id": "e_kafka_archive", "from": "kafka", "to": "archive", "pts": [[630, 420], [630, 480]], "label": "hourly files", "lp": [640, 455, "start"], "async": true },
+        { "id": "e_archive_batch", "from": "archive", "to": "batch", "pts": [[720, 510], [790, 510]] },
+        { "id": "e_batch_olap", "from": "batch", "to": "olap", "pts": [[990, 495], [1030, 495], [1030, 310], [1070, 310]], "label": "overwrite hours", "lp": [1038, 420, "start"] },
+        { "id": "e_batch_billing", "from": "batch", "to": "billingdb", "pts": [[990, 525], [1070, 525]] },
+        { "id": "e_kafka_replay", "from": "kafka", "to": "replay", "pts": [[720, 400], [790, 400]] },
+        { "id": "e_replay_olap", "from": "replay", "to": "olap", "pts": [[990, 400], [1165, 400], [1165, 320]], "label": "rebuild table", "lp": [1078, 392, "middle"] },
+        { "id": "e_billingdb_billing", "from": "billingdb", "to": "billing", "pts": [[1260, 510], [1340, 510]] },
+        { "id": "e_billing_adv", "from": "billing", "to": "adv", "pts": [[1520, 510], [1675, 510], [1675, 320]], "label": "invoices", "lp": [1597, 502, "middle"] }
+      ]
+    }
+  },
+  "slides": [
+    {
+      "scene": "main",
+      "add": ["user", "click", "e_user_click", "landing", "e_user_landing"],
+      "title": "Start: a click and a redirect",
+      "script": [
+        "Let's start where every click starts. The ad's link doesn't point at the advertiser; it points at our **Click Service**, with the ad id and an impression token in the URL. The service records the click and answers with a **302 redirect** to the advertiser's landing page.",
+        "That redirect is the one latency-critical thing in this whole system, because a real person is waiting on it. So from the very first slide, the rule is: **record the click cheaply, redirect immediately, and do all the counting somewhere else**."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["clicksdb", "e_click_db"],
+      "title": "Store every click",
+      "script": [
+        "The simplest way to record a click is to **INSERT a row** into a database: one row per click, with the ad, campaign, user, timestamp, country and device.",
+        "That gives us the raw facts, and at small scale it's genuinely fine. A startup ad network with a few clicks a second should do exactly this."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["adv", "query", "e_adv_query", "e_query_db"],
+      "title": "Count on demand",
+      "script": [
+        "Then the advertiser dashboard asks the obvious question through a **Query Service**: count the rows in clicks WHERE ad_id = 42 AND time is in the last hour, GROUP BY minute. Every chart on the dashboard is a query over raw clicks.",
+        "This is **counting at read time**. It's flexible, since any filter works, and it's always exact. Let's see what happens at 10 billion clicks a day."
+      ]
+    },
+    {
+      "title": "Why this breaks",
+      "script": [
+        "At our scale, almost everything about that design fails. A million inserts a second is beyond any single database, and sharding it just moves the problem: every dashboard query then fans out to every shard and **scans millions of rows** to produce one number.",
+        "It also couples the two halves. A heavy dashboard query slows the inserts, and a slow database slows the **redirect**, which is the one thing users see. And if the database is down, we either drop clicks or fail redirects. Both are unacceptable."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**1M inserts/s** overwhelms one database", "detail": "sharding helps writes, but every query now hits every shard" },
+          { "text": "Every query **scans raw rows**", "detail": "a year of one campaign is billions of rows to count" },
+          { "text": "Dashboards and ingestion **share one box**", "detail": "a heavy query slows inserts, which slows redirects" },
+          { "text": "Database down = **clicks lost**", "detail": "or redirects fail; either way we lose money" }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "remove": ["clicksdb"],
+      "add": ["kafka", "e_click_kafka"],
+      "title": "Log clicks to Kafka first",
+      "script": [
+        "The fix starts by changing what the Click Service does: instead of writing to a database, it **appends the click to a log**, a **Kafka** topic. An append is cheap and sequential, Kafka handles millions of messages a second across partitions, and with replication and acks from all in-sync replicas, an accepted click survives a broker failure.",
+        "The log **decouples** ingestion from counting. Whatever happens downstream, clicks keep landing in Kafka and wait there, for days if needed. It also gives us **replay**: the log is the raw history we can recount from, which will matter a lot later.",
+        "The Click Service produces asynchronously and redirects without waiting for the full acknowledgment, but it keeps the click in a small **local buffer** until the ack arrives, spilling to disk if Kafka is unreachable. The Query Service has nothing to read for a moment; we'll fix that next."
+      ]
+    },
+    {
+      "title": "The click event",
+      "script": [
+        "Here's what goes on the log. Each **click event** carries a unique **click_id**, the impression token from the ad that was shown, the ad, campaign and advertiser, a hashed user id, the **event time** stamped where the click happened, and dimensions like country and device.",
+        "We **partition by ad_id**, so all clicks for one ad land on one partition, in order. That's what lets a single worker own an ad's count without coordinating with anyone. The thing we'll store is the much smaller **AdMinute** row: one per ad per minute per dimension combination, holding a count."
+      ],
+      "entities": {
+        "items": [
+          { "id": "click", "name": "ClickEvent", "kind": "stream", "fields": ["click_id: uuid", "impression_id: signed token", "ad_id · campaign_id · advertiser_id", "user_hash: bytes", "event_time: timestamp", "country · device · placement"] },
+          { "id": "minute", "name": "AdMinute", "kind": "data", "fields": ["ad_id  PK", "minute_start  PK", "country · device  PK", "clicks: int", "unique_users: HLL sketch"] },
+          { "id": "hour", "name": "AdHour / AdDay", "kind": "data", "fields": ["ad_id  PK", "hour_start  PK", "country · device  PK", "clicks: int"] }
+        ],
+        "relations": [
+          { "from": "click", "to": "minute", "label": "many → 1 per window" },
+          { "from": "minute", "to": "hour", "label": "60 → 1 rollup" }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "add": ["flink", "e_kafka_flink"],
+      "title": "Aggregate in a stream processor",
+      "script": [
+        "Now the core idea: **count at write time, not read time**. A **stream processor**, Flink here, though Kafka Streams or Spark Structured Streaming work the same way, reads the click log and keeps a running count per ad per minute in its local state.",
+        "Each Flink task owns a set of Kafka partitions, and because we partitioned by ad_id, each ad's counter lives in exactly **one task**. No locks, no shared database counter, just an in-memory increment per click. When a minute is complete, the task **emits one row**: ad 42, minute 10:01, 1,204 clicks.",
+        "That's the 50× reduction from our estimates. A million clicks a second become about a million rows **a minute**."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["olap", "e_flink_olap", "e_query_olap"],
+      "title": "Store aggregates, not clicks",
+      "script": [
+        "Those rows go into an **Aggregates DB**, and the Query Service now reads pre-counted rows. A chart of the last hour for one ad is **60 rows**, not 70 thousand clicks. A year of a campaign reads hour or day rollups instead.",
+        "Flink writes by **upsert**, keyed by ad, minute and dimensions. Writing the same row twice leaves the same value, which will be our answer to exactly-once in a few slides.",
+        "Rollups happen in the database or as a second aggregation: minute rows are kept for a week or so, then compacted into **hourly** and **daily** rows. That keeps a year of history small and keeps long-range queries fast."
+      ]
+    },
+    {
+      "title": "Where should the aggregates live?",
+      "script": [
+        "What kind of database? The workload is **append-heavy**, with time-ordered writes, and queries that **filter and group** across a few dimensions and sum a count, which is a textbook OLAP pattern.",
+        "Postgres is fine until a few billion rows. Cassandra writes beautifully but can only answer the queries its keys were designed for. A real-time OLAP store like **Apache Pinot** or **Druid** ingests straight from Kafka or via upserts, stores columns compressed and indexed by time, pre-aggregates at ingest and answers group-bys in milliseconds. That's why ad platforms, LinkedIn and Uber among them, use exactly these. ClickHouse is a strong alternative."
+      ],
+      "table": {
+        "columns": ["Option", "Good at", "Falls short"],
+        "rows": [
+          ["**Postgres**", "SQL, transactions, simple ops", "billions of rows, write volume"],
+          ["**Cassandra**", "huge write throughput", "ad-hoc filters and group-bys"],
+          ["**Pinot / Druid**", "real-time ingest, fast group-bys", "complex joins; more to operate"],
+          ["**ClickHouse**", "very fast columnar SQL", "upserts and real-time are trickier"]
+        ],
+        "highlight": 2
+      }
+    },
+    {
+      "title": "Tumbling windows",
+      "script": [
+        "Let's be precise about \"per minute\". The simplest window is a **tumbling window**: fixed, non-overlapping, back-to-back intervals. Every click falls into exactly one, 10:00 to 10:01, 10:01 to 10:02, and so on.",
+        "Each window holds one counter per key. When the window **closes**, we emit its count and free the state. Our per-minute counts are tumbling windows, and so are the hour and day rollups built from them."
+      ],
+      "timeline": {
+        "axis": { "from": 0, "to": 180, "ticks": [0, 60, 120, 180], "unit": "s" },
+        "lanes": [
+          { "id": "win", "label": "Windows", "sub": "tumbling, 1 min" },
+          { "id": "clk", "label": "Clicks", "sub": "ad 42" },
+          { "id": "out", "label": "Emitted", "sub": "one row per window" }
+        ],
+        "marks": [
+          { "lane": "win", "span": [0, 60], "label": "10:00" },
+          { "lane": "win", "span": [60, 120], "label": "10:01" },
+          { "lane": "win", "span": [120, 180], "label": "10:02" },
+          { "lane": "clk", "at": 12, "result": "allow", "count": 300 },
+          { "lane": "clk", "at": 40, "result": "allow", "count": 500 },
+          { "lane": "out", "at": 60, "result": "allow", "label": "800" },
+          { "lane": "clk", "at": 85, "result": "allow", "count": 900 },
+          { "lane": "out", "at": 120, "result": "allow", "label": "900" },
+          { "lane": "clk", "at": 150, "result": "allow", "count": 400 },
+          { "lane": "out", "at": 180, "result": "allow", "label": "400" },
+          { "note": "each click counts in **exactly one** window", "at": [0, 180] }
+        ]
+      }
+    },
+    {
+      "title": "Sliding windows",
+      "script": [
+        "The top-K leaderboard asks something different: clicks in the **last 5 minutes**, refreshed every minute. That's a **sliding** (or hopping) window: 5 minutes long, starting every minute, so windows **overlap** and each click counts in five of them.",
+        "Naively that's five counters per key instead of one. The standard trick is to keep only the **1-minute tumbling counts** and compute each 5-minute window as the sum of its last five panes. Add the new minute, subtract the one that fell off. Sliding windows then cost almost nothing extra."
+      ],
+      "timeline": {
+        "axis": { "from": 0, "to": 8, "ticks": [0, 1, 2, 3, 4, 5, 6, 7, 8], "unit": "min" },
+        "lanes": [
+          { "id": "w1", "label": "Window A", "sub": "10:00–10:05" },
+          { "id": "w2", "label": "Window B", "sub": "10:01–10:06" },
+          { "id": "w3", "label": "Window C", "sub": "10:02–10:07" },
+          { "id": "clk", "label": "Clicks", "sub": "one at 10:04:30" }
+        ],
+        "marks": [
+          { "lane": "w1", "span": [0, 5], "label": "last 5 min at 10:05" },
+          { "lane": "w2", "span": [1, 6], "label": "at 10:06" },
+          { "lane": "w3", "span": [2, 7], "label": "at 10:07" },
+          { "lane": "clk", "at": 4.5, "result": "allow", "label": "counted in A, B, C …" },
+          { "note": "keep **1-min panes**; each 5-min window = sum of 5 panes", "at": [0, 5] }
+        ]
+      }
+    },
+    {
+      "title": "Event time vs. arrival time",
+      "script": [
+        "Here's the subtle part. Which minute does a click belong to: the minute it **happened**, or the minute it **reached us**? A phone clicks an ad at 10:00:50 in a tunnel and uploads the click at 10:01:35.",
+        "If we bucket by **processing time**, the clock on the Flink worker, that click counts in 10:01, and worse, a replay of yesterday's log would put all of yesterday's clicks into today. So we bucket by **event time**, the timestamp in the event. Counts are then **deterministic**: the same clicks always produce the same windows, whenever we process them.",
+        "The price is that we no longer know, from the wall clock, when a window is complete. That needs a new idea."
+      ],
+      "timeline": {
+        "axis": { "from": 0, "to": 120, "ticks": [0, 30, 60, 90, 120], "unit": "s" },
+        "lanes": [
+          { "id": "win", "label": "Windows" },
+          { "id": "happened", "label": "Happened", "sub": "event time" },
+          { "id": "arrived", "label": "Arrived", "sub": "processing time" }
+        ],
+        "marks": [
+          { "lane": "win", "span": [0, 60], "label": "10:00" },
+          { "lane": "win", "span": [60, 120], "label": "10:01" },
+          { "lane": "happened", "at": 20, "result": "allow", "label": "on time" },
+          { "lane": "arrived", "at": 21, "result": "allow" },
+          { "lane": "happened", "at": 50, "result": "allow", "label": "click in a tunnel" },
+          { "lane": "arrived", "at": 95, "result": "allow", "label": "arrives 45 s late" },
+          { "note": "by event time it belongs to **10:00**, not 10:01", "at": [50, 95] }
+        ]
+      }
+    },
+    {
+      "title": "Watermarks",
+      "script": [
+        "A **watermark** is the stream processor's estimate of how far event time has progressed: a promise that says \"I don't expect any more events older than T.\" A common choice is **the largest event time seen, minus a fixed delay**, say 10 seconds, to absorb normal network jitter.",
+        "Each Flink source tracks watermarks per Kafka partition and takes the minimum. When the watermark passes the end of a window, 10:01:00, the window **fires** and emits its count.",
+        "The delay is a dial between **freshness and completeness**. A small delay fires windows quickly but misses more stragglers; a large one waits for more of them but makes every dashboard later. With our under-a-minute target, 10 to 30 seconds is typical."
+      ],
+      "timeline": {
+        "axis": { "from": 0, "to": 120, "ticks": [0, 30, 60, 90, 120], "unit": "s" },
+        "lanes": [
+          { "id": "clk", "label": "Clicks arrive", "sub": "by arrival time" },
+          { "id": "wm", "label": "Watermark", "sub": "max event time − 10 s", "max": 120 },
+          { "id": "out", "label": "Window 10:00", "sub": "fires once" }
+        ],
+        "marks": [
+          { "lane": "clk", "at": 15, "result": "allow", "count": 200 },
+          { "lane": "clk", "at": 45, "result": "allow", "count": 400 },
+          { "lane": "clk", "at": 66, "result": "allow", "count": 300 },
+          { "lane": "wm", "level": [[0, 0], [10, 0], [120, 108]], "label": "watermark", "limit": 60 },
+          { "lane": "out", "at": 72, "result": "allow", "label": "emit 10:00 = 600" },
+          { "note": "watermark passes **10:01:00** → the 10:00 window fires", "at": [70, 72] }
+        ]
+      }
+    },
+    {
+      "title": "Late events and allowed lateness",
+      "script": [
+        "Some clicks arrive **after** their window fired. Flink lets us keep a window's state around for an **allowed lateness**, say 5 minutes past the watermark. A late click within that period **updates** the window and re-emits it: 10:00 becomes 601 instead of 600. Since the sink is an upsert keyed by ad and minute, the dashboard simply corrects itself.",
+        "A click later than that, a phone that was offline for an hour, is too late for the stream. Flink sends it to a **side output** instead of dropping it silently. We count how many land there, as a health metric, and the exact batch recount we'll add later picks them up for billing.",
+        "So dashboards are **fresh and nearly right** within seconds, **right** within minutes, and billing is **exactly right** by the next day."
+      ],
+      "timeline": {
+        "axis": { "from": 0, "to": 480, "ticks": [0, 60, 120, 240, 360, 480], "unit": "s" },
+        "lanes": [
+          { "id": "state", "label": "Window 10:00", "sub": "its state" },
+          { "id": "late", "label": "Late clicks", "sub": "for 10:00" },
+          { "id": "out", "label": "Emitted", "sub": "upserts" }
+        ],
+        "marks": [
+          { "lane": "state", "span": [0, 72], "label": "collecting" },
+          { "lane": "out", "at": 72, "result": "allow", "label": "600" },
+          { "lane": "state", "span": [72, 372], "label": "fired · kept for 5 min of lateness" },
+          { "lane": "late", "at": 150, "result": "allow", "label": "late, in time" },
+          { "lane": "out", "at": 150, "result": "allow", "label": "601 (upsert)" },
+          { "lane": "late", "at": 430, "result": "deny", "label": "too late → side output" },
+          { "note": "state freed; batch recount catches the rest", "at": [372, 480] }
+        ]
+      }
+    },
+    {
+      "title": "Exactly-once counts",
+      "script": [
+        "Workers crash. If a Flink task dies after counting clicks but before saving its progress, it will reprocess them on restart. How do we avoid **double counting**?",
+        "Flink takes periodic **checkpoints**: a consistent snapshot of every task's window state **together with** the Kafka offsets it had read, written to durable storage. On a crash, every task restores the last checkpoint and rewinds Kafka to the matching offsets, so state and input are back in sync and each click is counted **once in the state**.",
+        "The output side might still be written twice, since rows emitted after the checkpoint are emitted again. That's why the sink is an **idempotent upsert**: writing ad 42, 10:01 = 1,204 twice is harmless. Checkpointed state plus idempotent writes gives **effectively-once** results without distributed transactions."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "kafka", "label": "Click Log", "kind": "stream" },
+          { "id": "flink", "label": "Stream Aggregator", "kind": "stream" },
+          { "id": "ckpt", "label": "Checkpoint Store", "kind": "data", "sub": "S3" },
+          { "id": "olap", "label": "Aggregates DB", "kind": "data" }
+        ],
+        "steps": [
+          { "from": "kafka", "to": "flink", "label": "clicks at offsets 1000–1999" },
+          { "from": "flink", "to": "flink", "label": "add to window counts" },
+          { "from": "flink", "to": "ckpt", "label": "checkpoint: state + offset 2000" },
+          { "from": "ckpt", "to": "flink", "label": "durable", "reply": true },
+          { "from": "flink", "to": "olap", "label": "upsert (ad 42, 10:01) = 1,204" },
+          { "note": "**crash**: restore checkpoint, rewind to offset 2000", "over": ["kafka", "flink", "ckpt"] },
+          { "from": "kafka", "to": "flink", "label": "replay from offset 2000" },
+          { "from": "flink", "to": "olap", "label": "upsert (ad 42, 10:01) = 1,204 again" },
+          { "note": "same key, same value → **no double count**", "over": ["flink", "olap"] }
+        ]
+      }
+    },
+    {
+      "title": "Duplicates and bad clicks",
+      "script": [
+        "Checkpoints handle our own retries, but duplicates also come from **outside**: a user double-clicks, a browser retries the request, the Click Service's producer retries a send. Each click carries a **click_id**, and Flink keeps a keyed set of recently seen ids, with a **TTL** a bit longer than the allowed lateness, dropping repeats.",
+        "The **impression token** in the click URL is signed when the ad is served, so a click must match a real impression, and a token can only be redeemed once. That blocks forged clicks cheaply.",
+        "Real fraud detection is out of scope, but this is where the **hook** goes: a filter step that drops or flags obvious bots, a user clicking the same ad 50 times a minute, before counting. Flagged clicks are kept and can be refunded at billing time."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Dedupe by click_id** in keyed state", "detail": "TTL slightly longer than allowed lateness, so state stays bounded" },
+          { "text": "**Signed impression token** in every click URL", "detail": "a click must match a real, served impression, redeemed once" },
+          { "text": "**Producer idempotence** in the Click Service", "detail": "Kafka drops retried sends with the same sequence number" },
+          { "text": "A **filter hook** for bots and abuse", "detail": "drop or flag before counting; fraud ML plugs in here" }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "focus": ["click", "kafka", "flink", "e_click_kafka", "e_kafka_flink"],
+      "title": "Hot ads and skewed partitions",
+      "script": [
+        "Partitioning by ad_id has one weakness: **skew**. A Super Bowl ad might get 100 thousand clicks a second, and all of them land on **one partition** and one Flink task, which falls behind while the rest of the cluster idles.",
+        "The fix is **two-stage aggregation**. For hot keys, the Click Service, or a first Flink stage, appends a small random **salt**, ad 42 becomes 42#0 through 42#15, spreading it across sixteen tasks. Each produces a partial count per minute, and a second, much smaller stage **sums the partials** by the real ad id. Flink also does **local pre-aggregation** before the shuffle, collapsing a thousand clicks on the same key into one record.",
+        "Counting is a **sum**, which is associative, so splitting and recombining is always safe. That property quietly makes most of this design possible."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["topkmerge", "e_flink_topk"],
+      "title": "Top-K: per partition, then merge",
+      "script": [
+        "Now the leaderboard: the **top 100 ads** by clicks over the last 5 minutes, hour and day. Each Flink task already has the counts for its own ads, so it keeps a **min-heap of size K**: each time a count changes, compare it against the smallest in the heap and swap it in if it's bigger.",
+        "Every refresh, each task sends its **local top-K** to a **Top-K Merger**, which combines a few hundred lists of 100 into one global list.",
+        "Is that merge exact? Here, **yes**, and it's worth saying why: we partitioned by ad_id, so each ad's full count lives on **one** task, and the global top 100 must be in some task's local top 100. If an ad's count were **split** across tasks, the salted hot ads for example, a local top-K could miss an ad that's medium everywhere but large in total, so we merge salted partials before ranking."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["topkstore", "e_topk_store", "e_store_query"],
+      "title": "Serve Top-K from a cache",
+      "script": [
+        "The merged lists go into a **Top-K Store**, a Redis instance holding one small ranked list per window and scope: global last-5-minutes, global last-hour, US last-day, and so on.",
+        "Reads are trivial, one key lookup, so the leaderboard can refresh every few seconds for thousands of internal dashboards without touching the Aggregates DB. The lists are tiny and fully recomputed each refresh, so there's no invalidation problem: the merger simply **overwrites** them."
+      ]
+    },
+    {
+      "title": "When exact counting runs out of memory",
+      "script": [
+        "Top 100 ads globally is easy because 10 million ads fit in memory. But product wants top-K by **every combination**: ad by country by device by placement, over three window lengths. That's on the order of **a billion keys**, and at about 16 bytes per counter, **16 gigabytes per window** just to rank them.",
+        "The same wall appears in the general version of this problem: trending searches, most-played songs, top products, top IP addresses. The key space is huge and long-tailed, and almost every key is tiny. We spend nearly all our memory counting things that will never be in the top 100.",
+        "We don't need exact counts for a leaderboard. We need to know which keys are **heavy**, with roughly right counts. That's what probabilistic sketches are for."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "Exact top-K needs **a counter per key**", "detail": "a hash map from key to count, plus a heap of K" },
+          { "text": "Keys = ad × country × device × placement", "detail": "≈ 1B keys × 16 B ≈ 16 GB per window, per window length" },
+          { "text": "Most keys are **tiny and irrelevant**", "detail": "long tail: memory spent on keys that never reach the top" },
+          { "text": "A leaderboard tolerates **approximate** counts", "detail": "so trade a little accuracy for a lot of memory" }
+        ]
+      }
+    },
+    {
+      "title": "Count-min sketch",
+      "script": [
+        "A **count-min sketch** is a small 2-D array of counters: **d rows** of **w columns**, with an independent hash function per row. To count a click for a key, hash it once per row and **increment one cell in each row**. To estimate a key's count, look at its d cells and take the **minimum**.",
+        "Here, ad 42 hashes to the bold cells: 12, 14, 12 and 13. Every cell also contains clicks from other keys that collided into it, so each cell **overestimates**, never underestimates. The minimum is the cell with the least collision noise: **12**.",
+        "That's the whole data structure: fixed memory no matter how many keys, one increment per row per event, and a guaranteed one-sided error."
+      ],
+      "table": {
+        "heading": "Count-min sketch, d = 4 × w = 8 · estimate(ad 42) = min(12, 14, 12, 13) = 12",
+        "columns": ["", "c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7"],
+        "rows": [
+          ["**h₁(key)**", "3", "**12**", "0", "5", "1", "7", "2", "4"],
+          ["**h₂(key)**", "6", "0", "2", "**14**", "3", "1", "9", "0"],
+          ["**h₃(key)**", "**12**", "4", "1", "0", "8", "2", "5", "3"],
+          ["**h₄(key)**", "2", "7", "0", "3", "**13**", "1", "0", "6"]
+        ]
+      }
+    },
+    {
+      "title": "Sketch plus heap = heavy hitters",
+      "script": [
+        "How big must it be? The error is bounded by the total count: with **w** columns, an estimate is off by at most about **e / w** of all clicks in the window, with probability **1 − e⁻ᵈ**. With w around 262 thousand and d = 5, that's an error of about **0.001 percent** of the total, around 600 clicks out of 60 million in a minute, with 99 percent confidence, in **about 5 megabytes** instead of 16 gigabytes.",
+        "A sketch only answers \"how many for this key?\"; it can't list keys. So we pair it with a **min-heap of size K**: on each event, update the sketch, read back the key's estimate, and if it beats the heap's minimum, put the key in the heap. The heap holds the **heavy hitters**; the sketch tells us their sizes.",
+        "Best of all, sketches **merge by adding cells**. Every Flink task keeps its own, the merger sums them cell by cell, and sliding windows are just a sum of the last five one-minute sketches."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "Error ≤ **e / w × total**, with probability **1 − e⁻ᵈ**", "detail": "w ≈ 262K, d = 5 → ±0.001% of clicks, 99% of the time" },
+          { "text": "**≈ 5 MB** per window, instead of 16 GB", "detail": "fixed size, however many keys show up" },
+          { "text": "**Only overestimates**, never under", "detail": "collisions add noise; the min of d rows filters most of it" },
+          { "text": "**+ a min-heap of K** to remember which keys", "detail": "update sketch → read estimate → push if it beats the heap's min" },
+          { "text": "**Mergeable**: add sketches cell by cell", "detail": "across tasks, and across 1-min panes for sliding windows" }
+        ]
+      }
+    },
+    {
+      "title": "Exact vs. approximate top-K",
+      "script": [
+        "To put the options side by side: **exact counting** with a hash map is right whenever the key space fits in memory, as it does for the top 100 ads, and it's the only option for anything billed.",
+        "A **count-min sketch with a heap** wins when keys explode and the answer only needs to be approximately right, like trending dashboards across every dimension. **Misra-Gries** and **Space-Saving** are the other classic heavy-hitter algorithms: they keep just K-ish counters and evict the smallest, which is even smaller, but they merge less cleanly across tasks and windows.",
+        "We use **exact** for the global leaderboard and billing, and **sketches** for the many-dimension trending views."
+      ],
+      "table": {
+        "columns": ["Approach", "Memory", "Accuracy", "Use it for"],
+        "rows": [
+          ["**Hash map + heap**", "1 counter per key", "exact", "keys fit in RAM; billing"],
+          ["**Count-min + heap**", "fixed, ~MB", "overestimates, bounded", "huge key spaces, trending"],
+          ["**Space-Saving**", "~K counters", "bounded, evicts tail", "single-node heavy hitters"],
+          ["**Batch sort**", "disk", "exact, hours late", "daily reports, audits"]
+        ],
+        "highlight": 1
+      }
+    },
+    {
+      "scene": "main",
+      "add": ["archive", "e_kafka_archive"],
+      "title": "Archive the raw log",
+      "script": [
+        "Back to the exact numbers. Kafka keeps days of clicks, not years, so we continuously copy the log into a **Raw Click Archive**: hourly **Parquet** files in object storage, partitioned by date and hour, with Kafka Connect or a small Flink job doing the copying.",
+        "Compressed columnar files are about 1 terabyte a day, cheap to keep for years, and the archive becomes the **source of truth**: every click we accepted, including the ones too late for the stream. Any number in the system can be recomputed from here."
+      ]
+    },
+    {
+      "scene": "main",
+      "add": ["batch", "e_archive_batch", "billingdb", "e_batch_billing", "e_batch_olap"],
+      "title": "A batch layer: the lambda architecture",
+      "script": [
+        "Now we can add a **Batch Recount**: a Spark job that runs once the hour's files are complete, well after any late click could still show up, and counts them **exactly**: dedupe by click_id across the whole hour, apply the full fraud rules, group by ad and minute.",
+        "Its output goes two places. **Billing Counts** gets the exact per-ad daily totals the invoice will use. And the Aggregates DB has its streaming numbers for that hour **overwritten** with the batch numbers, so history becomes exact after the fact.",
+        "This is the **lambda architecture**: a fast, approximate **speed layer** for fresh numbers, a slow, exact **batch layer** for the truth, and a serving layer that prefers batch where it exists and streaming where it doesn't."
+      ]
+    },
+    {
+      "title": "Lambda vs. kappa",
+      "script": [
+        "Lambda's weakness is famous: the same counting logic lives in **two codebases**, a Flink job and a Spark job, which drift apart. When the two numbers disagree, which one is the bug?",
+        "The **kappa architecture**, proposed by Jay Kreps, says: if the stream processor is exactly-once and event-time correct, which modern Flink is, there's no need for a second system. Keep the log long enough, and to **recompute**, just run the same streaming job again from an old offset.",
+        "For ad clicks, the practical answer is mostly kappa: **one streaming codebase** serves the dashboards, and reprocessing is a replay. We keep a narrow batch job only where the business needs an independent, exact audit, which is billing."
+      ],
+      "table": {
+        "columns": ["", "Lambda", "Kappa"],
+        "rows": [
+          ["**Pipelines**", "stream + batch, two codebases", "one streaming job"],
+          ["**Correctness**", "batch fixes stream after hours", "stream must be exact by itself"],
+          ["**Reprocessing**", "rerun the batch job", "replay the log from an offset"],
+          ["**Needs**", "an archive + a batch engine", "long log retention, exactly-once"],
+          ["**Weak spot**", "logic drifts between the two", "replaying months is slow"]
+        ],
+        "highlight": 1
+      }
+    },
+    {
+      "scene": "main",
+      "add": ["replay", "e_kafka_replay", "e_replay_olap"],
+      "remove": ["e_batch_olap"],
+      "title": "Kappa: reprocess by replay",
+      "script": [
+        "So we move to kappa for the serving path. The batch job **stops overwriting** the Aggregates DB, and when we need to recompute, say a bug in the dedupe logic or a new dimension added to the counts, we start a **Replay Job**: the very same Flink code, reading the click log from an offset days or weeks back.",
+        "Kafka's **tiered storage** makes that practical: old segments live in object storage, so a topic can keep months of clicks cheaply, and the replay reads them at many times real-time speed. Because we window by **event time**, the replay produces exactly the counts the live job would have.",
+        "The replay writes into a **new table version**, and when it catches up to live, we switch the Query Service over. No in-place edits, and an instant rollback if something's wrong."
+      ]
+    },
+    {
+      "title": "A backfill, step by step",
+      "script": [
+        "Here's that replay in order. An engineer deploys the fixed job pointed at an old offset. It reads history from tiered storage, much faster than real time, writing to **aggregates_v2** while the live job keeps serving **v1**.",
+        "Once the replay reaches the head of the log, it's just a second live job. We flip the Query Service's **table alias** to v2, compare a few dashboards, and retire v1. Nobody ever sees a half-recomputed day."
+      ],
+      "sequence": {
+        "actors": [
+          { "id": "eng", "label": "Engineer", "kind": "client" },
+          { "id": "replay", "label": "Replay Job", "kind": "stream" },
+          { "id": "kafka", "label": "Click Log", "kind": "stream", "sub": "tiered storage" },
+          { "id": "olap", "label": "Aggregates DB", "kind": "data" },
+          { "id": "query", "label": "Query Service", "kind": "service" }
+        ],
+        "steps": [
+          { "from": "eng", "to": "replay", "label": "deploy fixed job, start 14 days back" },
+          { "from": "replay", "to": "kafka", "label": "read from old offsets" },
+          { "from": "kafka", "to": "replay", "label": "14 days of clicks, ~20× real time", "reply": true },
+          { "from": "replay", "to": "olap", "label": "write aggregates_v2" },
+          { "note": "live job keeps serving **v1** the whole time", "over": ["olap", "query"] },
+          { "from": "replay", "to": "eng", "label": "caught up to the head of the log", "reply": true },
+          { "from": "eng", "to": "query", "label": "switch alias → aggregates_v2" },
+          { "from": "query", "to": "olap", "label": "read v2" }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "add": ["billing", "e_billingdb_billing", "e_billing_adv"],
+      "title": "Reconcile, then bill",
+      "script": [
+        "The last piece is the **Billing Service**. Each day, it reads the exact counts from the batch recount and **reconciles** them against the streaming totals. A small gap is expected, from the very late clicks and fraud refunds, but a gap above a threshold, say 0.1 percent, pages a human before any invoice goes out.",
+        "Then it charges each advertiser against their budget and produces **invoices**. Because the batch job is deterministic and works from the immutable archive, any line on an invoice can be **recomputed and explained** in a dispute, click by click.",
+        "This is why we kept a batch path at all: not for freshness, but as an **independent check** on the numbers that turn into money."
+      ]
+    },
+    {
+      "scene": "main",
+      "focus": ["user", "click", "kafka", "flink", "olap", "query", "adv", "e_user_click", "e_click_kafka", "e_kafka_flink", "e_flink_olap", "e_query_olap", "e_adv_query"],
+      "title": "Trace one click",
+      "script": [
+        "Let's trace one click. A user taps an ad; the **Click Service** checks the impression token, appends the event to the **click log** partition for that ad, and redirects in a few milliseconds.",
+        "Within a second, the **Stream Aggregator** task that owns that partition dedupes it by click_id and adds it to the count for its event-time minute. About 10 to 30 seconds after the minute ends, the watermark passes, the window fires, and an **upsert** lands in the Aggregates DB.",
+        "The advertiser's dashboard asks the **Query Service**, which reads that row next to its rollups. Click to chart: well under a minute. And the same click is in the archive within the hour, in the exact batch count that night, and on an invoice at the end of the month."
+      ]
+    },
+    {
+      "title": "What happens when things fail",
+      "script": [
+        "Every component can fail without losing a click. If **Kafka** is briefly unreachable, the Click Service buffers clicks locally and spills to disk, still redirecting. If a **Flink** task dies, it restores its last checkpoint and replays from Kafka; dashboards stall for a minute, then catch up.",
+        "If the **Aggregates DB** is down, Flink's upserts back up, Kafka keeps buffering, and nothing is lost. Dashboards show stale data, flagged as such. If a whole **region** fails, clicks route to another region's Click Service and log, and the regions' aggregates are summed, because counts are additive.",
+        "The pattern throughout: the **log absorbs failures**, and everything downstream is recomputable."
+      ],
+      "bullets": {
+        "items": [
+          { "text": "**Kafka unreachable** → buffer locally, spill to disk", "detail": "redirects keep working; clicks are sent when it recovers" },
+          { "text": "**Flink task crash** → restore checkpoint, replay", "detail": "dashboards lag a minute, counts stay exactly-once" },
+          { "text": "**Aggregates DB down** → the log buffers", "detail": "dashboards go stale, and say so; nothing is lost" },
+          { "text": "**Region loss** → route clicks to another region", "detail": "per-region counts are additive; sum them at query time" },
+          { "text": "**Bug in the counting** → replay to a new table", "detail": "the archive and the log make every number recomputable" }
+        ]
+      }
+    },
+    {
+      "scene": "main",
+      "title": "The complete ad click aggregator",
+      "script": [
+        "Let's step back. Clicks hit a **Click Service** that redirects immediately and appends to a partitioned **click log**. A **stream processor** counts them in **event-time windows**, using watermarks to decide when a minute is done, allowed lateness to absorb stragglers, checkpoints and idempotent upserts for exactly-once results, and click ids to drop duplicates.",
+        "Counts land in an **OLAP store** that serves dashboards in milliseconds. Per-partition heaps feed a **Top-K** leaderboard, and where the key space explodes, **count-min sketches** rank billions of keys in megabytes.",
+        "For correctness over time we chose **kappa**: one streaming codebase, recomputed by replaying the log. We kept a single **exact batch recount** from the raw archive for the one thing that must be independently right, the bill.",
+        "The theme: **log first, aggregate early, keep everything recomputable**. Fresh numbers come from the stream, true numbers come from the log, and the system is built so the two can always be reconciled."
+      ]
+    }
+  ]
+}

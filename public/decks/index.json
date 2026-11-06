@@ -81,6 +81,11 @@
           "slug": "message-queue",
           "title": "Message Queue",
           "description": "A Kafka-style replicated log: partitions hashed by key, segments and offset indexes, leaders and followers with an ISR and high watermark, KRaft failover with leader epochs, consumer groups and rebalancing, retention, compaction, tiered storage, and exactly-once with idempotent producers and transactions."
+        },
+        {
+          "slug": "ad-click-aggregator",
+          "title": "Ad Click Aggregator",
+          "description": "Counting a firehose of clicks by time window: log first, tumbling and sliding windows in event time, watermarks and late events, exactly-once with checkpoints and idempotent upserts, top-K with heaps and count-min sketches, and lambda vs. kappa with an exact batch recount for billing."
         }
       ]
     }
