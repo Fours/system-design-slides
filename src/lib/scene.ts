@@ -53,6 +53,8 @@ export interface FrameLabel {
 
 export interface SceneFrame {
   viewBox: string;
+  /** True on a step with `focus`: lines without "dim" are the highlighted ones. */
+  focused: boolean;
   /** "tier" boxes, drawn behind the edges. */
   back: FrameBox[];
   lines: FrameLine[];
@@ -113,7 +115,7 @@ export function sceneBuilder(def: SceneDef) {
       return s.length ? Math.max(...s) : undefined;
     };
 
-    const frame: SceneFrame = { viewBox: "", back: [], lines: [], front: [], labels: [] };
+    const frame: SceneFrame = { viewBox: "", focused: focus.length > 0, back: [], lines: [], front: [], labels: [] };
     const pts: Point[] = [];
 
     const drawEdge = (k: string, ends: [string, string], pathPts: Point[], cls: string, label: string | undefined, lp: LabelPos | undefined, s?: number) => {

@@ -158,6 +158,11 @@ What the builder does for you:
   connects to). Timing defaults to 1000 ms each; a deck can set
   `animation: { delayMs, fadeMs }`, and a slide can override either with its own
   `delayMs` / `fadeMs`.
+- **Pulses the edges that matter.** A glowing pulse runs toward the arrowhead
+  (back and forth on `both` edges, pink on `async` ones) on edges added on the
+  current slide and, on a `focus` slide, on the highlighted edges; other edges
+  stay still. On a `bus`, pulses run from the hub down the spine to each member.
+  Turned off by the OS "reduce motion" setting.
 - **Hides dangling edges.** An edge is drawn only if it was added and both endpoints
   are visible.
 - **Auto-fits the camera.** The `viewBox` fits whatever is visible, with a minimum
