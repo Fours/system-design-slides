@@ -1107,8 +1107,7 @@
       }
     },
     {
-      "scene": "main",
-      "focus": ["desktop", "localdb", "mobile", "collab", "visitor", "lb", "cdn", "notif", "metasvc", "blocksvc", "cache", "kafka", "mdbs", "blockidx", "gc", "store", "cold", "regions", "e_desktop_local", "e_desktop_lb", "e_mobile_lb", "e_collab_lb", "e_visitor_cdn", "e_cdn_block", "e_block_store", "e_meta_mdbs", "e_meta_idx", "e_block_idx", "e_mdbs_kafka", "e_kafka_notif", "e_kafka_gc", "e_gc_idx", "e_gc_store", "e_store_regions", "e_store_cold", "e_mdbs_regions"],
+      "scene": "main",      
       "title": "The complete system",
       "script": [
         "Let's step back and look at the whole thing. Everything is organized around one split: the **file bytes** and the **file tree**.",
