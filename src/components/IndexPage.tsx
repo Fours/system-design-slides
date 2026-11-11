@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Link } from "react-router";
+import { Link, useLocation } from "react-router";
 import { fetchIndex } from "../lib/api";
 import { useFetch } from "../lib/useFetch";
 import type { DeckIndexEntry, DeckIndexSection } from "../types";
@@ -40,9 +40,10 @@ function IndexSection({ section, first }: { section: DeckIndexSection; first: bo
 }
 
 function DeckCard({ deck: d }: { deck: DeckIndexEntry }) {
+  const { search } = useLocation(); // keep ?anim= etc. when opening a deck
   return (
     <li>
-      <Link to={`/${d.slug}`} className="deck-card">
+      <Link to={{ pathname: `/${d.slug}`, search }} className="deck-card">
         <span className="deck-head">
           <span className="deck-logo">
             <img src={`logos/${d.slug}.svg`} alt="" onError={(e) => { e.currentTarget.hidden = true; }} />

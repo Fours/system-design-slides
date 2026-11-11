@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, type CSSProperties } from "react";
-import { Link, Navigate, useNavigate, useParams } from "react-router";
+import { Link, Navigate, useLocation, useNavigate, useParams } from "react-router";
+import { useEdgeAnimation, type EdgeAnimation } from "../lib/edgeAnimation";
 import { fetchDeck } from "../lib/api";
 import { Markdown } from "../lib/markdown";
 import { buildSlides, type Slide } from "../lib/slides";
@@ -29,6 +30,9 @@ function DeckView({ slug, deck }: { slug: string; deck: Deck }) {
   const slides = useMemo(() => buildSlides(deck), [deck]);
   const params = useParams();
   const navigate = useNavigate();
+  // Keep the query string (e.g. ?anim=2) while moving between slides.
+  const { search } = useLocation();
+  const anim = useEdgeAnimation();
   const scriptRef = useRef<HTMLElement>(null);
 
   // The slide number lives in the URL (1-based), so links and refreshes keep it.
@@ -39,8 +43,8 @@ function DeckView({ slug, deck }: { slug: string; deck: Deck }) {
   const go = useCallback((delta: number) => {
     const next = index + delta;
     if (next < 0 || next >= slides.length) return;
-    navigate(`/${slug}/${next + 1}`, { replace: true });
-  }, [index, slides.length, navigate, slug]);
+    navigate({ pathname: `/${slug}/${next + 1}`, search }, { replace: true });
+  }, [index, slides.length, navigate, slug, search]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -54,7 +58,7 @@ function DeckView({ slug, deck }: { slug: string; deck: Deck }) {
   useEffect(() => { document.title = deck.topic; }, [deck.topic]);
   useEffect(() => { scriptRef.current?.scrollTo(0, 0); }, [index]);
 
-  if (!valid) return <Navigate to={`/${slug}/1`} replace />;
+  if (!valid) return <Navigate to={{ pathname: `/${slug}/1`, search }} replace />;
   const slide = slides[index];
 
   return (
@@ -64,7 +68,7 @@ function DeckView({ slug, deck }: { slug: string; deck: Deck }) {
         {/* Keyed by slide, so a fresh <svg> restarts the fade-in sequence. */}
         <svg key={index} className="animate" viewBox={viewBox(slide)} xmlns="http://www.w3.org/2000/svg"
           style={{ "--delay-ms": `${slide.delayMs}ms`, "--fade-ms": `${slide.fadeMs}ms` } as CSSProperties}>
-          <DiagramContent deck={deck} slide={slide} />
+          <DiagramContent deck={deck} slide={slide} anim={anim} />
         </svg>
       </section>
 
@@ -77,7 +81,7 @@ function DeckView({ slug, deck }: { slug: string; deck: Deck }) {
       </section>
 
       <div id="controls">
-        <Link className="nav" to="/" aria-label="All decks" title="All decks">
+        <Link className="nav" to={{ pathname: "/", search }} aria-label="All decks" title="All decks">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
             strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M3 11l9-8 9 8" />
@@ -92,9 +96,15 @@ function DeckView({ slug, deck }: { slug: string; deck: Deck }) {
   );
 }
 
+// When the last new element of a scene slide has finished fading in.
+const fadeEndMs = (slide: Slide, frame: { lines: { seq?: number }[]; front: { seq?: number }[]; back: { seq?: number }[] }) => {
+  const seqs = [...frame.lines, ...frame.front, ...frame.back].map((e) => e.seq ?? -1);
+  return slide.delayMs + (Math.max(-1, ...seqs) + 1) * slide.fadeMs;
+};
+
 const viewBox = ({ diagram: d }: Slide) => ("frame" in d ? d.frame.viewBox : REQUIREMENTS_VIEWBOX);
 
-function DiagramContent({ deck, slide }: { deck: Deck; slide: Slide }) {
+function DiagramContent({ deck, slide, anim }: { deck: Deck; slide: Slide; anim?: EdgeAnimation }) {
   const d = slide.diagram;
   switch (d.kind) {
     case "fr":
@@ -103,7 +113,7 @@ function DiagramContent({ deck, slide }: { deck: Deck; slide: Slide }) {
       return <NfrDiagram req={deck.requirements.nonFunctional} show={d.show}
         withEstimates={d.withEstimates} withTakeaway={d.withTakeaway} />;
     case "scene":
-      return <SceneDiagram frame={d.frame} />;
+      return <SceneDiagram frame={d.frame} anim={anim} startMs={fadeEndMs(slide, d.frame)} />;
     case "sequence":
       return <SequenceDiagram frame={d.frame} />;
     case "entities":

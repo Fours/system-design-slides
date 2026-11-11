@@ -210,6 +210,64 @@ svg.animate .new, svg.animate .reveal {
 /* Spotlight on a scene slide with "focus": everything else fades back. */
 .box.dim, .edge.dim, .edge-label.dim { opacity: 0.18; }
 
+/* ---- Experimental edge animations (?anim=1|2|3, see lib/edgeAnimation.ts) ---- */
+.flow { fill: none; pointer-events: none; }
+.flow.dim { opacity: 0.18; }
+
+/* v1: dashes marching toward the arrowhead over a faint track. */
+.anim-dash .edge { stroke-opacity: 0.3; }
+.flow-dash {
+  stroke: var(--line);
+  stroke-width: 1.8;
+  stroke-dasharray: 8 6;
+  animation: dash-march 0.5s linear infinite;
+}
+.flow.new .flow-dash { stroke: var(--accent); }
+.flow.async .flow-dash { stroke-dasharray: 3 7; animation-duration: 0.9s; }
+.flow.both .flow-dash { animation: dash-march-both 3s linear infinite; }
+@keyframes dash-march { from { stroke-dashoffset: 0; } to { stroke-dashoffset: -14; } }
+/* Two-way edges: out for half the cycle, back for the other half. */
+@keyframes dash-march-both {
+  0% { stroke-dashoffset: 0; } 50% { stroke-dashoffset: -84; } 100% { stroke-dashoffset: 0; }
+}
+
+/* v2: a glowing pulse that travels down each edge. Stacked strokes (halo,
+   glow, core) instead of filters, which clip on zero-width vertical edges.
+   Distances are real pixels, set per pulse group (see Pulse in
+   SceneDiagram.tsx): --pulse is the pulse length, --cycle the distance it
+   covers per loop (the edge plus an off-screen rest), --dur the loop time.
+   The dash pattern repeats every --cycle, so the loop is seamless, and every
+   pulse moves at the same speed, so pulses sharing a bus spine overlap. */
+.pulse-halo, .pulse-glow, .pulse-core {
+  stroke-linecap: round;
+  stroke-dasharray: var(--pulse) calc(var(--cycle) - var(--pulse));
+  stroke-dashoffset: var(--pulse);
+  animation: pulse-run var(--dur) linear infinite;
+  animation-delay: var(--phase);
+}
+.pulse-halo { stroke: var(--accent); stroke-width: 11; opacity: 0.15; }
+.pulse-glow { stroke: var(--accent); stroke-width: 5.5; opacity: 0.45; }
+.pulse-core { stroke: #e0f2fe; stroke-width: 2.2; }
+.flow.async .pulse-halo, .flow.async .pulse-glow { stroke: var(--stream); }
+.flow.async .pulse-core { stroke: #fce7f3; }
+/* Two-way edges: out, then back. */
+.flow.both :is(.pulse-halo, .pulse-glow, .pulse-core) { animation-direction: alternate; }
+@keyframes pulse-run {
+  from { stroke-dashoffset: var(--pulse); }
+  to { stroke-dashoffset: calc(var(--pulse) - var(--cycle)); }
+}
+
+/* v3: request (blue), response (green) and async message (pink) packets. */
+.packet circle, .packet rect { stroke: var(--box-fill); stroke-width: 1.5; }
+.packet.req circle { fill: var(--accent); filter: drop-shadow(0 0 4px var(--accent)); }
+.packet.res circle { fill: var(--data); filter: drop-shadow(0 0 4px var(--data)); }
+.packet.msg rect { fill: var(--stream); filter: drop-shadow(0 0 4px var(--stream)); }
+
+@media (prefers-reduced-motion: reduce) {
+  .flows { display: none; }
+  .anim-dash .edge { stroke-opacity: 1; }
+}
+
 /* ---- Detail slides (sequence, entities, bullets, table, timeline) ---- */
 .b { font-weight: 700; fill: var(--ink); }
 tspan.dim { fill: var(--ink-dim); }

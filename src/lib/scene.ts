@@ -32,9 +32,12 @@ export interface FrameBox {
 export interface FrameLine {
   key: string;
   d: string;
-  /** Class list: any of "new", "both", "async", "plain", "dim". */
+  /** Class list: any of "new", "both", "async", "plain", "spine", "dim". */
   cls: string;
   seq?: number;
+  /** Box ids at the tail and head of the arrow (a bus's own lines use "bus:<hub>"). */
+  from: string;
+  to: string;
 }
 
 export interface FrameLabel {
@@ -113,9 +116,9 @@ export function sceneBuilder(def: SceneDef) {
     const frame: SceneFrame = { viewBox: "", back: [], lines: [], front: [], labels: [] };
     const pts: Point[] = [];
 
-    const drawEdge = (k: string, pathPts: Point[], cls: string, label: string | undefined, lp: LabelPos | undefined, s?: number) => {
+    const drawEdge = (k: string, ends: [string, string], pathPts: Point[], cls: string, label: string | undefined, lp: LabelPos | undefined, s?: number) => {
       const d = pathPts.map((p, i) => `${i ? "L" : "M"}${p[0]},${p[1]}`).join(" ");
-      frame.lines.push({ key: k, d, cls, seq: s });
+      frame.lines.push({ key: k, d, cls, seq: s, from: ends[0], to: ends[1] });
       pts.push(...pathPts);
       if (label && lp) {
         const [x, y, anchor] = lp;
@@ -139,7 +142,7 @@ export function sceneBuilder(def: SceneDef) {
     def.edges.forEach((e) => {
       if (!isOn(e.id) || !isOn(e.from) || !isOn(e.to)) return;
       const cls = [fresh.has(e.id) ? "new" : "", e.both ? "both" : "", e.async ? "async" : "", dim(e.id).trim()].filter(Boolean).join(" ");
-      drawEdge(e.id, e.pts, cls, e.label, e.label ? labelPos(e) : undefined, seq(e.id));
+      drawEdge(e.id, [e.from, e.to], e.pts, cls, e.label, e.label ? labelPos(e) : undefined, seq(e.id));
     });
 
     // Optional "bus": a hub (gateway / load balancer) fans out to member
@@ -152,11 +155,11 @@ export function sceneBuilder(def: SceneDef) {
         const ys = members.map((b) => b.y + b.h / 2).concat([bus.hubY]);
         const top = Math.min(...ys), bottom = Math.max(...ys);
         const pn = (hubNew ? "new plain" : "plain") + dim(bus.hub);
-        drawEdge("bus:hub", [[bus.hubX, bus.hubY], [bus.x, bus.hubY]], pn, bus.label, bus.lp, seq(bus.hub));
-        drawEdge("bus:spine", [[bus.x, top], [bus.x, bottom]], pn, undefined, undefined, seq(bus.hub));
+        drawEdge("bus:hub", [bus.hub, `bus:${bus.hub}`], [[bus.hubX, bus.hubY], [bus.x, bus.hubY]], pn, bus.label, bus.lp, seq(bus.hub));
+        drawEdge("bus:spine", [`bus:${bus.hub}`, `bus:${bus.hub}`], [[bus.x, top], [bus.x, bottom]], `${pn} spine`, undefined, undefined, seq(bus.hub));
         members.forEach((b) => {
           const y = b.y + b.h / 2;
-          drawEdge(`bus:${b.id}`, [[bus.x, y], [b.x, y]], (hubNew || fresh.has(b.id) ? "new" : "") + dim(bus.hub, b.id),
+          drawEdge(`bus:${b.id}`, [`bus:${bus.hub}`, b.id], [[bus.x, y], [b.x, y]], (hubNew || fresh.has(b.id) ? "new" : "") + dim(bus.hub, b.id),
             undefined, undefined, seq(bus.hub, b.id));
         });
       }
