@@ -63,7 +63,8 @@ const PULSE_PX = 24, PULSE_SPEED = 170, PULSE_REST_S = 0.9;
 function Pulse({ line, cycle, phase }: { line: FrameLine; cycle: number; phase: number }) {
   const dur = cycle / PULSE_SPEED;
   const style = {
-    "--pulse": `${PULSE_PX}px`, "--cycle": `${cycle}px`, "--dur": `${dur}s`, "--phase": `${-phase * dur}s`,
+    "--pulse": `${PULSE_PX}px`, "--cycle": `${cycle}px`, "--rest": `${PULSE_SPEED * PULSE_REST_S}px`,
+    "--dur": `${dur}s`, "--phase": `${-phase * dur}s`,
   } as CSSProperties;
   return (
     <g style={style}>

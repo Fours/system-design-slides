@@ -233,10 +233,15 @@ svg.animate .new, svg.animate .reveal {
 .flow.async .pulse-halo, .flow.async .pulse-glow { stroke: var(--stream); }
 .flow.async .pulse-core { stroke: #fce7f3; }
 /* Two-way edges: out, then back. */
-.flow.both :is(.pulse-halo, .pulse-glow, .pulse-core) { animation-direction: alternate; }
+/* Two-way edges play the loop forward then backward. Half the rest (--rest)
+   is moved before the start, so the pulse waits off-edge at both ends. */
+.flow.both :is(.pulse-halo, .pulse-glow, .pulse-core) {
+  animation-direction: alternate;
+  --shift: calc(var(--rest) / 2);
+}
 @keyframes pulse-run {
-  from { stroke-dashoffset: var(--pulse); }
-  to { stroke-dashoffset: calc(var(--pulse) - var(--cycle)); }
+  from { stroke-dashoffset: calc(var(--pulse) + var(--shift, 0px)); }
+  to { stroke-dashoffset: calc(var(--pulse) + var(--shift, 0px) - var(--cycle)); }
 }
 
 @media (prefers-reduced-motion: reduce) {
